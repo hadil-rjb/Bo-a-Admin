@@ -13,8 +13,8 @@ import { IconBtn, btn } from "@/components/ui";
 import { DataProvider, useData } from "@/lib/data";
 import { FeedbackProvider } from "@/components/feedback";
 import { toggleTheme } from "@/lib/theme";
-import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useArticleDrawer } from "@/components/ArticleDrawerHost";
 
 const BT: Record<string, string> = { overview: "Chatbot Overview", conversations: "Conversations", knowledge: "Knowledge base", settings: "Chatbot Settings" };
 const SM: Record<string, string> = { overview: "Social Media Overview", planner: "Social Media Planner", settings: "Social Media Settings" };
@@ -28,6 +28,7 @@ const T: Record<string, [string, string]> = {
 
 function Shell({ children }: { children: React.ReactNode }) {
   const { user } = useData();
+  const { openNewArticle } = useArticleDrawer();
   const router = useRouter();
   const link = user.role === "link";
   const [open, setOpen] = useState(false);
@@ -70,7 +71,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           {!link && <button onClick={() => setShare(true)} className={btn("secondary")}><Icon k="users" /><span className="max-sm:hidden">Share</span></button>}
           <IconBtn title="Toggle theme" onClick={toggleTheme}><Icon k="sun" className="hidden dark:block" /><Icon k="moon" className="dark:hidden" /></IconBtn>
           {!link && <NotificationBell />}
-          {can && !inBot && !inSocial && <Link href="/articles?new=1" className={btn("primary")}><Icon k="plus" />New Article</Link>}
+          {can && !inBot && !inSocial && <button onClick={() => openNewArticle()} className={btn("primary")}><Icon k="plus" />New Article</button>}
         </div>
         <Suspense><OAuthResult /></Suspense>
         {share && <ShareDialog onClose={() => setShare(false)} />}
