@@ -10,7 +10,6 @@ async function bootstrap() {
   
 app.enableCors({
   origin: [
-    "https://boga-workspace.vercel.app",
     "http://localhost:3000",
   ],
   credentials: true,

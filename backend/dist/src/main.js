@@ -7,7 +7,14 @@ async function bootstrap() {
     const app = await core_1.NestFactory.create(app_module_1.AppModule, { bodyParser: false });
     app.useBodyParser("json", { limit: "12mb" }); // articles + images en data URL
     app.setGlobalPrefix("api");
-    app.enableCors({ origin: (process.env.CORS_ORIGIN ?? "http://localhost:3000").split(","), credentials: true });
+    app.enableCors({
+        origin: [
+            "http://localhost:3000",
+        ],
+        credentials: true,
+        methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+    });
     app.useGlobalPipes(new common_1.ValidationPipe({ whitelist: true, transform: true }));
     await app.listen(process.env.PORT ?? 4000);
 }
