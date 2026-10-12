@@ -7,7 +7,16 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false });
   app.useBodyParser("json", { limit: "12mb" }); // articles + images en data URL
   app.setGlobalPrefix("api");
-  app.enableCors({ origin: (process.env.CORS_ORIGIN ?? "http://localhost:3000").split(","), credentials: true });
+  
+app.enableCors({
+  origin: [
+    "https://boga-workspace.vercel.app",
+    "http://localhost:3000",
+  ],
+  credentials: true,
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+});
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   await app.listen(process.env.PORT ?? 4000);
 }
