@@ -62,3 +62,23 @@ Les écritures sur `/articles` exigent `admin` ou `editor` ; connexion/déconnex
 | POST | /ai/cover-image | owner / editor — `{prompt, ratio?, seed?}` → `{image (data URL WebP), width, height, bytes, model, seed, ratio, match}` |
 | POST | /media/cover | owner / editor — `{dataUrl}` → ré-encode en WebP, stocke, renvoie `{url}` |
 | GET | /media/:id.webp | public — sert la couverture (cache 1 an) |
+
+### Social Media (`/api/social`)
+Espace Social Media (studio de designs, planner, brand kits) — collections `social_brands`, `social_designs`, `social_posts`, `social_workspaces`.
+Lecture : tout utilisateur connecté · écriture : `admin` / `editor` · réinitialisation : `admin`. Pas d'accès par lien de partage.
+
+| Méthode | Route | Rôle |
+|---|---|---|
+| GET | /social/workspace | espace complet `{ brands, data, active, set }` (ou `null`) |
+| PATCH | /social/workspace | synchro incrémentale envoyée par le studio |
+| PUT | /social/workspace | remplace tout (restauration d'une sauvegarde JSON) |
+| DELETE | /social/workspace | admin — réinitialise (le studio recrée la démo) |
+| GET / PATCH | /social/settings | marque active + réglages Social Media |
+| GET / POST | /social/brands | liste (avec compteurs) / création `{ name, color? }` |
+| GET / PATCH / DELETE | /social/brands/:brandId | |
+| GET / POST | /social/brands/:brandId/designs | `?q=` · création `{ name, tpl?, ratio? }` |
+| GET / PATCH / DELETE | /social/brands/:brandId/designs/:id | |
+| GET / POST | /social/brands/:brandId/posts | `?from=YYYY-MM-DD&to=&status=` · création `{ d, date, time, pf }` |
+| PATCH / DELETE | /social/brands/:brandId/posts/:id | |
+
+`BODY_LIMIT` (défaut `50mb`) : taille max. des requêtes JSON (images en data URL dans les articles et les designs).

@@ -19,15 +19,10 @@ const BOT: { label: string; icon: IconKey; href: string }[] = [
   { label: "Knowledge base", icon: "book", href: "/bot/knowledge" },
   { label: "Settings", icon: "settings", href: "/bot/settings" },
 ];
-const SOCIAL: { label: string; icon: IconKey; href: string }[] = [
-  { label: "Overview", icon: "grid", href: "/social-media/overview" },
-  { label: "Planner", icon: "cal", href: "/social-media/planner" },
-  { label: "Settings", icon: "settings", href: "/social-media/settings" },
-];
 const WORKSPACES: { name: string; sub: string; icon: IconKey; href: string; soon?: boolean }[] = [
   { name: "Blog Admin", sub: "Content & Articles", icon: "doc", href: "/" },
   { name: "Chatbot Admin", sub: "AI & Conversations", icon: "chat", href: "/bot/overview", soon: true },
-  { name: "Social Media Admin", sub: "Social & Publishing", icon: "globe", href: "/social-media/overview", soon: true },
+  { name: "Social Media Admin", sub: "Social & Publishing", icon: "globe", href: "/social-media" },
 ];
 
 export default function Sidebar({ open, onClose, user }: { open: boolean; onClose: () => void; user: { name: string; email: string; avatar?: string; role?: string } }) {
@@ -36,8 +31,7 @@ export default function Sidebar({ open, onClose, user }: { open: boolean; onClos
   const [accOpen, setAccOpen] = useState(false);
   const pathname = usePathname();
   const inBot = pathname.startsWith("/bot");
-  const inSocial = pathname.startsWith("/social-media");
-  const ws = inBot ? "Chatbot Admin" : inSocial ? "Social Media Admin" : "Blog Admin";
+  const ws = inBot ? "Chatbot Admin" : "Blog Admin";
   const active = inBot ? pathname : "/" + (pathname.split("/")[1] || "");
   const initial = (user.name || "?").charAt(0).toUpperCase();
   const logout = () => { localStorage.removeItem("uxb.token"); router.replace("/login"); };
@@ -69,7 +63,7 @@ export default function Sidebar({ open, onClose, user }: { open: boolean; onClos
         </div>
 
         <nav className="flex flex-1 flex-col gap-1 overflow-y-auto p-3">
-          {(inBot ? BOT : inSocial ? SOCIAL : NAV.filter((n) => user.role !== "link" || n.href === "/articles" || n.href === "/calendar")).map((n) => (
+          {(inBot ? BOT : NAV.filter((n) => user.role !== "link" || n.href === "/articles" || n.href === "/calendar")).map((n) => (
             <Link key={n.label} href={n.href} onClick={onClose} className={`flex items-center gap-2 rounded-8 px-3 py-2 text-sm font-medium tracking-[-0.02em] ${n.href === active ? "bg-pill text-text-1" : "text-text-2 hover:bg-pill"}`}>
               <Icon k={n.icon} />{n.label}
             </Link>
