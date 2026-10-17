@@ -128,8 +128,10 @@ function toModel(w: Workspace): Model {
   for (const b of w.brands) {
     const id = String(b.id);
     const { designs = [], posts = [], ...content } = w.data[id] || {};
+    // Brand templates are saved through their own endpoint (/brands/:id/templates), not with the kit
+    const { templates: _templates, ...kit } = b;
     m.brandOrder.push(id);
-    put("b|" + id, { kit: b, content }, { id, kit: b, content });
+    put("b|" + id, { kit, content }, { id, kit, content });
     m.designOrder[id] = designs.filter((d: any) => d && d.id).map((d: any) => (put(`d|${id}|${d.id}`, d, { brandId: id, item: d }), d.id));
     m.postOrder[id] = posts.filter((p: any) => p && p.id).map((p: any) => (put(`p|${id}|${p.id}`, p, { brandId: id, item: p }), p.id));
   }
@@ -347,6 +349,21 @@ function createPersist() {
       };
       addEventListener("pagehide", exit);
       document.addEventListener("visibilitychange", onHidden);
+    },
+
+    /**
+     * Sends what is pending right now (instead of waiting for the debounce) and resolves
+     * true once the API has confirmed it. Used after create / rename / duplicate / delete.
+     */
+    async flush(): Promise<boolean> {
+      if (readOnly || resetting) return false;
+      if (getState) stage(JSON.stringify(getState()));
+      clearTimeout(timer);
+      for (let i = 0; i < 3 && latest && latest !== lastSynced; i++) {
+        await push();
+        while (inflight) await inflight;
+      }
+      return !latest || latest === lastSynced;
     },
 
     /** The studio is unmounting (e.g. switching to the Blog Admin): save now and stop watching. */

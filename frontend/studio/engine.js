@@ -272,8 +272,16 @@ const wsBtn = () => `${brandAv(brand(), 'md')}<span class="t"><b>${esc(brand().n
 const pillHTML = () => `${brandAv(brand(), 'sm')}<span class="hide-sm">${esc(brand().name)}</span>${ic('chevD', 16)}`;
 function refreshChrome() { const w = $('.ws-btn'); if (w) w.innerHTML = wsBtn(); const p = $('.bpill'); if (p) p.innerHTML = pillHTML(); }
 function brandMenu() {
-  return `<div class="div"></div><div class="cap">Switch brand</div>` + S.brands.map((b) => `<button class="it ${b.id === S.active ? 'on' : ''}" data-act="switchBrand" data-id="${b.id}">${brandAv(b, 'sm')}<span class="grow"><b>${esc(b.name)}</b><small>${esc(b.industry || 'Brand')} · ${S.data[b.id].designs.length} designs</small></span>${b.id === S.active ? ic('check', 14, 'faint') : ''}</button>`).join('')
+  return `<div class="div"></div><div class="cap">Switch brand</div>` + S.brands.map((b) => `<button class="it ${b.id === S.active ? 'on' : ''}" data-act="switchBrand" data-id="${b.id}">${brandAv(b, 'sm')}<span class="grow"><b>${esc(b.name)}</b><small>${esc(b.industry || 'Brand')} designs</small></span>${b.id === S.active ? ic('check', 14, 'faint') : ''}</button>`).join('')
     + `<div class="div"></div><button class="it addb" data-act="addBrand"><span class="ico">${ic('plus', 16)}</span><span class="grow"><b>Add brand</b><small>New workspace &amp; brand kit</small></span></button><button class="it" data-act="manageBrands"><span class="ico">${ic('layers', 16)}</span><span class="grow"><b>Manage brands</b><small>${S.brands.length} brands</small></span></button>`;
+}
+/* Brand templates are stored by the API, one document each (social_templates) */
+const tplApi = (b, path, o) => api(`/social/brands/${encodeURIComponent(b.id)}/templates${path}`, o);
+/** Disables a button and shows a spinner while a request runs */
+function busy(btn, on, label) {
+  if (!btn) return;
+  if (on) { btn.dataset.l = btn.innerHTML; btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.innerHTML = `<i class="spin"></i>${esc(label)}`; }
+  else if (btn.dataset.l) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.innerHTML = btn.dataset.l; }
 }
 const btThumb = (t, bw, bh) => thumb({ bg: t.bg || '#0b1220', layers: t.layers }, t.ratio, bw, bh);
 function aiCaption(d) {
@@ -378,15 +386,12 @@ function renderSide() {
       <div id="brandMenu">${brandMenu()}</div>
     </div>
   </div>
-  <nav class="nav" id="nav">${NAV.map(([k, l, i, n]) => `<a href="#/${k}" data-k="${k}">${ic(i)}${l}${n ? `<span class="new">${n}</span>` : ''}</a>`).join('')}
-    <div class="grp">Linked from Blog Admin</div>
-    <a href="#/overview" data-k="articles">${ic('doc')}Articles → posts</a>
-  </nav>
+  <nav class="nav" id="nav">${NAV.map(([k, l, i, n]) => `<a href="#/${k}" data-k="${k}">${ic(i)}${l}${n ? `<span class="new">${n}</span>` : ''}</a>`).join('')}</nav>
   <div class="me">
     <div class="menu" id="meMenu" hidden>
       <div class="row" style="gap:10px;padding:8px">${userAv()}<span class="grow"><b style="font-size:14px;font-weight:500;display:block">${esc(user.name)}</b><small class="muted xs-t">${esc(user.email)}</small></span></div>
       <div class="div"></div>
-      <button class="it" data-act="goWs" data-href="/profile"><span class="ico">${ic('user', 16)}</span><span class="grow"><b>Profile</b></span></button>
+      <a class="it" href="#/profile" data-act="goProfile"><span class="ico">${ic('user', 16)}</span><span class="grow"><b>Profile</b></span></a>
       <div class="div"></div>
       <button class="it out" data-act="signOut"><span class="ico">${ic('logout', 16)}</span><span class="grow"><b>Sign out</b></span></button>
     </div>
@@ -398,6 +403,8 @@ const userAv = () => user.avatar
   : `<span class="av">${esc((user.name || '?').charAt(0).toUpperCase())}</span>`;
 ACT.goWs = (a, e) => { e && e.preventDefault(); navigate(a.dataset.href); };
 ACT.me = () => { const m = $('#meMenu'); m.hidden = !m.hidden; };
+/* Profile opens inside this workspace (#/profile), like the Blog Admin's /profile */
+ACT.goProfile = (a, e) => { e && e.preventDefault(); closeDrawer(); if (location.hash === '#/profile') route(); else location.hash = '#/profile'; };
 ACT.signOut = () => { persist.signOut(); navigate('/login'); };
 ACT.ws = () => { const m = $('#wsMenu'); if (m.hidden) $('#brandMenu').innerHTML = brandMenu(); m.hidden = !m.hidden; };
 ACT.noop = (a, e) => { e.preventDefault(); toast('Not part of this demo'); $('#wsMenu') && ($('#wsMenu').hidden = true); };
@@ -432,10 +439,69 @@ addEventListener('resize', () => { if (innerWidth > 1024) closeDrawer(); const b
 /* ---------- Shared helpers ---------- */
 function designCard(d, extra = '') {
   const dd = getD(d.id), [w, h] = RATIOS[d.ratio];
-  return `<button class="card" data-act="open" data-id="${d.id}">
-    <div class="pv">${thumb(dd.pages[0], d.ratio, 190, 215)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></div>
-    <div class="meta"><b>${esc(d.name)}</b><small>${ratioLabel(d.ratio)} · ${dd.pages.length > 1 ? dd.pages.length + ' slides' : w + '×' + h} · ${d.upd}</small>${extra}</div></button>`;
+  return `<div class="card dc" data-id="${d.id}">
+    <button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}">${thumb(dd.pages[0], d.ratio, 190, 215)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>
+    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${ratioLabel(d.ratio)} · ${dd.pages.length > 1 ? dd.pages.length + ' slides' : w + '×' + h} · ${d.upd}</small>${extra}</div></div>`;
 }
+
+/* ---------- Designs: create / open / rename / duplicate / status / delete ----------
+   Changes go to the in-memory workspace, then persist.flush() sends them to the API
+   (social_designs) right away so the toast only says "saved" once the server has it. */
+const canEdit = () => { if (persist.readOnly) { toast('View only: ask an admin or editor to change designs'); return false; } return true; };
+const synced = (msg) => { route(); persist.flush().then((ok) => toast(ok ? msg : msg + '. Saved on this device, it syncs when the server is reachable.')); };
+const DSTATUS = ['Draft', 'Approved'];
+function designMenu(btn, d) {
+  $$('.dmenu').forEach((m) => m.remove());
+  const m = document.createElement('div'); m.className = 'dmenu dmenu-d'; m.setAttribute('role', 'menu');
+  const it = (act, icon, label, cls = '') => `<button type="button" role="menuitem" class="${cls}" data-act="${act}" data-id="${d.id}"><span class="row" style="gap:10px">${ic(icon, 16)}${label}</span></button>`;
+  m.innerHTML = it('open', 'ext', 'Open in editor') + it('dRename', 'type', 'Rename') + it('dDup', 'copy', 'Duplicate')
+    + `<div class="div"></div><div class="cap">Status</div>`
+    + DSTATUS.map((st) => `<button type="button" role="menuitemradio" aria-checked="${d.status === st}" class="${d.status === st ? 'on' : ''}" data-act="dStatus" data-id="${d.id}" data-s="${st}"><span>${st}</span>${d.status === st ? ic('check', 14) : ''}</button>`).join('')
+    + `<div class="div"></div>` + it('dDel', 'trash', 'Delete', 'neg');
+  document.body.append(m);
+  const r = btn.getBoundingClientRect(), mw = m.offsetWidth, mh = m.offsetHeight;
+  m.style.left = Math.max(8, Math.min(r.right - mw, innerWidth - mw - 8)) + 'px';
+  m.style.top = (r.bottom + 6 + mh > innerHeight - 8 ? Math.max(8, r.top - mh - 6) : r.bottom + 6) + 'px';
+  m.addEventListener('click', (e) => { if (e.target.closest('[data-act]')) m.remove(); });
+  const f = m.querySelector('button'); f && f.focus();
+}
+Object.assign(ACT, {
+  dMore: (a, e) => { e && e.stopPropagation(); const d = getD(a.dataset.id); if (d) designMenu(a, d); },
+  dRename: (a) => {
+    const d = getD(a.dataset.id); if (!d || !canEdit()) return;
+    modal(`<div class="mh"><h2>Rename design</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    <div class="mb"><label class="lab">Design name<input class="field" id="drN" value="${esc(d.name)}" maxlength="80" autocomplete="off"></label></div>
+    <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="drGo">Save</button></div>`, {
+      onMount: (bg, close) => {
+        const i = $('#drN', bg), go = () => { const n = i.value.trim(); if (!n) { i.focus(); return toast('Give the design a name'); } d.name = n; d.upd = 'Just now'; save(); close(); synced('Design renamed'); };
+        $('#drGo', bg).addEventListener('click', go); i.addEventListener('keydown', (e) => e.key === 'Enter' && go());
+        setTimeout(() => { i.focus(); i.select(); }, 30);
+      },
+    });
+  },
+  dDup: (a) => {
+    const d = getD(a.dataset.id); if (!d || !canEdit()) return;
+    const c = JSON.parse(JSON.stringify(d));
+    c.id = 'd' + uid(); c.name = (d.name + ' (copy)').slice(0, 80); c.status = 'Draft'; c.upd = 'Just now';
+    // the copy is a design of its own: it is not linked to the Figma frame of the original
+    if (c.source === 'Figma') { c.source = 'Template'; delete c.figma; }
+    (c.pages || []).forEach((pg) => { pg.id = uid(); (pg.layers || []).forEach((l) => (l.id = uid())); });
+    S.designs.splice(Math.max(0, S.designs.indexOf(d)), 0, c); save(); synced('Design duplicated');
+  },
+  dStatus: (a) => { const d = getD(a.dataset.id); if (!d || !canEdit() || d.status === a.dataset.s) return; d.status = a.dataset.s; d.upd = 'Just now'; save(); synced('Marked as ' + d.status); },
+  dDel: (a) => {
+    const d = getD(a.dataset.id); if (!d || !canEdit()) return;
+    const n = S.posts.filter((p) => p.d === d.id).length;
+    modal(`<div class="mh"><h2>Delete “${esc(d.name)}”?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[0], d.ratio, 80, 100)}<div class="grow"><p class="sm-t">The design is removed from ${esc(brand().name)} for everyone.</p>${n ? `<div class="note warn" style="margin-top:10px">${ic('alert', 16)}<span>${n} planned post${n > 1 ? 's use' : ' uses'} it and will be removed from the planner too.</span></div>` : ''}</div></div></div>
+    <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn danger" id="ddGo">${ic('trash', 16)}Delete design</button></div>`, {
+      onMount: (bg, close) => $('#ddGo', bg).addEventListener('click', () => {
+        S.designs = S.designs.filter((x) => x.id !== d.id); S.posts = S.posts.filter((p) => p.d !== d.id);
+        save(); close(); synced('Design deleted');
+      }),
+    });
+  },
+});
 function createDesign({ name, tpl = 'blank', ratio = '4:5', slides = 1, source = 'Template', mutate }) {
   const d = { id: 'd' + uid(), name, tpl, ratio, status: 'Draft', source, upd: 'Just now' };
   if (!RATIOS[ensureRatio(ratio)]) d.ratio = ratio = '4:5'; // unknown size: fall back to the default canvas
@@ -597,7 +663,7 @@ const BKP = {
   tpl: () => {
     const b = brand();
     return `<div class="phead"><div><h2>${esc(b.name)} templates</h2><p>Reusable layouts saved from your designs. Only this brand sees them.</p></div><a class="btn secondary sm" href="#/studio" data-act="goTemplates">Starter templates</a></div>
-      ${b.templates.length ? `<div class="cards">${b.templates.map((t) => `<div class="card tp"><button class="pv" data-act="fromBTpl" data-id="${t.id}" style="border:0">${btThumb(t, 170, 200)}</button><div class="meta"><b>${esc(t.name)}</b><small>${t.ratio}</small><div class="row" style="margin-top:8px"><button class="btn secondary sm grow" data-act="fromBTpl" data-id="${t.id}">Use</button><button class="btn ghost icon sm" data-act="delBTpl" data-id="${t.id}" title="Delete">${ic('trash', 16)}</button></div></div></div>`).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No templates yet.<br>Open any design in the editor and choose “Save slide as brand template”.</p></div>`}`;
+      ${b.templates.length ? `<div class="cards">${b.templates.map((t) => `<div class="card tp"><button class="pv" data-act="fromBTpl" data-id="${t.id}" style="border:0">${btThumb(t, 170, 200)}</button><div class="meta"><b>${esc(t.name)}</b><small>${t.ratio}</small><div class="row" style="margin-top:8px;gap:4px"><button class="btn secondary sm grow" data-act="fromBTpl" data-id="${t.id}">Use</button>${persist.readOnly ? '' : `<button class="btn ghost icon sm" data-act="rnBTpl" data-id="${t.id}" title="Rename" aria-label="Rename ${esc(t.name)}">${ic('type', 16)}</button><button class="btn ghost icon sm" data-act="delBTpl" data-id="${t.id}" title="Delete" aria-label="Delete ${esc(t.name)}">${ic('trash', 16)}</button>`}</div></div></div>`).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No templates yet.<br>Open any design in the editor and choose “Save slide as brand template”.</p></div>`}`;
   },
   set: () => {
     const b = brand(), connected = Object.entries(PLATFORMS).filter(([k]) => S.platforms[k]);
@@ -666,7 +732,37 @@ Object.assign(ACT, {
   delColor: (a) => { const b = brand(); if (b.colors.length <= 3) return; b.colors = b.colors.filter((c) => c.id !== a.dataset.id); save(); refreshChrome(); rerender(); },
   delLogo: (a) => { const b = brand(); b.logos = b.logos.filter((l) => l.id !== a.dataset.id); save(); refreshChrome(); rerender(); toast('Logo removed'); },
   delAsset: (a) => { const b = brand(); b.assets = b.assets.filter((x) => x.id !== a.dataset.id); save(); rerender(); },
-  delBTpl: (a) => { const b = brand(); b.templates = b.templates.filter((t) => t.id !== a.dataset.id); save(); rerender(); toast('Template deleted'); },
+  delBTpl: (a) => {
+    const b = brand(), t = b.templates.find((x) => x.id === a.dataset.id); if (!t || !canEdit()) return;
+    modal(`<div class="mh"><h2>Delete “${esc(t.name)}”?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${btThumb(t, 80, 100)}<p class="sm-t grow">The template is removed from ${esc(b.name)}. Designs already made from it are not changed.</p></div></div>
+    <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn danger" id="dtGo">${ic('trash', 16)}Delete template</button></div>`, {
+      onMount: (bg, close) => { const g = $('#dtGo', bg); g.addEventListener('click', async () => {
+        busy(g, true, 'Deleting…');
+        try { await tplApi(b, '/' + encodeURIComponent(t.id), { method: 'DELETE' }); }
+        catch (e) { if (!/not found/i.test(e.message)) { busy(g, false); return toast('Could not delete the template: ' + e.message); } }
+        b.templates = b.templates.filter((x) => x.id !== t.id); close(); rerender(); toast('Template deleted');
+      }); },
+    });
+  },
+  rnBTpl: (a) => {
+    const b = brand(), t = b.templates.find((x) => x.id === a.dataset.id); if (!t || !canEdit()) return;
+    modal(`<div class="mh"><h2>Rename template</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    <div class="mb"><label class="lab">Template name<input class="field" id="rtN" value="${esc(t.name)}" maxlength="80" autocomplete="off"></label></div>
+    <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="rtGo">Save</button></div>`, {
+      onMount: (bg, close) => {
+        const i = $('#rtN', bg), g = $('#rtGo', bg);
+        const go = async () => {
+          const n = i.value.trim(); if (!n) return toast('Give the template a name');
+          busy(g, true, 'Saving…');
+          try { const r = await tplApi(b, '/' + encodeURIComponent(t.id), { method: 'PATCH', body: { name: n } }); t.name = r.name || n; close(); rerender(); toast('Template renamed'); }
+          catch (e) { busy(g, false); toast('Could not rename the template: ' + e.message); }
+        };
+        g.addEventListener('click', go); i.addEventListener('keydown', (e) => e.key === 'Enter' && go());
+        setTimeout(() => { i.focus(); i.select(); }, 30);
+      },
+    });
+  },
   fromBTpl: (a) => {
     const t = brand().templates.find((x) => x.id === a.dataset.id); if (!t) return;
     const d = createDesign({ name: t.name, tpl: 'blank', ratio: t.ratio, mutate: (d) => { d.pages = [{ id: uid(), bg: t.bg || '#0b1220', layers: cloneLayers(t.layers) }]; } });
@@ -679,6 +775,9 @@ Object.assign(ACT, {
     const posts = JSON.parse(JSON.stringify(od.posts)).map((p) => ({ ...p, id: 'p' + uid(), d: map[p.d] || p.d }));
     S.brands.push(nb); S.data[nb.id] = { designs, posts, platforms: { ...od.platforms }, ideas: JSON.parse(JSON.stringify(od.ideas)), articles: JSON.parse(JSON.stringify(od.articles)) };
     S.active = nb.id; save(); renderSide(); route(); toast('Brand duplicated. You are now in “' + nb.name + '”.');
+    // templates have their own API: copy them once the new brand exists on the server (oldest first keeps the order)
+    if (!persist.readOnly && nb.templates.length) persist.flush().then(async () => { for (const t of [...nb.templates].reverse()) await tplApi(nb, '', { method: 'POST', body: { id: t.id, name: t.name, ratio: t.ratio, bg: t.bg, layers: t.layers } }); })
+      .catch((e) => toast('Some templates were not copied: ' + e.message));
   },
   delBrand: (a) => {
     const b = S.brands.find((x) => x.id === (a.dataset.id || S.active)); if (!b) return; if (S.brands.length < 2) return toast('Keep at least one brand');
@@ -713,10 +812,23 @@ Object.assign(ACT, {
     modal(`<div class="mh"><h2>Save as brand template</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
     <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(curP(), ED.d.ratio, 100, 130)}<div class="grow"><label class="lab">Template name<input class="field" id="tpN" value="${esc(ED.d.name)}" maxlength="50"></label><p class="xs-t muted" style="margin-top:8px">Saved to ${esc(brand().name)} only. Text and shapes stay editable when you reuse it.</p></div></div></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="tpGo">Save template</button></div>`, {
-      onMount: (bg, close) => $('#tpGo', bg).addEventListener('click', () => {
-        const n = $('#tpN', bg).value.trim() || 'Untitled template';
-        brand().templates.unshift({ id: 't' + uid(), name: n, ratio: ED.d.ratio, bg: curP().bg, layers: cloneLayers(curP().layers) }); save(); close(); edPanel(); toast('Saved to ' + brand().name + ' templates');
-      }),
+      onMount: (bg, close) => {
+        const g = $('#tpGo', bg), i = $('#tpN', bg);
+        const go = async () => {
+          if (g.disabled || !canEdit()) return;
+          const b = brand(), n = i.value.trim() || 'Untitled template';
+          const tpl = { id: 't' + uid(), name: n.slice(0, 80), ratio: ED.d.ratio, bg: curP().bg, layers: cloneLayers(curP().layers) };
+          busy(g, true, 'Saving…');
+          try {
+            await persist.flush(); // a brand created a moment ago must exist on the server first
+            const saved = await tplApi(b, '', { method: 'POST', body: tpl });
+            b.templates = [saved || tpl, ...b.templates.filter((x) => x.id !== tpl.id)];
+            close(); edPanel(); toast('Saved to ' + b.name + ' templates');
+          } catch (e) { busy(g, false); toast('Could not save the template: ' + e.message); }
+        };
+        g.addEventListener('click', go); i.addEventListener('keydown', (e) => e.key === 'Enter' && go());
+        setTimeout(() => { i.focus(); i.select(); }, 30);
+      },
     });
   },
 });
@@ -766,8 +878,8 @@ const SP = {
     const row = ([k, v]) => {
       const c = list && list.find((x) => x.net === k), on = c && c.connected, bad = on && c.status === 'error';
       const who = on ? esc(c.account.handle || c.account.name) : '';
-      const status = !c ? 'Checking…' : bad ? `${who} · needs reconnecting` : on ? `${who} · connected` : c.configured ? 'Not connected yet' : 'Needs setup first';
-      const btn = !c ? '' : on ? `${bad ? `<button class="btn primary sm" data-act="pfConnect" data-k="${k}">Reconnect</button>` : ''}<button class="btn secondary sm" data-act="pfDisconnect" data-k="${k}">Disconnect</button>` : `${c.configured && c.kind === 'oauth' ? `<button class="btn ghost sm" data-act="pfSetup" data-k="${k}" title="Domains and callback URLs to add in the app's settings">Setup help</button>` : ''}<button class="btn ${c.configured ? 'primary' : 'secondary'} sm" data-act="pfConnect" data-k="${k}">Connect</button>`;
+      const status = !c ? '<i class="skel sk-line" aria-label="Checking…"></i>' : bad ? `${who} · needs reconnecting` : on ? `${who} · connected` : c.configured ? 'Not connected yet' : 'Needs setup first';
+      const btn = !c ? '<i class="skel sk-btn"></i>' : on ? `${bad ? `<button class="btn primary sm" data-act="pfConnect" data-k="${k}">Reconnect</button>` : ''}<button class="btn secondary sm" data-act="pfDisconnect" data-k="${k}">Disconnect</button>` : `${c.configured && c.kind === 'oauth' ? `<button class="btn ghost sm" data-act="pfSetup" data-k="${k}" title="Domains and callback URLs to add in the app's settings">Setup help</button>` : ''}<button class="btn ${c.configured ? 'primary' : 'secondary'} sm" data-act="pfConnect" data-k="${k}">Connect</button>`;
       return `<div class="prov ${on ? 'on' : ''}"><span class="pcirc" style="background:${v.c}">${ic('net_' + k, 18)}</span><div class="grow"><b>${v.n}</b><span ${bad ? 'style="color:var(--neg)" title="' + esc(c.error || '') + '"' : ''}>${status}</span></div>${btn}</div>`;
     };
     return phead('Connected accounts', `Accounts for ${esc(brand().name)}. Each brand connects its own profiles; tokens are stored encrypted on the server.`, sbadge(n > 0, n + ' connected', 'None connected')) +
@@ -813,7 +925,7 @@ const SP = {
     acts(`<button class="btn primary" data-act="saveSet">Save export settings</button>`, 1),
   look: () => phead('Appearance', 'Choose how the admin looks.') +
     `<div class="themes">${['dark', 'light'].map((x) => `<button class="theme ${S.theme === x ? 'active' : ''}" data-act="pickTheme" data-t="${x}"><span class="tprev ${x}"><i style="height:12px"></i><i style="height:24px"></i><i style="height:36px"></i></span>${x === 'dark' ? 'Dark' : 'Light'}</button>`).join('')}</div>`,
-  data: () => phead('Data & backup', 'Your designs and posts are stored in this browser for the demo. In production they live in your database.') +
+  data: () => phead('Data & backup', 'Brands, designs, posts and templates are saved to the database as you work. Export a JSON backup any time.') +
     `<div class="count"><b>${S.designs.length}</b>designs in library<span class="sep2"></span><b>${S.posts.length}</b>posts in planner</div>` +
     acts(`<button class="btn secondary" data-act="exportJson">${ic('download')}Export JSON</button><button class="btn secondary" data-act="resetDemo">${ic('refresh')}Reset demo data</button>`),
 };
@@ -822,8 +934,115 @@ PAGES.settings = {
   view: () => `<div class="split"><div class="splitnav"><div class="cap">Select menu</div>${SETS.map(([k, l, i]) => `<button class="${S.set.sec === k ? 'on' : ''}" data-act="setSec" data-k="${k}">${ic(i, 20)}<span>${l}</span></button>`).join('')}</div><div class="panel">${SP[S.set.sec]()}</div></div>`,
 };
 const rerender = () => { const y = scrollY; route(); scrollTo(0, y); };
+/* phones: the section menu is a horizontal strip, keep the chosen section in view */
+const showTab = () => { const b = $('.splitnav button.on'); b && b.scrollIntoView({ block: 'nearest', inline: 'nearest' }); };
+
+/* ---------- Profile (same sections and API as Blog Admin → Profile) ---------- */
+const PR = { sec: 'info', u: null, f: null, pw: { c: '', a: '', b: '' }, show: {}, loading: null };
+const PR_ROLE = { admin: 'Owner', editor: 'Editor', viewer: 'Viewer' };
+const PR_NOTIFS = [['editorial', 'Editorial reminders', 'Upcoming publications, new posts and publishing gaps.'], ['seo', 'SEO alerts', 'Missing meta descriptions, alt text and long titles.'], ['gsc', 'Search Console', 'Connection status and indexing alerts.']];
+const PR_SECS = [['info', 'Profile settings', 'user'], ['notif', 'Notifications', 'bell'], ['sec', 'Password & security', 'lock'], ['sess', 'Session', 'logout']];
+const prForm = (u) => ({ name: u.name || '', email: u.email || '', job: u.job || '', bio: u.bio || '' });
+function prLoad() {
+  if (PR.loading) return PR.loading;
+  PR.loading = api('/auth/me').then((u) => { PR.u = u; PR.f = prForm(u); Object.assign(user, { name: u.name, email: u.email, avatar: u.avatar, role: u.role }); renderSide(); if (/^#\/profile/.test(location.hash)) rerender(); })
+    .catch((e) => toast('Could not load your profile: ' + e.message)).finally(() => { PR.loading = null; });
+  return PR.loading;
+}
+async function prPatch(extra) {
+  const u = PR.u, n = u.notifications || {};
+  try {
+    const r = await api('/auth/me', { method: 'PATCH', body: { name: u.name, email: u.email, job: u.job || '', bio: u.bio || '', avatar: u.avatar || '', notifications: { seo: n.seo !== false, editorial: n.editorial !== false, gsc: n.gsc !== false }, ...extra } });
+    PR.u = { ...u, ...r }; Object.assign(user, { name: PR.u.name, email: PR.u.email, avatar: PR.u.avatar }); renderSide(); return true;
+  } catch (e) { toast(e.message || 'Could not save your profile'); return false; }
+}
+const prAv = (u, size) => u.avatar
+  ? `<span class="av img" style="width:${size}px;height:${size}px;background-image:url(${esc(u.avatar)})"></span>`
+  : `<span class="av" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.4)}px">${esc((u.name || '?').charAt(0).toUpperCase())}</span>`;
+const prRules = (a, b) => [['8+ characters', a.length >= 8], ['Upper & lower case', /[a-z]/.test(a) && /[A-Z]/.test(a)], ['A number', /\d/.test(a)], ['A symbol', /[^A-Za-z0-9]/.test(a)], ['Passwords match', !!b && a === b]];
+function prMeter() {
+  const { a, b } = PR.pw, rules = prRules(a, b), n = rules.slice(0, 4).filter((x) => x[1]).length;
+  return `<div class="pr-meter lv${n}"><span class="bars">${[0, 1, 2, 3].map((i) => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</span><span class="lbl">${a ? ['Too weak', 'Weak', 'Fair', 'Good', 'Strong'][n] : ''}</span></div>
+    <div class="pr-rules">${rules.map(([l, ok]) => `<span class="${ok ? 'ok' : ''}">${ok ? '✓' : '○'} ${l}</span>`).join('')}</div>`;
+}
+const prPw = (k, label, ac) => fld(label, `<div class="pr-pw"><input class="inp" type="${PR.show[k] ? 'text' : 'password'}" autocomplete="${ac}" data-pw="${k}" value="${esc(PR.pw[k])}"><button type="button" class="btn ghost sm" data-act="prShow" data-k="${k}">${PR.show[k] ? 'Hide' : 'Show'}</button></div>`, { full: k === 'c' });
+const prSkeleton = () => `<div class="pr-sk" aria-busy="true" aria-label="Loading your profile"><div class="skel" style="height:22px;width:180px"></div><div class="skel" style="height:14px;width:260px;margin-top:8px"></div>
+  <div class="row" style="gap:20px;margin:26px 0 22px"><div class="skel" style="width:72px;height:72px;border-radius:50%"></div><div class="grow"><div class="skel" style="height:14px;width:120px"></div><div class="skel" style="height:12px;width:200px;margin-top:8px"></div><div class="skel" style="height:34px;width:110px;margin-top:12px"></div></div></div>
+  ${[0, 1, 2].map(() => '<div class="skel" style="height:12px;width:90px;margin-top:18px"></div><div class="skel" style="height:44px;margin-top:8px"></div>').join('')}</div>`;
+const PRP = {
+  info: (u) => phead('Profile settings', 'Your name, photo and public details.', `<span class="sbadge on">${PR_ROLE[u.role] || 'Guest'}</span>`) +
+    `<div class="pr-photo">${prAv(u, 72)}<div><b>Upload image</b><p class="sm-t muted">PNG, JPG or WebP · square works best</p><div class="row" style="gap:8px;margin-top:10px"><button class="btn secondary sm" data-act="prPhoto">${ic('upload', 16)}Upload</button>${u.avatar ? '<button class="btn secondary sm" data-act="prPhotoRm">Remove</button>' : ''}</div></div><input type="file" id="prFile" accept="image/*" hidden></div>` +
+    fgrid(fld('Full name <span class="req">*</span>', `<input class="inp" data-pf="name" value="${esc(PR.f.name)}" autocomplete="name">`, { full: 1 }) +
+      fld('Email <span class="req">*</span>', `<input class="inp" type="email" data-pf="email" value="${esc(PR.f.email)}" autocomplete="email">`, { full: 1 }) +
+      fld('Job title', `<input class="inp" data-pf="job" placeholder="e.g. Content Manager" value="${esc(PR.f.job)}">`, { full: 1 }) +
+      fld('Biography <span class="muted" style="font-weight:400">(Optional)</span>', `<textarea class="inp ta" data-pf="bio" maxlength="200" placeholder="Describe yourself…">${esc(PR.f.bio)}</textarea><div class="pr-count"><span>It will be displayed on your profile.</span><span id="prBioN">${PR.f.bio.length}/200</span></div>`, { full: 1 })) +
+    acts(`<button class="btn secondary" data-act="prDiscard">Discard</button><button class="btn primary" data-act="prSave">Apply changes</button>`),
+  notif: (u) => { const n = u.notifications || {}; return phead('Notifications', 'Choose what appears in your notification bell.') +
+    `<div class="swlist">${PR_NOTIFS.map(([k, t, d]) => `<div class="swrow"><div class="grow"><b>${t}</b><p>${d}</p></div>${sw(n[k] !== false, 'prNotif', `data-k="${k}"`, t)}</div>`).join('')}</div>`; },
+  sec: () => phead('Password & security', 'Use at least 8 characters with upper and lower case letters and a number.') +
+    fgrid(prPw('c', 'Current password', 'current-password') + prPw('a', 'New password', 'new-password') + prPw('b', 'Confirm new password', 'new-password')) +
+    `<div id="prMeter">${prMeter()}</div>` +
+    acts(`<button class="btn secondary" data-act="prPwReset">Discard</button><button class="btn primary" data-act="prPwSave">Update password</button>`),
+  sess: () => phead('Session', 'Sign out of the admin on this device.') + acts(`<button class="btn secondary" data-act="signOut">${ic('logout', 16)}Sign out</button>`, 1),
+};
+PAGES.profile = {
+  t: 'Profile', s: 'Manage your account and notification preferences.',
+  view: () => {
+    if (!PR.u) prLoad();
+    return `<div class="split"><div class="splitnav"><div class="cap">Select menu</div>${PR_SECS.map(([k, l, i]) => `<button class="${PR.sec === k ? 'on' : ''}" data-act="prSec" data-k="${k}">${ic(i, 20)}<span>${l}</span></button>`).join('')}</div>
+      <div class="panel">${PR.u ? PRP[PR.sec](PR.u) : prSkeleton()}</div></div>`;
+  },
+};
 Object.assign(ACT, {
-  setSec: (a) => { S.set.sec = a.dataset.k; rerender(); },
+  prSec: (a) => { PR.sec = a.dataset.k; rerender(); showTab(); },
+  prDiscard: () => { PR.f = prForm(PR.u); rerender(); },
+  prSave: async (a) => {
+    const name = PR.f.name.trim(), email = PR.f.email.trim();
+    if (!name) return toast('Name is required');
+    if (!/^\S+@\S+\.\S+$/.test(email)) return toast('Enter a valid email');
+    busy(a, true, 'Saving…');
+    const ok = await prPatch({ name, email, job: PR.f.job.trim(), bio: PR.f.bio.trim() });
+    if (ok) { PR.f = prForm(PR.u); rerender(); toast('Profile saved'); } else busy(a, false);
+  },
+  prPhoto: () => { const i = $('#prFile'); i && i.click(); },
+  prPhotoRm: async () => { if (await prPatch({ avatar: '' })) { rerender(); toast('Photo removed'); } },
+  prNotif: async (a) => {
+    const k = a.dataset.k, n = { ...(PR.u.notifications || {}) }; n[k] = n[k] === false;
+    a.classList.toggle('on', n[k]); a.setAttribute('aria-pressed', n[k]);
+    if (await prPatch({ notifications: { seo: n.seo !== false, editorial: n.editorial !== false, gsc: n.gsc !== false } })) PR.u.notifications = n; else rerender();
+  },
+  prShow: (a) => { PR.show[a.dataset.k] = !PR.show[a.dataset.k]; rerender(); },
+  prPwReset: () => { PR.pw = { c: '', a: '', b: '' }; rerender(); },
+  prPwSave: async (a) => {
+    const { c, a: n, b } = PR.pw;
+    if (!c) return toast('Enter your current password');
+    if (n.length < 8 || !/[a-z]/.test(n) || !/[A-Z]/.test(n) || !/\d/.test(n)) return toast('New password does not meet the requirements');
+    if (n !== b) return toast('Passwords do not match');
+    if (n === c) return toast('Choose a password different from the current one');
+    busy(a, true, 'Updating…');
+    try { await api('/auth/password', { method: 'POST', body: { currentPassword: c, newPassword: n } }); PR.pw = { c: '', a: '', b: '' }; rerender(); toast('Password updated'); }
+    catch (e) { busy(a, false); toast(e.message || 'Could not update password'); }
+  },
+});
+document.addEventListener('input', (e) => {
+  const t = e.target, d = t.dataset || {};
+  if (d.pf && PR.f) { PR.f[d.pf] = t.value; if (d.pf === 'bio') { const c = $('#prBioN'); c && (c.textContent = t.value.length + '/200'); } }
+  if (d.pw) { PR.pw[d.pw] = t.value; const m = $('#prMeter'); m && (m.innerHTML = prMeter()); }
+});
+document.addEventListener('change', (e) => {
+  const t = e.target; if (t.id !== 'prFile' || !t.files || !t.files[0]) return;
+  const f = t.files[0]; t.value = '';
+  if (!f.type.startsWith('image/')) return toast('Please choose an image file');
+  const r = new FileReader();
+  r.onload = () => { const i = new Image(); i.onload = async () => {
+    const sz = Math.min(i.width, i.height), c = document.createElement('canvas'); c.width = c.height = 256;
+    c.getContext('2d').drawImage(i, (i.width - sz) / 2, (i.height - sz) / 2, sz, sz, 0, 0, 256, 256);
+    if (await prPatch({ avatar: c.toDataURL('image/webp', 0.85) })) { rerender(); toast('Photo updated'); }
+  }; i.src = r.result; };
+  r.readAsDataURL(f);
+});
+Object.assign(ACT, {
+  setSec: (a) => { S.set.sec = a.dataset.k; rerender(); showTab(); },
   setSw: (a) => { S.set[a.dataset.k] = S.set[a.dataset.k] ? 0 : 1; rerender(); },
   setProv: (a) => { S.set.provider = a.dataset.k; rerender(); },
   pickTheme: (a) => { setTheme(a.dataset.t); rerender(); },

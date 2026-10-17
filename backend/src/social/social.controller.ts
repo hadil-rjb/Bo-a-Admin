@@ -1,7 +1,7 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Put, Query } from "@nestjs/common";
 import { Roles } from "../common/roles.decorator";
 import { BrandsService } from "./brands.service";
-import { CreateBrandDto, CreateDesignDto, CreatePostDto } from "./dto/resource.dto";
+import { CreateBrandDto, CreateDesignDto, CreatePostDto, CreateTemplateDto, UpdateTemplateDto } from "./dto/resource.dto";
 import { WorkspaceDeltaDto, WorkspaceDto } from "./dto/workspace.dto";
 import { WorkspaceService } from "./workspace.service";
 
@@ -47,7 +47,7 @@ export class SocialWorkspaceController {
   }
 }
 
-/** Granular REST resources: /social/brands, /social/brands/:brandId/designs, /social/brands/:brandId/posts */
+/** Granular REST resources: /social/brands, /social/brands/:brandId/designs, …/templates, …/posts */
 @Controller("social/brands")
 export class SocialBrandsController {
   constructor(private readonly svc: BrandsService) {}
@@ -63,6 +63,11 @@ export class SocialBrandsController {
   @Get(":brandId/designs/:id") design(@Param("brandId") brandId: string, @Param("id") id: string) { return this.svc.getDesign(brandId, id); }
   @Roles(...EDIT) @Patch(":brandId/designs/:id") updateDesign(@Param("brandId") brandId: string, @Param("id") id: string, @Body() body: Record<string, unknown>) { return this.svc.updateDesign(brandId, id, body); }
   @Roles(...EDIT) @Delete(":brandId/designs/:id") @HttpCode(200) deleteDesign(@Param("brandId") brandId: string, @Param("id") id: string) { return this.svc.deleteDesign(brandId, id); }
+
+  @Get(":brandId/templates") templates(@Param("brandId") brandId: string) { return this.svc.listTemplates(brandId); }
+  @Roles(...EDIT) @Post(":brandId/templates") createTemplate(@Param("brandId") brandId: string, @Body() dto: CreateTemplateDto) { return this.svc.createTemplate(brandId, dto); }
+  @Roles(...EDIT) @Patch(":brandId/templates/:id") updateTemplate(@Param("brandId") brandId: string, @Param("id") id: string, @Body() dto: UpdateTemplateDto) { return this.svc.updateTemplate(brandId, id, dto); }
+  @Roles(...EDIT) @Delete(":brandId/templates/:id") @HttpCode(200) deleteTemplate(@Param("brandId") brandId: string, @Param("id") id: string) { return this.svc.deleteTemplate(brandId, id); }
 
   @Get(":brandId/posts")
   posts(@Param("brandId") brandId: string, @Query("from") from?: string, @Query("to") to?: string, @Query("status") status?: string) {
