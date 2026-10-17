@@ -1,0 +1,173 @@
+import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { InjectModel } from "@nestjs/mongoose";
+import { Model, Types } from "mongoose";
+import sharp from "sharp";
+import { SocialDesign } from "../schemas/design.schema";
+import { SocialPost } from "../schemas/post.schema";
+import { SocialWorkspace, WORKSPACE_ID } from "../schemas/workspace.schema";
+import { validTz, zonedToUtc } from "../../framer/time";
+import { SocialMedia } from "./connection.schema";
+import { ConnectionsService } from "./connections.service";
+import { mergePost, PublishState, textFor } from "./post-state";
+import { Net, NETS, PublishImage } from "./providers";
+
+export const MAX_ATTEMPTS = 3;
+const LOCK_MS = 10 * 60_000;
+const DATA_URL = /^data:image\/(png|jpe?g|webp);base64,([A-Za-z0-9+/=]+)$/i;
+
+/** Stored bytes come back from MongoDB as BSON Binary, not Buffer */
+const toBuffer = (d: any): Buffer => (Buffer.isBuffer(d) ? d : d?.buffer instanceof Uint8Array ? Buffer.from(d.buffer) : Buffer.from(d?.buffer ?? d));
+
+export interface NetResult { ok: boolean; id?: string; url?: string; warning?: string; error?: string; at: Date }
+
+/** Stores the slides the studio rendered for a post, and publishes posts to their networks. */
+@Injectable()
+export class PublisherService {
+  private log = new Logger("SocialPublisher");
+  constructor(
+    @InjectModel(SocialPost.name) private posts: Model<SocialPost>,
+    @InjectModel(SocialDesign.name) private designs: Model<SocialDesign>,
+    @InjectModel(SocialMedia.name) private media: Model<SocialMedia>,
+    @InjectModel(SocialWorkspace.name) private workspaces: Model<SocialWorkspace>,
+    private conns: ConnectionsService,
+  ) {}
+
+  /** Upserts a post sent by the studio, keeping the server-owned fields (publish, media). */
+  async upsertPost(brandId: string, item: Record<string, any>) {
+    if (!item?.id) throw new BadRequestException("Post id missing");
+    const existing = await this.posts.findOne({ brandId, id: item.id }).lean<Record<string, any>>();
+    const merged = mergePost(existing, item);
+    await this.posts.replaceOne(
+      { brandId, id: item.id },
+      { ...merged, brandId, id: item.id, order: existing?.order ?? Number.MAX_SAFE_INTEGER, hash: "" },
+      { upsert: true },
+    );
+  }
+
+  /** Rendered slides for a post (JPEG). Scheduling a post with images arms it for the scheduler. */
+  async saveMedia(brandId: string, postId: string, body: { images: string[]; hash?: string; post?: Record<string, any> }) {
+    if (body.post) await this.upsertPost(brandId, { ...body.post, id: postId });
+    const post = await this.posts.findOne({ brandId, id: postId }).lean<Record<string, any>>();
+    if (!post) throw new NotFoundException("Post not found");
+    if (!body.images?.length) throw new BadRequestException("No images");
+    const docs = [];
+    for (const [index, url] of body.images.slice(0, 20).entries()) {
+      const m = DATA_URL.exec(url);
+      if (!m) throw new BadRequestException("Expected PNG or JPEG data URLs");
+      const img = sharp(Buffer.from(m[2], "base64")).flatten({ background: "#ffffff" });
+      const { data, info } = await img.jpeg({ quality: 90, mozjpeg: true }).toBuffer({ resolveWithObject: true });
+      docs.push({ brandId, postId, index, data, mime: "image/jpeg", width: info.width, height: info.height });
+    }
+    await this.media.deleteMany({ brandId, postId });
+    const saved = await this.media.insertMany(docs);
+    const media = { ids: saved.map((d) => String(d._id)), hash: body.hash || "", count: saved.length, at: new Date() };
+    const pub = post.publish || { state: "idle", results: {}, attempts: 0 };
+    const armed = post.status === "Scheduled" && !["published", "partial", "publishing"].includes(pub.state);
+    await this.posts.updateOne({ brandId, id: postId }, { $set: { media, publish: armed ? { ...pub, state: "pending", attempts: 0, nextTry: null } : pub } });
+    return this.state(brandId, postId);
+  }
+
+  async state(brandId: string, postId: string) {
+    const p = await this.posts.findOne({ brandId, id: postId }).select("id status publish media").lean<Record<string, any>>();
+    if (!p) throw new NotFoundException("Post not found");
+    return { id: p.id, status: p.status, publish: p.publish ?? null, media: p.media ?? null };
+  }
+
+  /** Publish state of every post of a brand that went through the publisher (the studio polls this). */
+  async states(brandId: string) {
+    const rows = await this.posts.find({ brandId, publish: { $exists: true } }).select("id status publish media").lean<Record<string, any>[]>();
+    return rows.map((p) => ({ id: p.id, status: p.status, publish: p.publish, media: p.media ?? null }));
+  }
+
+  publicUrl(id: string) { return `${this.conns.apiUrl}/social/media/${id}.jpg`; }
+
+  async file(raw: string) {
+    const id = raw.replace(/\.jpe?g$/i, "");
+    if (!Types.ObjectId.isValid(id) || id.length !== 24) throw new NotFoundException();
+    const m = await this.media.findById(id).select("+data").lean();
+    if (!m) throw new NotFoundException();
+    return { mime: m.mime, data: toBuffer(m.data) };
+  }
+
+  /**
+   * Publishes a post to every selected network that hasn't received it yet. `manual`: Publish now
+   * (no retries); otherwise the scheduler retries failures up to MAX_ATTEMPTS times.
+   */
+  async publish(brandId: string, postId: string, { manual = false } = {}) {
+    const now = new Date();
+    const claimed = await this.posts.findOneAndUpdate(
+      { brandId, id: postId, $or: [{ "publish.state": { $ne: "publishing" } }, { "publish.lockedAt": { $lt: new Date(now.getTime() - LOCK_MS) } }] },
+      { $set: { "publish.state": "publishing", "publish.lockedAt": now } },
+      { new: true },
+    ).lean<Record<string, any>>();
+    if (!claimed) {
+      if (!(await this.posts.exists({ brandId, id: postId }))) throw new NotFoundException("Post not found");
+      throw new ConflictException("This post is already being published");
+    }
+    const prev = claimed.publish || {};
+    const results: Record<string, NetResult> = { ...(prev.results || {}) };
+    let state: PublishState = "failed", status = claimed.status, attempts = (prev.attempts || 0) + 1, nextTry: Date | null = null, fatal = "";
+    try {
+      const nets = ((claimed.pf || []) as string[]).filter((n): n is Net => NETS.includes(n as Net));
+      if (!nets.length) throw new Error("No network selected");
+      const files = await this.media.find({ brandId, postId }).sort({ index: 1 }).select("+data").lean();
+      if (!files.length) throw new Error("The slides haven't been rendered yet: open the post in the studio and schedule it again");
+      const images: PublishImage[] = files.map((f) => ({ buffer: toBuffer(f.data), mime: f.mime, url: this.publicUrl(String(f._id)), width: f.width, height: f.height }));
+      const design = await this.designs.findOne({ brandId, id: claimed.d }).select("name ratio").lean();
+      const story = design?.ratio === "9:16";
+
+      for (const net of nets) {
+        if (results[net]?.ok) continue; // already out: never post twice
+        try {
+          const link = await this.conns.linked(brandId, net);
+          const r = await this.conns.provider(net).publish(link, {
+            text: textFor(claimed, net, design?.name),
+            firstComment: net === "ig" || net === "li" ? claimed.fc : undefined,
+            images,
+            story: story && net === "ig",
+          });
+          results[net] = { ok: true, id: r.id, url: r.url, warning: r.warning, at: new Date() };
+          this.log.log(`Published post ${postId} (${brandId}) to ${net}`);
+        } catch (e: any) {
+          results[net] = { ok: false, error: e?.message || "Failed", at: new Date() };
+          if (e?.status === 401 || e?.status === 403 || /expired|reconnect|isn't connected/i.test(e?.message || "")) await this.conns.markError(brandId, net, e.message);
+          this.log.warn(`Post ${postId} → ${net}: ${e?.message}`);
+        }
+      }
+      const ok = nets.filter((n) => results[n]?.ok).length;
+      state = ok === nets.length ? "published" : ok ? "partial" : "failed";
+    } catch (e: any) {
+      fatal = e?.message || "Failed";
+      state = "failed";
+    }
+    const retry = state === "failed" && !manual && attempts < MAX_ATTEMPTS;
+    if (state === "published" || state === "partial") status = "Published";
+    else if (retry) { state = "pending"; nextTry = new Date(Date.now() + 2 ** attempts * 60_000); }
+    else status = "Failed";
+    const lastError = fatal || Object.values(results).find((r) => !r.ok)?.error;
+    await this.posts.updateOne(
+      { brandId, id: postId },
+      { $set: { status, publish: { state, results, attempts, nextTry, lockedAt: null, at: new Date(), lastError: lastError || null } } },
+    );
+    return this.state(brandId, postId);
+  }
+
+  /** Scheduled posts whose time has come (in their time zone). */
+  async due(now = Date.now()) {
+    const ws = await this.workspaces.findById(WORKSPACE_ID).lean();
+    const wsTz = String((ws?.set as any)?.tz || "");
+    const horizon = new Date(now + 36 * 3600_000).toISOString().slice(0, 10);
+    const rows = await this.posts.find({
+      status: "Scheduled", "publish.state": "pending", date: { $lte: horizon },
+      $or: [{ "publish.nextTry": null }, { "publish.nextTry": { $exists: false } }, { "publish.nextTry": { $lte: new Date(now) } }],
+    }).select("brandId id date time tz").lean<Record<string, any>[]>();
+    return rows.filter((p) => {
+      const tz = validTz(p.tz || "") ? p.tz : validTz(wsTz) ? wsTz : "UTC";
+      return zonedToUtc(p.date, p.time || "09:00", tz).getTime() <= now;
+    });
+  }
+
+  async removeBrand(brandIds: string[]) {
+    await this.media.deleteMany({ brandId: { $in: brandIds } });
+  }
+}

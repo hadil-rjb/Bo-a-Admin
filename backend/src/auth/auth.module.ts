@@ -15,7 +15,7 @@ const strongSecret = (s: string) => { if (s.length < 16 || s.startsWith("change-
     JwtModule.registerAsync({
       global: true,
       inject: [ConfigService],
-      useFactory: (c: ConfigService) => ({ secret: strongSecret(c.getOrThrow<string>("JWT_SECRET")), signOptions: { expiresIn: c.get("JWT_EXPIRES_IN") ?? "7d" } }),
+      useFactory: (c: ConfigService) => ({ secret: strongSecret(c.getOrThrow<string>("JWT_SECRET")), signOptions: { expiresIn: c.get("JWT_EXPIRES_IN") || "7d" } }),
     }),
   ],
   controllers: [AuthController],

@@ -18,6 +18,7 @@ const share_module_1 = require("./share/share.module");
 const ai_module_1 = require("./ai/ai.module");
 const framer_module_1 = require("./framer/framer.module");
 const media_module_1 = require("./media/media.module");
+const social_module_1 = require("./social/social.module");
 const jwt_auth_guard_1 = require("./auth/jwt-auth.guard");
 let AppModule = class AppModule {
 };
@@ -37,6 +38,7 @@ exports.AppModule = AppModule = __decorate([
             articles_module_1.ArticlesModule,
             gsc_module_1.GscModule,
             framer_module_1.FramerModule,
+            social_module_1.SocialModule,
         ],
         providers: [{ provide: core_1.APP_GUARD, useClass: jwt_auth_guard_1.JwtAuthGuard }], // tout est protégé sauf @Public()
     })

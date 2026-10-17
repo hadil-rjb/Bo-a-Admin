@@ -5,7 +5,8 @@ import { AppModule } from "./app.module";
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false });
-  app.useBodyParser("json", { limit: "12mb" }); // articles + images en data URL
+  // articles + social designs embed images as data URLs
+  app.useBodyParser("json", { limit: process.env.BODY_LIMIT || "50mb" });
   app.setGlobalPrefix("api");
   
 app.enableCors({
@@ -18,6 +19,6 @@ app.enableCors({
   allowedHeaders: ["Content-Type", "Authorization"],
 });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-  await app.listen(process.env.PORT ?? 4000);
+  await app.listen(process.env.PORT || 4000);
 }
 bootstrap();

@@ -42,7 +42,7 @@ export class FramerService {
     cfg: ConfigService,
   ) {
     this.secret = cfg.getOrThrow<string>("JWT_SECRET");
-    this.publicApi = cfg.get<string>("PUBLIC_API_URL") ?? "http://localhost:4000";
+    this.publicApi = cfg.get<string>("PUBLIC_API_URL") || "http://localhost:4000";
   }
 
   /* ───────────── Réglages ───────────── */

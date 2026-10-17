@@ -9,6 +9,7 @@ import { ShareModule } from "./share/share.module";
 import { AiModule } from "./ai/ai.module";
 import { FramerModule } from "./framer/framer.module";
 import { MediaModule } from "./media/media.module";
+import { SocialModule } from "./social/social.module";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 
 @Module({
@@ -25,6 +26,7 @@ import { JwtAuthGuard } from "./auth/jwt-auth.guard";
     ArticlesModule,
     GscModule,
     FramerModule,
+    SocialModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: JwtAuthGuard }], // tout est protégé sauf @Public()
 })

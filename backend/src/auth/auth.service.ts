@@ -32,7 +32,7 @@ export class AuthService implements OnModuleInit {
     if (!STRONG.test(password)) this.log.warn("ADMIN_PASSWORD est faible (8+ car., majuscule, minuscule, chiffre) — changez-le");
     const existing = await this.users.findOne({ email }).select("+passwordHash");
     if (!existing) {
-      await this.users.create({ email, name: this.cfg.get("ADMIN_NAME") ?? "Admin", role: "admin", passwordHash: await bcrypt.hash(password, 12) });
+      await this.users.create({ email, name: this.cfg.get("ADMIN_NAME") || "Admin", role: "admin", passwordHash: await bcrypt.hash(password, 12) });
       this.log.log(`Compte admin créé : ${email}`);
     } else if (this.cfg.get("ADMIN_FORCE_PASSWORD_SYNC") === "true") {
       existing.passwordHash = await bcrypt.hash(password, 12);

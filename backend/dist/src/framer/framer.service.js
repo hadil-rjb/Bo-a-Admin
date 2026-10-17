@@ -52,7 +52,7 @@ let FramerService = class FramerService {
         this.articles = articles;
         this.act = act;
         this.secret = cfg.getOrThrow("JWT_SECRET");
-        this.publicApi = cfg.get("PUBLIC_API_URL") ?? "http://localhost:4000";
+        this.publicApi = cfg.get("PUBLIC_API_URL") || "http://localhost:4000";
     }
     /* ───────────── Réglages ───────────── */
     async load() { return (await this.settings.findOne().select("+apiKey")) ?? (await this.settings.create({ timezone: process.env.PUBLISH_TIMEZONE || "Africa/Tunis" })); }

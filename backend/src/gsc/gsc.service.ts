@@ -22,10 +22,10 @@ export class GscService {
   ) {}
 
   private get secret() { return this.cfg.getOrThrow<string>("JWT_SECRET"); }
-  private get site() { return this.cfg.get<string>("GSC_SITE") ?? "sc-domain:uxboga.com"; }
+  private get site() { return this.cfg.get<string>("GSC_SITE") || "sc-domain:uxboga.com"; }
   private get configured() { return !!this.cfg.get("GOOGLE_CLIENT_ID") && !!this.cfg.get("GOOGLE_CLIENT_SECRET"); }
-  get frontUrl() { return this.cfg.get<string>("FRONTEND_URL") ?? "http://localhost:3000"; }
-  private get redirectUri() { return this.cfg.get<string>("GOOGLE_REDIRECT_URI") ?? "http://localhost:4000/api/gsc/callback"; }
+  get frontUrl() { return this.cfg.get<string>("FRONTEND_URL") || "http://localhost:3000"; }
+  private get redirectUri() { return this.cfg.get<string>("GOOGLE_REDIRECT_URI") || "http://localhost:4000/api/gsc/callback"; }
 
   async status() {
     const c = await this.conn.findOne();
