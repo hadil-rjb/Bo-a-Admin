@@ -4,6 +4,7 @@ import { BrandsService } from "./brands.service";
 import { SocialBrand, SocialBrandSchema } from "./schemas/brand.schema";
 import { SocialDesign, SocialDesignSchema } from "./schemas/design.schema";
 import { SocialPost, SocialPostSchema } from "./schemas/post.schema";
+import { SocialTemplate, SocialTemplateSchema } from "./schemas/template.schema";
 import { SocialWorkspace, SocialWorkspaceSchema } from "./schemas/workspace.schema";
 import { SocialBrandsController, SocialWorkspaceController } from "./social.controller";
 import { WorkspaceService } from "./workspace.service";
@@ -25,6 +26,7 @@ import { FigmaService } from "./figma/figma.service";
       { name: SocialBrand.name, schema: SocialBrandSchema },
       { name: SocialDesign.name, schema: SocialDesignSchema },
       { name: SocialPost.name, schema: SocialPostSchema },
+      { name: SocialTemplate.name, schema: SocialTemplateSchema },
       { name: SocialWorkspace.name, schema: SocialWorkspaceSchema },
       { name: SocialConnection.name, schema: SocialConnectionSchema },
       { name: SocialOAuthState.name, schema: SocialOAuthStateSchema },

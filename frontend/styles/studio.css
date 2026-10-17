@@ -1317,3 +1317,81 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 }
 }
 @layer components{:where([data-ws="social"]){.fig9-teams .chip{display:inline-flex;flex-direction:row;align-items:center;gap:6px;white-space:nowrap}}}
+/* ============ v22 · account menu, design actions, profile page, skeletons, small screens ============ */
+@layer components{:where([data-ws="social"]){
+/* account menu: opens above its button and looks like the Blog Admin's (Profile, Sign out) */
+.me{position:relative}
+.me .menu{top:auto;bottom:100%;margin:0 0 8px;padding:8px;box-shadow:0 1px 2px rgba(15,23,42,.06),0 12px 32px rgba(15,23,42,.14)}
+.me .menu .it{gap:8px;padding:8px;border-radius:8px;font-size:14px;color:var(--text-1);text-decoration:none}
+.me .menu .it .ico{width:auto;height:auto;border-radius:0;background:none!important;color:inherit}
+.me .menu .it b{font-size:14px;font-weight:400;line-height:20px}
+.me .menu .it.out{color:var(--neg)}
+.me .menu .div{margin:4px 0}
+.av.img{background:var(--pill) center/cover no-repeat}
+
+/* design cards: preview opens the editor, ⋯ opens rename / duplicate / status / delete */
+/* clip, not hidden: layers bleeding off a thumbnail must not make the card scrollable */
+.card.dc{position:relative;overflow:clip}
+.card.dc .pv{width:100%;overflow:clip;border:0;border-radius:0;padding:0;cursor:pointer}
+.card.dc .pv:focus-visible{outline-offset:-3px}
+.dc-h{display:flex;align-items:flex-start;gap:4px}.dc-h b{flex:1}
+.dc-more{flex-shrink:0;margin:-5px -8px -5px 0;opacity:.65}
+.card.dc:hover .dc-more,.dc-more:focus-visible,.dc-more[aria-expanded=true]{opacity:1}
+.dmenu-d{min-width:210px}
+.dmenu .div{height:1px;margin:6px 2px;background:var(--border-soft)}
+.dmenu .cap{padding:6px 10px 2px;font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3)}
+.dmenu button.neg{color:var(--neg)}
+@media (hover:none){.dc-more{opacity:1}}
+
+/* modals: the body scrolls and the footer stays visible on short screens (Import from Figma) */
+.modal{max-height:calc(100dvh - 32px)}
+.modal .mb{min-height:0;flex:1 1 auto}
+.modal>:only-child:not(.mh,.mb,.mf){display:flex;flex-direction:column;min-height:0;flex:1 1 auto}
+@media (max-width:560px){
+  .modal-bg{padding:8px}
+  .modal{max-height:calc(100dvh - 16px)}
+  .modal .mh{padding:14px 16px}.modal .mb{padding:16px}
+  .modal .mf{padding:12px 16px;padding-bottom:max(12px,env(safe-area-inset-bottom))}
+  .modal .mf .btn{flex:1 1 auto}
+}
+
+/* profile */
+.pr-photo{display:flex;flex-wrap:wrap;align-items:center;gap:20px;padding-bottom:22px;border-bottom:1px solid var(--border-soft)}
+.pr-photo b{font-size:16px;font-weight:500}
+.req{color:var(--accent)}
+.pr-count{display:flex;justify-content:space-between;gap:12px;margin-top:6px;font-size:12px;color:var(--text-3)}
+.pr-pw{position:relative}.pr-pw .inp{width:100%;padding-right:72px}
+.pr-pw .btn{position:absolute;right:5px;top:50%;height:30px;transform:translateY(-50%)}
+.pr-meter{display:flex;align-items:center;gap:12px;font-size:12px;color:var(--text-2)}
+.pr-meter .bars{display:flex;flex:1;gap:4px}.pr-meter i{flex:1;height:6px;border-radius:999px;background:var(--pill)}
+.pr-meter.lv1 i.on{background:var(--neg)}.pr-meter.lv2 i.on{background:#d99a1e}.pr-meter.lv3 i.on{background:#7fb356}.pr-meter.lv4 i.on{background:var(--pos)}
+.pr-meter .lbl{min-width:90px;text-align:right}
+.pr-rules{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.pr-rules span{border-radius:6px;padding:4px 8px;font-size:11px;background:var(--pill);color:var(--text-3)}.pr-rules .ok{background:var(--pos-bg);color:var(--pos)}
+
+/* skeletons */
+.skel.sk-line{display:block;width:min(140px,60%);height:12px;margin-top:6px;border-radius:6px}
+.skel.sk-btn{display:inline-block;flex-shrink:0;width:84px;height:32px;border-radius:10px}
+.boot{position:fixed;inset:0;z-index:50;overflow:hidden;background:var(--bg)}
+.boot-side{position:fixed;left:0;top:0;bottom:0;display:flex;flex-direction:column;gap:8px;width:272px;padding:16px;border-right:1px solid var(--border);background:var(--surface)}
+.boot-main{margin-left:272px}
+.boot-top{display:flex;align-items:center;gap:12px;padding:20px 32px}
+.boot-page{display:flex;flex-direction:column;gap:16px;padding:0 32px 32px}
+.boot-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+.boot-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.boot-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px}
+.boot-ed{display:grid;grid-template-columns:64px 300px 1fr;height:calc(100dvh - 64px)}
+@media (max-width:1280px){.boot-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:1024px){.boot-side{display:none}.boot-main{margin-left:0}.boot-grid{grid-template-columns:minmax(0,1fr)}.boot-ed{grid-template-columns:56px 1fr}.boot-ed>:nth-child(2){display:none}}
+@media (max-width:700px){.boot-top{padding:16px}.boot-page{padding:0 16px 24px}.boot-stats{grid-template-columns:minmax(0,1fr)}}
+
+/* Settings / Profile menu becomes a horizontal strip: items keep their width and it scrolls */
+@media (max-width:900px){.splitnav{scrollbar-width:none}.splitnav button{flex-shrink:0;width:auto;white-space:nowrap}}
+/* small screens: studio toolbar and cards */
+@media (max-width:700px){
+  .page .tabs{min-width:0!important;flex:1 1 100%;overflow-x:auto;scrollbar-width:none}
+  .page .tabs>button{flex-shrink:0}
+  #stq{max-width:none!important;flex:1 1 100%}
+  .cards{grid-template-columns:repeat(auto-fill,minmax(min(210px,100%),1fr));gap:12px}
+}
+}}

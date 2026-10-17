@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
 import { Model } from "mongoose";
-import { CreateBrandDto, CreateDesignDto, CreatePostDto } from "./dto/resource.dto";
+import { CreateBrandDto, CreateDesignDto, CreatePostDto, CreateTemplateDto, UpdateTemplateDto } from "./dto/resource.dto";
 import { SocialBrand } from "./schemas/brand.schema";
 import { SocialDesign } from "./schemas/design.schema";
 import { SocialPost } from "./schemas/post.schema";
+import { SocialTemplate } from "./schemas/template.schema";
 import { SocialWorkspace, WORKSPACE_ID } from "./schemas/workspace.schema";
 import { hashOf, newId, strip } from "./social.util";
 import { ConnectionsService } from "./publishing/connections.service";
@@ -22,15 +23,35 @@ const editable = (body: Record<string, unknown>) => Object.fromEntries(Object.en
 
 /** REST access to brands, designs and posts (for integrations, scripts and future clients). */
 @Injectable()
-export class BrandsService {
+export class BrandsService implements OnModuleInit {
+  private readonly log = new Logger("BrandsService");
+
   constructor(
     @InjectModel(SocialBrand.name) private readonly brands: Model<SocialBrand>,
     @InjectModel(SocialDesign.name) private readonly designs: Model<SocialDesign>,
     @InjectModel(SocialPost.name) private readonly posts: Model<SocialPost>,
+    @InjectModel(SocialTemplate.name) private readonly templates: Model<SocialTemplate>,
     @InjectModel(SocialWorkspace.name) private readonly workspaces: Model<SocialWorkspace>,
     private readonly conns: ConnectionsService,
     private readonly publisher: PublisherService,
   ) {}
+
+  /**
+   * Templates used to be stored inside the brand document (brand.templates). Move them to
+   * their own collection once, so a brand with many image-heavy templates can still be saved.
+   */
+  async onModuleInit() {
+    const legacy = await this.brands.find({ "templates.0": { $exists: true } }, { templates: 1 }).lean<{ _id: string; templates: Record<string, any>[] }[]>();
+    for (const b of legacy) {
+      const list = b.templates.filter((t) => t && t.id);
+      const ops = list.map((t, order) => ({
+        updateOne: { filter: { brandId: b._id, id: String(t.id) }, update: { $setOnInsert: { ...t, name: t.name || "Untitled template", brandId: b._id, order, hash: hashOf(t) } }, upsert: true },
+      }));
+      if (ops.length) await this.templates.bulkWrite(ops, { ordered: false });
+      await this.brands.updateOne({ _id: b._id }, { $unset: { templates: 1 } });
+      this.log.log(`Moved ${list.length} template(s) of brand "${b._id}" to social_templates`);
+    }
+  }
 
   private brandOut(b: Record<string, any>) {
     return { id: b._id, ...strip(b) };
@@ -93,7 +114,7 @@ export class BrandsService {
   async deleteBrand(id: string) {
     await this.mustBrand(id);
     await Promise.all([
-      this.brands.deleteOne({ _id: id }), this.designs.deleteMany({ brandId: id }), this.posts.deleteMany({ brandId: id }),
+      this.brands.deleteOne({ _id: id }), this.designs.deleteMany({ brandId: id }), this.posts.deleteMany({ brandId: id }), this.templates.deleteMany({ brandId: id }),
       this.conns.removeBrand([id]), this.publisher.removeBrand([id]),
     ]);
     const ws = await this.workspaces.findById(WORKSPACE_ID).lean();
@@ -137,6 +158,39 @@ export class BrandsService {
     const r = await this.designs.deleteOne({ brandId, id });
     if (!r.deletedCount) throw new NotFoundException(`Design "${id}" not found`);
     await this.posts.deleteMany({ brandId, d: id });
+    return { ok: true };
+  }
+
+  /* ---------- brand templates ---------- */
+  async listTemplates(brandId: string) {
+    await this.mustBrand(brandId);
+    return (await this.templates.find({ brandId }).sort({ order: 1 }).lean()).map(strip);
+  }
+
+  async createTemplate(brandId: string, dto: CreateTemplateDto) {
+    await this.mustBrand(brandId);
+    const item = { ...dto, name: dto.name.trim(), id: dto.id || "t" + newId() };
+    // Newest first, like the studio's list
+    await this.templates.updateMany({ brandId }, { $inc: { order: 1 } });
+    const doc = await this.templates.findOneAndUpdate(
+      { brandId, id: item.id },
+      { $set: { ...item, brandId, order: 0, hash: hashOf(item) } },
+      { upsert: true, new: true },
+    ).lean();
+    return strip(doc);
+  }
+
+  async updateTemplate(brandId: string, id: string, dto: UpdateTemplateDto) {
+    const $set: Record<string, unknown> = { ...editable(dto as Record<string, unknown>), hash: "" };
+    if (typeof dto.name === "string") $set.name = dto.name.trim();
+    const t = await this.templates.findOneAndUpdate({ brandId, id }, { $set }, { new: true }).lean();
+    if (!t) throw new NotFoundException(`Template "${id}" not found`);
+    return strip(t);
+  }
+
+  async deleteTemplate(brandId: string, id: string) {
+    const r = await this.templates.deleteOne({ brandId, id });
+    if (!r.deletedCount) throw new NotFoundException(`Template "${id}" not found`);
     return { ok: true };
   }
 

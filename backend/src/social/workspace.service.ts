@@ -5,6 +5,7 @@ import { BrandUpsert, WorkspaceDeltaDto, WorkspaceDto } from "./dto/workspace.dt
 import { SocialBrand } from "./schemas/brand.schema";
 import { SocialDesign } from "./schemas/design.schema";
 import { SocialPost } from "./schemas/post.schema";
+import { SocialTemplate } from "./schemas/template.schema";
 import { SocialWorkspace, WORKSPACE_ID } from "./schemas/workspace.schema";
 import { hashOf, strip } from "./social.util";
 import { mergePost } from "./publishing/post-state";
@@ -23,6 +24,7 @@ export class WorkspaceService {
     @InjectModel(SocialBrand.name) private readonly brands: Model<SocialBrand>,
     @InjectModel(SocialDesign.name) private readonly designs: Model<SocialDesign>,
     @InjectModel(SocialPost.name) private readonly posts: Model<SocialPost>,
+    @InjectModel(SocialTemplate.name) private readonly templates: Model<SocialTemplate>,
     @InjectModel(SocialWorkspace.name) private readonly workspaces: Model<SocialWorkspace>,
     private readonly conns: ConnectionsService,
     private readonly publisher: PublisherService,
@@ -31,10 +33,11 @@ export class WorkspaceService {
   /** Rebuilds the snapshot the client expects, or null when nothing was saved yet. */
   async get(): Promise<WorkspaceDto | null> {
     const ws = await this.workspaces.findById(WORKSPACE_ID).lean();
-    const [brands, designs, posts] = await Promise.all([
+    const [brands, designs, posts, templates] = await Promise.all([
       this.brands.find().sort({ order: 1 }).lean(),
       this.designs.find().sort({ order: 1 }).lean(),
       this.posts.find().sort({ order: 1 }).lean(),
+      this.templates.find().sort({ order: 1 }).lean(),
     ]);
     if (!brands.length) return null;
 
@@ -42,7 +45,8 @@ export class WorkspaceService {
     const kits = brands.map((b) => {
       const { platforms, ideas, articles, extraData, ...kit } = b as Record<string, any>;
       data[b._id] = { designs: [], posts: [], platforms: platforms || {}, ideas: ideas || [], articles: articles || [], ...(extraData || {}) };
-      return { id: b._id, ...strip(kit) };
+      // Brand templates have their own collection (see BrandsService)
+      return { id: b._id, ...strip(kit), templates: templates.filter((t) => t.brandId === b._id).map(strip) };
     });
     designs.forEach((d) => data[d.brandId]?.designs.push(strip(d)));
     posts.forEach((p) => data[p.brandId]?.posts.push(strip(p)));
@@ -52,7 +56,8 @@ export class WorkspaceService {
   }
 
   private brandDoc({ id, kit, content }: BrandUpsert, order: number) {
-    const { id: _id, ...fields } = kit;
+    // templates are written through /social/brands/:id/templates only, never by the kit sync
+    const { id: _id, templates: _templates, ...fields } = kit;
     const { designs, posts, platforms = {}, ideas = [], articles = [], ...extraData } = content || {};
     return { ...fields, _id: String(id), order, platforms, ideas, articles, extraData } as any;
   }
@@ -77,13 +82,18 @@ export class WorkspaceService {
       this.brands.deleteMany({ _id: { $nin: brandIds } }),
       this.designs.deleteMany({ brandId: { $nin: brandIds } }),
       this.posts.deleteMany({ brandId: { $nin: brandIds } }),
+      this.templates.deleteMany({ brandId: { $nin: brandIds } }),
       this.conns.removeBrand(gone),
       this.publisher.removeBrand(gone),
     ]);
 
-    for (const id of brandIds) {
-      const d = dto.data[id] || {};
-      await Promise.all([this.syncItems(this.designs, id, d.designs || []), this.syncItems(this.posts, id, d.posts || [])]);
+    for (const b of dto.brands) {
+      const id = String(b.id), d = dto.data[id] || {};
+      await Promise.all([
+        this.syncItems(this.designs, id, d.designs || []),
+        this.syncItems(this.posts, id, d.posts || []),
+        this.syncItems(this.templates, id, Array.isArray(b.templates) ? b.templates : []),
+      ]);
     }
 
     const ws = await this.workspaces.findByIdAndUpdate(
@@ -107,6 +117,7 @@ export class WorkspaceService {
         this.brands.deleteMany({ _id: { $in: ids } }),
         this.designs.deleteMany({ brandId: { $in: ids } }),
         this.posts.deleteMany({ brandId: { $in: ids } }),
+        this.templates.deleteMany({ brandId: { $in: ids } }),
         this.conns.removeBrand(ids),
         this.publisher.removeBrand(ids),
       ]);
@@ -149,12 +160,17 @@ export class WorkspaceService {
     const pos = (brandId: string, id: string) => order[brandId]?.indexOf(id) ?? -1;
     const list = upserts.filter((u) => u.item && u.item.id);
     const owned = await this.serverOwned(model, list);
+    // An edit without a new order (rename, status…) keeps the item where it was
+    const unplaced = list.filter(({ brandId, item }) => pos(brandId, item.id) < 0);
+    const prev = unplaced.length
+      ? new Map((await model.find({ $or: unplaced.map(({ brandId, item }) => ({ brandId, id: item.id })) }, { brandId: 1, id: 1, order: 1 }).lean<{ brandId: string; id: string; order: number }[]>()).map((r) => [`${r.brandId}|${r.id}`, r.order]))
+      : new Map<string, number>();
     const ops: AnyBulkWriteOperation[] = list.map(({ brandId, item }) => {
       const i = pos(brandId, item.id), doc = owned ? mergePost(owned.get(`${brandId}|${item.id}`), item) : item;
       return {
         replaceOne: {
           filter: { brandId, id: item.id },
-          replacement: { ...doc, brandId, order: i >= 0 ? i : Number.MAX_SAFE_INTEGER, hash: hashOf(item) },
+          replacement: { ...doc, brandId, order: i >= 0 ? i : prev.get(`${brandId}|${item.id}`) ?? Number.MAX_SAFE_INTEGER, hash: hashOf(item) },
           upsert: true,
         },
       };
@@ -193,7 +209,7 @@ export class WorkspaceService {
 
   /** Wipes everything; the client seeds the demo workspace again on next load. */
   async reset() {
-    await Promise.all([this.brands.deleteMany({}), this.designs.deleteMany({}), this.posts.deleteMany({}), this.workspaces.deleteMany({})]);
+    await Promise.all([this.brands.deleteMany({}), this.designs.deleteMany({}), this.posts.deleteMany({}), this.templates.deleteMany({}), this.workspaces.deleteMany({})]);
     return { ok: true };
   }
 

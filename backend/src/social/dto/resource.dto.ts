@@ -1,4 +1,4 @@
-import { IsArray, IsBoolean, IsIn, IsInt, IsNotEmpty, IsObject, IsOptional, IsString, Matches, Max, Min } from "class-validator";
+import { IsArray, IsBoolean, IsIn, IsInt, IsNotEmpty, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min } from "class-validator";
 
 export const RATIOS = ["1:1", "4:5", "9:16"];
 /** Standard ratios, or a custom canvas named "<w>x<h>" (designs imported from Figma keep their own size) */
@@ -41,6 +41,20 @@ export class CreateDesignDto {
   @IsOptional() @IsInt() @Min(1) @Max(10) slides?: number;
   @IsOptional() @IsObject() figma?: Record<string, unknown>;
   @IsOptional() @IsArray() pages?: Record<string, unknown>[];
+}
+
+export class CreateTemplateDto {
+  @IsOptional() @IsString() id?: string;
+  @IsString() @IsNotEmpty() @MaxLength(80) name!: string;
+  @Matches(RATIO_RE) ratio!: string;
+  @IsOptional() @IsString() bg?: string;
+  @IsArray() layers!: Record<string, unknown>[];
+}
+
+export class UpdateTemplateDto {
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(80) name?: string;
+  @IsOptional() @IsString() bg?: string;
+  @IsOptional() @IsArray() layers?: Record<string, unknown>[];
 }
 
 export class CreatePostDto {
