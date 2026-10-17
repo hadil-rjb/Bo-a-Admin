@@ -129,6 +129,7 @@ export function instagram(env: Env): OAuthProvider {
         throw new ApiError("Instagram must download the images: set PUBLIC_API_URL to a public https address");
       }
       const imgs = input.images.slice(0, 10);
+      await checkDownloadable(imgs[0].url);
       let creation: string;
       if (input.story) {
         creation = (await g.post(`/${ig}/media`, { access_token: token, media_type: "STORIES", image_url: imgs[0].url })).id;
@@ -150,4 +151,21 @@ export function instagram(env: Env): OAuthProvider {
       return { id: media, url: info.permalink, warning };
     },
   };
+}
+
+/**
+ * Instagram fetches the images itself from their public URL. Check that URL first, so a wrong
+ * PUBLIC_API_URL gives a clear error instead of Meta's "cannot fetch media from this URI".
+ */
+async function checkDownloadable(url: string) {
+  let status = 0, type = "";
+  try {
+    const r = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(20_000) });
+    status = r.status; type = r.headers.get("content-type") || "";
+  } catch (e: any) {
+    throw new ApiError(`Instagram can't download the images: ${url} is unreachable (${e?.message || "network error"}). Check PUBLIC_API_URL.`);
+  }
+  if (status !== 200 || !/^image\/jpe?g/i.test(type)) {
+    throw new ApiError(`Instagram can't download the images: ${url} answered ${status || "nothing"}${type ? ` (${type})` : ""}. Check PUBLIC_API_URL: it must be the API's public https address.`);
+  }
 }

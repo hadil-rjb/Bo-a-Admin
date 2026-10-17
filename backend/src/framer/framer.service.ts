@@ -9,6 +9,7 @@ import { FramerSettings, FramerSettingsDocument } from "./framer-settings.schema
 import { UpdateFramerSettingsDto } from "./dto/framer.dto";
 import { parseFramerProject, withFramer } from "./framer.client";
 import { validTz, zonedToUtc } from "./time";
+import { publicOrigin } from "../common/public-url";
 
 /** Champs de l'article → noms de champs Framer reconnus automatiquement (insensible à la casse). */
 export const MAP_KEYS = ["title", "meta", "sub", "cat", "tags", "html", "img", "alt", "date"] as const;
@@ -42,7 +43,7 @@ export class FramerService {
     cfg: ConfigService,
   ) {
     this.secret = cfg.getOrThrow<string>("JWT_SECRET");
-    this.publicApi = cfg.get<string>("PUBLIC_API_URL") || "http://localhost:4000";
+    this.publicApi = publicOrigin(cfg.get<string>("PUBLIC_API_URL"));
   }
 
   /* ───────────── Réglages ───────────── */
