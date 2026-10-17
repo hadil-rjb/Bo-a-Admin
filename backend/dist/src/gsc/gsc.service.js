@@ -35,10 +35,10 @@ let GscService = class GscService {
         this.jwt = jwt;
     }
     get secret() { return this.cfg.getOrThrow("JWT_SECRET"); }
-    get site() { return this.cfg.get("GSC_SITE") || "sc-domain:uxboga.com"; }
+    get site() { return this.cfg.get("GSC_SITE") ?? "sc-domain:uxboga.com"; }
     get configured() { return !!this.cfg.get("GOOGLE_CLIENT_ID") && !!this.cfg.get("GOOGLE_CLIENT_SECRET"); }
-    get frontUrl() { return this.cfg.get("FRONTEND_URL") || "http://localhost:3000"; }
-    get redirectUri() { return this.cfg.get("GOOGLE_REDIRECT_URI") || "http://localhost:4000/api/gsc/callback"; }
+    get frontUrl() { return this.cfg.get("FRONTEND_URL") ?? "http://localhost:3000"; }
+    get redirectUri() { return this.cfg.get("GOOGLE_REDIRECT_URI") ?? "http://localhost:4000/api/gsc/callback"; }
     async status() {
         const c = await this.conn.findOne();
         const site = c?.site ?? this.site;

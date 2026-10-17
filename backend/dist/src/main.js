@@ -5,8 +5,7 @@ const common_1 = require("@nestjs/common");
 const app_module_1 = require("./app.module");
 async function bootstrap() {
     const app = await core_1.NestFactory.create(app_module_1.AppModule, { bodyParser: false });
-    // articles + social designs embed images as data URLs
-    app.useBodyParser("json", { limit: process.env.BODY_LIMIT || "50mb" });
+    app.useBodyParser("json", { limit: "12mb" }); // articles + images en data URL
     app.setGlobalPrefix("api");
     app.enableCors({
         origin: [
@@ -18,6 +17,6 @@ async function bootstrap() {
         allowedHeaders: ["Content-Type", "Authorization"],
     });
     app.useGlobalPipes(new common_1.ValidationPipe({ whitelist: true, transform: true }));
-    await app.listen(process.env.PORT || 4000);
+    await app.listen(process.env.PORT ?? 4000);
 }
 bootstrap();

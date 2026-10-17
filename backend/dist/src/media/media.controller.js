@@ -49,7 +49,7 @@ let MediaController = class MediaController {
             throw new common_1.BadRequestException("Expected a PNG, JPEG or WebP data URL");
         const out = await (0, hf_1.reencode)(Buffer.from(m[1], "base64"));
         const doc = await this.media.create({ data: out.buf, mime: "image/webp", size: out.buf.length, width: out.width, height: out.height, model: d.model ?? "", createdBy: r.user.sub });
-        const base = (process.env.PUBLIC_API_URL || `${r.protocol}://${r.get("host")}`).replace(/\/+$/, "");
+        const base = (process.env.PUBLIC_API_URL ?? `${r.protocol}://${r.get("host")}`).replace(/\/+$/, "");
         return { id: String(doc._id), url: `${base}/api/media/${doc._id}.webp`, width: out.width, height: out.height, bytes: out.buf.length };
     }
     /** Public (l'identifiant est aléatoire) : le site du blog doit pouvoir afficher la couverture */
