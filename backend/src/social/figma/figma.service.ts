@@ -9,6 +9,7 @@ import { SocialIntegration, SocialOAuthState } from "../publishing/connection.sc
 import { ApiError, download, request } from "../publishing/http";
 import { newId } from "../social.util";
 import { canvasOf, convertFrame, defaultFont, parseFigmaUrl, STUDIO_FONTS } from "./convert";
+import { publicApiBase } from "../../common/public-url";
 
 /** Workspace connection (encrypted credentials) and picker preferences (default file, recent files, teams) */
 const ID = "figma", PREFS = "figma:prefs";
@@ -45,7 +46,7 @@ export class FigmaService {
   private get secret() { return this.cfg.getOrThrow<string>("JWT_SECRET"); }
   private get api() { return (this.env("FIGMA_API_URL") || "https://api.figma.com").replace(/\/$/, ""); }
   private get authorizeBase() { return this.env("FIGMA_OAUTH_URL") || "https://www.figma.com/oauth"; }
-  private get apiUrl() { return (this.env("PUBLIC_API_URL") || "http://localhost:4000/api").replace(/\/+$/, ""); }
+  private get apiUrl() { return publicApiBase(this.env("PUBLIC_API_URL")); }
   private get frontUrl() { return (this.env("FRONTEND_URL") || "http://localhost:3000").replace(/\/+$/, ""); }
   /**
    * Redirect URL sent to Figma: it must be one of the app's redirect URLs, character for character.

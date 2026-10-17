@@ -7,6 +7,7 @@ import { decrypt, encrypt } from "../../common/crypto";
 import { ApiError } from "./http";
 import { SocialConnection, SocialOAuthState } from "./connection.schema";
 import { Linked, Net, NETS, providers, Provider } from "./providers";
+import { publicApiBase } from "../../common/public-url";
 
 const b64url = (b: Buffer) => b.toString("base64url");
 
@@ -22,13 +23,10 @@ export class ConnectionsService {
 
   private env = (k: string) => this.cfg.get<string>(k) || undefined;
   private get secret() { return this.cfg.getOrThrow<string>("JWT_SECRET"); }
-  get apiUrl() { return (this.cfg.get<string>("PUBLIC_API_URL") || "http://localhost:4000/api").replace(/\/+$/, ""); }
+  /** Public API base, always ending with /api (PUBLIC_API_URL may be set with or without it) */
+  get apiUrl() { return publicApiBase(this.cfg.get<string>("PUBLIC_API_URL")); }
   get frontUrl() { return (this.cfg.get<string>("FRONTEND_URL") || "http://localhost:3000").replace(/\/+$/, ""); }
-  redirectUri(net: Net) {
-  const base = this.apiUrl.replace(/\/+$/, "");
-  const apiBase = base.endsWith("/api") ? base : `${base}/api`;
-  return `${apiBase}/social/connections/callback/${net}`;
-}
+  redirectUri(net: Net) { return `${this.apiUrl}/social/connections/callback/${net}`; }
 
   provider(net: string): Provider {
     if (!NETS.includes(net as Net)) throw new NotFoundException(`Unknown network "${net}"`);
