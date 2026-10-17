@@ -24,7 +24,11 @@ export class ConnectionsService {
   private get secret() { return this.cfg.getOrThrow<string>("JWT_SECRET"); }
   get apiUrl() { return (this.cfg.get<string>("PUBLIC_API_URL") || "http://localhost:4000/api").replace(/\/+$/, ""); }
   get frontUrl() { return (this.cfg.get<string>("FRONTEND_URL") || "http://localhost:3000").replace(/\/+$/, ""); }
-  redirectUri(net: Net) { return `${this.apiUrl}/social/connections/callback/${net}`; }
+  redirectUri(net: Net) {
+  const base = this.apiUrl.replace(/\/+$/, "");
+  const apiBase = base.endsWith("/api") ? base : `${base}/api`;
+  return `${apiBase}/social/connections/callback/${net}`;
+}
 
   provider(net: string): Provider {
     if (!NETS.includes(net as Net)) throw new NotFoundException(`Unknown network "${net}"`);
