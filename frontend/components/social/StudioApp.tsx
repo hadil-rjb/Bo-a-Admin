@@ -93,6 +93,7 @@ function StudioSkeleton() {
 export default function StudioApp() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   // Layout effect: the studio is torn down in the same commit that shows the next page
   useLayoutEffect(() => {
@@ -116,7 +117,10 @@ export default function StudioApp() {
       if (cancelled) return;
       destroy = bootStudio({ initialState, persist, user, blogArticles: articles, navigate: (href: string) => router.push(href), api });
       setReady(true);
-    })().catch((e) => console.error("[social] could not start the studio", e));
+    })().catch((e) => {
+      console.error("[social] could not start the studio", e);
+      if (!cancelled) setFailed(true);
+    });
 
     return () => {
       cancelled = true;
@@ -137,7 +141,16 @@ export default function StudioApp() {
       </div>
       <div id="editor" hidden></div>
       <div id="modal-root"></div>
-      {!ready && <StudioSkeleton />}
+      {!ready && !failed && <StudioSkeleton />}
+      {failed && (
+        <div className="boot" role="alert" style={{ display: "grid", placeItems: "center", padding: 24 }}>
+          <div className="widget" style={{ maxWidth: 420, display: "flex", flexDirection: "column", gap: 12, textAlign: "center", alignItems: "center" }}>
+            <b style={{ font: "600 18px var(--jak)" }}>The Social Media workspace couldn’t load</b>
+            <p className="sm-t muted">The server didn’t answer. Check your connection, then try again. Nothing you saved is lost.</p>
+            <button className="btn primary" onClick={() => location.reload()}>Try again</button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
