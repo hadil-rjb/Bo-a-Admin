@@ -1,0 +1,76 @@
+/* ============================================================
+   Design tokens — one source of truth for every workspace.
+   Theme-dependent values switch on <html data-theme="dark|light">.
+   Tailwind utilities (bg-surface, text-text-2, …) map to these in
+   app/globals.css; the studio stylesheet uses them directly.
+   ============================================================ */
+:root {
+  /* brand */
+  --accent: #fd0e35;
+  --accent-2: #ff9aaa;
+  --accent-3: #b33c3e;
+  /* type — one font set (loaded in app/layout.tsx); each workspace keeps its fallback stack,
+     which decides how glyphs missing from Inter (✗, ❝, …) render */
+  --blog-sans: 'Inter', 'Inter Fallback', sans-serif;
+  --blog-display: 'Plus Jakarta Sans', 'Plus Jakarta Sans Fallback', sans-serif;
+  --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;      /* studio */
+  --jak: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;            /* studio */
+  /* status backgrounds and elevation (same in both themes) */
+  --pos-bg: rgba(194, 245, 218, .3);
+  --neg-bg: rgba(255, 192, 197, .34);
+  --shadow-xs: 0 1px 2px 0 rgba(10, 13, 20, .05);
+}
+
+/* Metric-matched local fallbacks for the blog stacks (what next/font generated before the merge) */
+@font-face {
+  font-family: 'Inter Fallback';
+  src: local('Arial');
+  ascent-override: 90.44%;
+  descent-override: 22.52%;
+  line-gap-override: 0%;
+  size-adjust: 107.12%;
+}
+@font-face {
+  font-family: 'Plus Jakarta Sans Fallback';
+  src: local('Arial');
+  ascent-override: 98.88%;
+  descent-override: 21.15%;
+  line-gap-override: 0%;
+  size-adjust: 104.98%;
+}
+
+[data-theme="dark"] {
+  --bg: #0b1220;
+  --surface: #0b1220;
+  --border: #1e293b;
+  --border-soft: #1e293b;
+  --text-1: #f8fafc;
+  --text-2: #94a3b8;
+  --text-3: #64748b;
+  --pill: #1e293b;
+  --icon: rgba(235, 241, 255, .08);
+  --track: #1e293b;
+  --pos: #90d7b2;
+  --neg: #ffbfc5;
+  --canvas: #070c17;
+  --dot: #1b2740;
+  --warn: #fbbf24;
+}
+
+[data-theme="light"] {
+  --bg: #f8fafc;
+  --surface: #fff;
+  --border: #e2e8f0;
+  --border-soft: #eef2f6;
+  --text-1: #0f172a;
+  --text-2: #64748b;
+  --text-3: #94a3b8;
+  --pill: #f1f5f9;
+  --icon: #f1f5f9;
+  --track: #eef1f6;
+  --pos: #1f9d5c;
+  --neg: #e0343f;
+  --canvas: #eef1f6;
+  --dot: #d5dce8;
+  --warn: #d97706;
+}

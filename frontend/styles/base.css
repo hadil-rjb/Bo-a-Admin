@@ -1,0 +1,26 @@
+/* ============================================================
+   Base layer — shared foundation, then what each workspace needs.
+   Sub-layers (lowest → highest):
+     base.reset       Tailwind preflight, Blog Admin only (imported in app/globals.css)
+     base.foundation  shared rules + per-workspace base
+   Workspace rules are scoped with :where([data-ws=…]), which adds no
+   specificity, so every rule keeps its original weight.
+   ============================================================ */
+@layer base.reset, base.foundation;
+
+/* ---------- Shared by every workspace ---------- */
+@layer base.foundation {
+  html, body { margin: 0; max-width: 100%; overflow-x: hidden; }
+  body { background: var(--bg); color: var(--text-1); }
+}
+
+/* ---------- Blog Admin ---------- */
+@layer base.foundation {
+  :where([data-ws="blog"]) body { @apply font-sans antialiased transition-colors duration-200; }
+  /* The blog's type scale tops out at 600: implicit bold (b, strong, th) has always rendered with the
+     600 face. Kept explicit now that the shared font set also ships 700 for the studio. */
+  :where([data-ws="blog"]) :is(b, strong, th) { font-weight: 600; }
+}
+
+/* ---------- Social Media Studio ---------- */
+/* Its base rules (box-sizing, body type, form controls) are part of styles/studio.css. */
