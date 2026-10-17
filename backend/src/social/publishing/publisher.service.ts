@@ -44,7 +44,7 @@ export class PublisherService {
     );
   }
 
-  /** Rendered slides for a post (JPEG). Scheduling a post with images arms it for the scheduler. */
+  /** Rendered slides for a post (sent as PNG, stored as JPEG). Scheduling a post with images arms it for the scheduler. */
   async saveMedia(brandId: string, postId: string, body: { images: string[]; hash?: string; post?: Record<string, any> }) {
     if (body.post) await this.upsertPost(brandId, { ...body.post, id: postId });
     const post = await this.posts.findOne({ brandId, id: postId }).lean<Record<string, any>>();
@@ -55,7 +55,9 @@ export class PublisherService {
       const m = DATA_URL.exec(url);
       if (!m) throw new BadRequestException("Expected PNG or JPEG data URLs");
       const img = sharp(Buffer.from(m[2], "base64")).flatten({ background: "#ffffff" });
-      const { data, info } = await img.jpeg({ quality: 90, mozjpeg: true }).toBuffer({ resolveWithObject: true });
+      // The studio sends lossless PNGs: encode once, with full-resolution colour (4:4:4) so thin coloured
+      // text and brand colours stay crisp instead of bleeding as with the default 4:2:0 subsampling.
+      const { data, info } = await img.jpeg({ quality: 92, mozjpeg: true, chromaSubsampling: "4:4:4" }).toBuffer({ resolveWithObject: true });
       docs.push({ brandId, postId, index, data, mime: "image/jpeg", width: info.width, height: info.height });
     }
     await this.media.deleteMany({ brandId, postId });

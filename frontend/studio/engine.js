@@ -294,7 +294,7 @@ function readImage(file, max, cb) {
   r.onload = () => {
     if (/svg/.test(file.type)) { cb(r.result, 0, 0); return; }
     const im = new Image();
-    im.onload = () => { const k = Math.min(1, max / Math.max(im.width, im.height)), w = Math.round(im.width * k), h = Math.round(im.height * k), c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(im, 0, 0, w, h); cb(c.toDataURL(file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png', 0.88), w, h); };
+    im.onload = () => { const k = Math.min(1, max / Math.max(im.width, im.height)), w = Math.round(im.width * k), h = Math.round(im.height * k), c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(im, 0, 0, w, h); cb(c.toDataURL(file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png', 0.92), w, h); };
     im.onerror = () => toast('Could not read this image'); im.src = r.result;
   };
   r.readAsDataURL(file);
@@ -349,6 +349,20 @@ TPL.blank = { name: 'Blank', cat: 'Basics', fn: (w, h) => [BG(w, h, '#ffffff')] 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const iso = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+/* Scheduling time zone: Settings → Export & publishing → Time zone (the API publishes in the same zone), else this browser's */
+const tzValid = (tz) => { try { return !!tz && !!new Intl.DateTimeFormat('en', { timeZone: tz }); } catch (e) { return false; } };
+const schedTz = () => (tzValid(S.set && S.set.tz) ? S.set.tz : Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+/** Wall-clock parts of an instant in a time zone */
+const tzParts = (ts, tz) => { const o = {}; new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(ts)).forEach((p) => (o[p.type] = p.value)); return o; };
+/** "YYYY-MM-DD" + "HH:mm" in a time zone → Date (same algorithm as the API's zonedToUtc) */
+function zonedToUtc(date, time, tz) {
+  const [y, mo, d] = date.split('-').map(Number), [h, mi] = (time || '00:00').split(':').map(Number), wall = Date.UTC(y, mo - 1, d, h, mi);
+  const off = (ts) => { const p = tzParts(ts, tz); return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - Math.floor(ts / 1000) * 1000; };
+  let t = wall; for (let i = 0; i < 2; i++) t = wall - off(t); return new Date(t);
+}
+/** Today's date and the current time in the scheduling time zone */
+const nowIn = (tz) => { const p = tzParts(Date.now(), tz); return { date: `${p.year}-${p.month}-${p.day}`, time: `${String(+p.hour % 24).padStart(2, '0')}:${p.minute}` }; };
+const tzLabel = (tz) => { try { const n = new Intl.DateTimeFormat('en', { timeZone: tz, timeZoneName: 'shortOffset' }).formatToParts(new Date()).find((x) => x.type === 'timeZoneName'); return tz.replace(/_/g, ' ') + (n ? ` (${n.value})` : ''); } catch (e) { return tz; } };
 const addD = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
 const monday = (d) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
 const fmt = (d, o) => d.toLocaleDateString('en', o);
@@ -846,12 +860,12 @@ document.addEventListener('change', (e) => {
   if (d.bf) { brand().fonts[d.bf] = t.value; save(); rerender(); }
   if (t.id === 'logoUp' && t.files.length) {
     const kind = $('#logoKind').value, files = [...t.files]; let n = 0;
-    files.forEach((f) => readImage(f, 800, (src) => { brand().logos.push({ id: 'l' + uid(), name: f.name.replace(/\.[^.]+$/, '').slice(0, 24), kind, src }); if (++n === files.length) { save(); refreshChrome(); rerender(); toast(n + (n > 1 ? ' logos added' : ' logo added')); } }));
+    files.forEach((f) => readImage(f, 1600, (src) => { brand().logos.push({ id: 'l' + uid(), name: f.name.replace(/\.[^.]+$/, '').slice(0, 24), kind, src }); if (++n === files.length) { save(); refreshChrome(); rerender(); toast(n + (n > 1 ? ' logos added' : ' logo added')); } }));
     t.value = '';
   }
   if (t.id === 'assetUp' && t.files.length) {
     const files = [...t.files]; let n = 0;
-    files.forEach((f) => readImage(f, 1200, (src, w, h) => { brand().assets.push({ id: 'a' + uid(), name: f.name.replace(/\.[^.]+$/, '').slice(0, 24), src, w, h }); if (++n === files.length) { save(); rerender(); toast(n + (n > 1 ? ' images added' : ' image added')); } }));
+    files.forEach((f) => readImage(f, 2400, (src, w, h) => { brand().assets.push({ id: 'a' + uid(), name: f.name.replace(/\.[^.]+$/, '').slice(0, 24), src, w, h }); if (++n === files.length) { save(); rerender(); toast(n + (n > 1 ? ' images added' : ' image added')); } }));
     t.value = '';
   }
 });
@@ -919,7 +933,7 @@ const SP = {
       fld('Caption language', dd('b:lang', brand().lang || 'English', ['English', 'French', 'Spanish', 'German', 'Arabic', 'Italian', 'Portuguese'].map((l) => [l, l])), {})) +
     acts(`<button class="btn primary" data-act="saveSet">Use ${nm} and save settings</button>`, 1); },
   export: () => phead('Export & publishing', 'Defaults used by the Export button and the Schedule dialog.') +
-    fgrid(fld('Format', dd('fmt', S.set.fmt, [['PNG', 'PNG'], ['JPG', 'JPG'], ['PDF', 'PDF (carousel)']])) + fld('Quality', dd('quality', S.set.quality, [['1x', '1× (the design’s size)'], ['2x', '2× (double size)']])) +
+    fgrid(fld('Format', dd('fmt', S.set.fmt, [['PNG', 'PNG (lossless)'], ['JPG', 'JPG (smaller file)'], ['PDF', 'PDF (carousel document)']])) + fld('Quality', dd('quality', S.set.quality, [['1x', '1× (the design’s size)'], ['2x', '2× (sharp on high-density screens)'], ['3x', '3× (print and large displays)']])) +
       fld('Languages', dd('exLang', S.set.exLang, [['English only', 'English only'], ['Arabic only', 'Arabic only'], ['English + Arabic', 'English + Arabic (auto-translate)']])) + fld('Time zone', `<input class="inp" data-s="tz" value="${esc(S.set.tz)}">`, { hint: 'Scheduled posts go out in this time zone.' })) +
     `<div class="swlist">${swRow('Check safe zones before export', 'Warn when text sits under the profile bar or the reply bar of a story.', 'safe')}${swRow('Create every ratio automatically', 'Export 1:1, 4:5 and 9:16 from one design with Magic resize.', 'auto')}</div>` +
     acts(`<button class="btn primary" data-act="saveSet">Save export settings</button>`, 1),
@@ -2032,49 +2046,168 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
   });
   addEventListener('keyup', (e) => { if (e.code === 'Space' && ED.space) { ED.space = 0; const s = $('#edScroll'); s && s.classList.remove('pan'); } });
 
-  /* ---- real export (PNG / JPG) with embedded fonts ---- */
-  async function fontCSS(pg) {
-    const used = new Set(); pg.layers.forEach((l) => isT(l) && used.add(l.font + '|' + l.weight));
-    const key = [...used].sort().join(); fontCSS.c = fontCSS.c || {}; if (key in fontCSS.c) return fontCSS.c[key]; let out = '';
-    try {
-      for (const lk of $$('link[href*="fonts.googleapis.com/css"]')) {
-        const parts = (await (await fetch(lk.href)).text()).split('@font-face');
-        for (let j = 1; j < parts.length; j++) {
-          const sub = (parts[j - 1].match(/\/\*\s*([\w-]+)\s*\*\/\s*$/) || [])[1], b = parts[j];
-          const fam = (b.match(/font-family:\s*'?([^';]+)/) || [])[1], wt = (b.match(/font-weight:\s*(\d+)/) || [])[1];
-          if (!used.has(fam + '|' + wt) || !/^(latin|latin-ext|arabic)$/.test(sub)) continue;
-          let blk = '@font-face' + b.replace(/\/\*[^]*$/, ''); const u = (blk.match(/url\((https:[^)]+)\)/) || [])[1];
-          if (u) { const bl = await (await fetch(u)).blob(), d = await new Promise((r) => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(bl); }); blk = blk.replace(u, d); }
-          out += blk;
-        }
-      }
-    } catch (e) { /* offline: export falls back to system fonts */ }
-    return (fontCSS.c[key] = out);
+  /* ---- real export (PNG / JPG / PDF): the exact canvas, at the chosen resolution ----
+     The slide is laid out with the editor's own markup (posterHTML) inside an SVG foreignObject.
+     So that the file matches the canvas pixel for pixel:
+     - every face of each font family the slide uses is embedded (mixed-style runs and nearest-weight
+       matching resolve exactly like on the canvas), limited to the subsets its characters need;
+     - images referenced by URL (uploads, Figma, media API, blob:) are inlined, since an SVG image
+       can't load anything external;
+     - the slide is laid out at its real size and scaled as vectors, so 2× and 3× stay sharp. */
+  const EXPORT_BASE = '*{box-sizing:border-box;min-width:0;margin:0}.ly{position:absolute;transform-origin:center;white-space:pre-wrap;word-break:break-word}';
+  const fetchCache = new Map();
+  const asDataUrl = (url) => {
+    if (!fetchCache.has(url)) fetchCache.set(url, fetch(url).then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+      .then((b) => new Promise((ok, no) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = no; f.readAsDataURL(b); }))
+      .catch((e) => { fetchCache.delete(url); throw e; }));
+    return fetchCache.get(url);
+  };
+  /** url(…) pointing outside the document (http, relative, blob) → data URL */
+  async function inlineUrls(html) {
+    const found = new Set(); html.replace(/url\((&quot;|["']?)(?!data:)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => { found.add(u.trim()); return m; });
+    if (!found.size) return html;
+    const map = new Map(await Promise.all([...found].map(async (u) => { try { return [u, await asDataUrl(new URL(u, location.href).href)]; } catch (e) { return [u, u]; } })));
+    return html.replace(/url\((&quot;|["']?)(?!data:)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => `url(${q}${map.get(u.trim()) || u}${q})`);
   }
+  /** Parsed @font-face rules of the Google Fonts stylesheets on the page (base set + fonts loaded by the editor) */
+  const faceCache = new Map();
+  const parseRange = (v) => (v ? v.split(',').map((x) => { const [a, b] = x.trim().replace(/^U\+/i, '').split('-'); const lo = parseInt(a.replace(/\?/g, '0'), 16); return [lo, b ? parseInt(b, 16) : parseInt(a.replace(/\?/g, 'F'), 16)]; }) : null);
+  function parseFaces(css) {
+    return [...css.matchAll(/@font-face\s*\{([^}]*)\}/g)].map((m) => {
+      const b = m[1], url = (b.match(/url\((https:[^)]+)\)/) || [])[1];
+      return { fam: ((b.match(/font-family:\s*['"]?([^;'"]+)/) || [])[1] || '').trim(), url, range: parseRange((b.match(/unicode-range:\s*([^;]+)/) || [])[1]), block: '@font-face{' + b + '}' };
+    }).filter((f) => f.fam && f.url);
+  }
+  async function pageFaces() {
+    const hrefs = [...new Set($$('link[href*="fonts.googleapis.com/css"]').map((l) => l.href))];
+    return (await Promise.all(hrefs.map((h) => {
+      if (!faceCache.has(h)) faceCache.set(h, fetch(h).then((r) => r.text()).then(parseFaces).catch(() => { faceCache.delete(h); return []; }));
+      return faceCache.get(h);
+    }))).flat();
+  }
+  /** @font-face rules (fonts as data URLs) for the families and characters used in `html` */
+  async function fontCSS(html) {
+    const fams = new Set([...html.matchAll(/font(?:-family)?:[^;"]*?'([^']+)'/g)].map((m) => m[1]));
+    if (!fams.size) return '';
+    const box = document.createElement('div'); box.innerHTML = html;
+    const cps = new Set([...(box.textContent || '')].map((c) => c.codePointAt(0)));
+    const hit = (range) => !range || [...cps].some((c) => range.some(([lo, hi]) => c >= lo && c <= hi));
+    const faces = (await pageFaces()).filter((f) => fams.has(f.fam) && hit(f.range));
+    const blocks = await Promise.all(faces.map(async (f) => { try { return f.block.replace(f.url, await asDataUrl(f.url)); } catch (e) { return f.block; } }));
+    return blocks.join('');
+  }
+  /** Largest scale the browser can rasterize for this canvas (canvas area / side limits) */
+  const maxScale = (w, h) => Math.max(0.1, Math.min(16384 / w, 16384 / h, Math.sqrt(64e6 / (w * h))));
+  /** Renders slide i of design d to a canvas at scale s */
+  async function renderCanvas(d, i, s, opaque) {
+    const pg = d.pages[i], [w, h] = RATIOS[d.ratio]; await fxReady(pg);
+    s = Math.min(s, maxScale(w, h));
+    const W = Math.round(w * s), H = Math.round(h * s);
+    const body = await inlineUrls(posterHTML(pg)), bg = await inlineUrls(String(pg.bg || 'transparent')), css = await fontCSS(body);
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><foreignObject x="0" y="0" width="${W}" height="${H}"><div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;isolation:isolate;width:${w}px;height:${h}px;overflow:hidden;background:${esc(bg)};transform:scale(${s});transform-origin:0 0;-webkit-font-smoothing:antialiased"><style>${EXPORT_BASE}${css}</style>${body}</div></foreignObject></svg>`;
+    // a data: URL, not a blob: one: Chrome taints the canvas for foreignObject SVGs loaded from blob URLs
+    const img = new Image(); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    await img.decode();
+    // let embedded fonts settle before the first paint (timer fallback: frames don't run in a background tab)
+    await new Promise((r) => { let t = 0; const go = () => { if (!t) { t = 1; r(); } }; requestAnimationFrame(go); setTimeout(go, 60); });
+    const c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d');
+    if (opaque) { x.fillStyle = '#ffffff'; x.fillRect(0, 0, W, H); }
+    x.drawImage(img, 0, 0, W, H);
+    return c;
+  }
+  const toBlob = (c, type, q) => new Promise((r, j) => c.toBlob((b) => (b ? r(b) : j(new Error('The browser could not encode the image'))), type, q));
+  /** One slide as an image Blob. 'png' is lossless; 'jpeg' uses quality 0.95 */
   async function renderBlob(d, i, s, fmt) {
-    const pg = d.pages[i], [w, h] = RATIOS[d.ratio], css = await fontCSS(pg); await fxReady(pg);
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w * s}" height="${h * s}" viewBox="0 0 ${w} ${h}"><foreignObject width="${w}" height="${h}"><div xmlns="http://www.w3.org/1999/xhtml" style="position:relative;isolation:isolate;width:${w}px;height:${h}px;overflow:hidden;background:${pg.bg}"><style>.ly{position:absolute;transform-origin:center;white-space:pre-wrap;word-break:break-word}${css}</style>${posterHTML(pg)}</div></foreignObject></svg>`;
-    const img = new Image(); img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg); await img.decode();
-    const c = document.createElement('canvas'); c.width = w * s; c.height = h * s; const x = c.getContext('2d');
-    if (fmt === 'jpeg') { x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); } x.drawImage(img, 0, 0, c.width, c.height);
-    return new Promise((r) => c.toBlob(r, 'image/' + fmt, 0.92));
+    const c = await renderCanvas(d, i, s, fmt === 'jpeg');
+    return toBlob(c, 'image/' + fmt, fmt === 'jpeg' ? 0.95 : undefined);
   }
   renderSlide = renderBlob;
-  async function exportPage(d, i, s, fmt) {
-    const b = await renderBlob(d, i, s, fmt), a = document.createElement('a');
-    a.href = URL.createObjectURL(b); a.download = (d.name || 'design').replace(/[^\w-]+/g, '-') + (d.pages.length > 1 ? '-' + (i + 1) : '') + (fmt === 'png' ? '.png' : '.jpg'); a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+
+  /* ---- files: ZIP (several slides in one download) and PDF (carousel document) ---- */
+  const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = (u8) => { let c = 0xffffffff; for (let i = 0; i < u8.length; i++) c = CRC[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  /** Uncompressed ZIP (images are already compressed) */
+  function zipStore(files) {
+    const enc = new TextEncoder(), parts = [], dir = []; let off = 0;
+    const now = new Date(), dt = ((now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1)) & 0xffff, dd = (((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate()) & 0xffff;
+    files.forEach(({ name, data }) => {
+      const nm = enc.encode(name), crc = crc32(data), h = new DataView(new ArrayBuffer(30));
+      [[0, 0x04034b50, 4], [4, 20, 2], [6, 0x0800, 2], [8, 0, 2], [10, dt, 2], [12, dd, 2], [14, crc, 4], [18, data.length, 4], [22, data.length, 4], [26, nm.length, 2], [28, 0, 2]].forEach(([o, v, n]) => (n === 4 ? h.setUint32(o, v, true) : h.setUint16(o, v, true)));
+      const c = new DataView(new ArrayBuffer(46));
+      [[0, 0x02014b50, 4], [4, 20, 2], [6, 20, 2], [8, 0x0800, 2], [10, 0, 2], [12, dt, 2], [14, dd, 2], [16, crc, 4], [20, data.length, 4], [24, data.length, 4], [28, nm.length, 2], [30, 0, 2], [32, 0, 2], [34, 0, 2], [36, 0, 2], [38, 0, 4], [42, off, 4]].forEach(([o, v, n]) => (n === 4 ? c.setUint32(o, v, true) : c.setUint16(o, v, true)));
+      parts.push(new Uint8Array(h.buffer), nm, data); dir.push(new Uint8Array(c.buffer), nm); off += 30 + nm.length + data.length;
+    });
+    const size = dir.reduce((a, b) => a + b.length, 0), e = new DataView(new ArrayBuffer(22));
+    [[0, 0x06054b50, 4], [4, 0, 2], [6, 0, 2], [8, files.length, 2], [10, files.length, 2], [12, size, 4], [16, off, 4], [20, 0, 2]].forEach(([o, v, n]) => (n === 4 ? e.setUint32(o, v, true) : e.setUint16(o, v, true)));
+    return new Blob([...parts, ...dir, new Uint8Array(e.buffer)], { type: 'application/zip' });
   }
+  /** PDF with one full-bleed JPEG per page (page size = the design's size, 1 px = 0.75 pt) */
+  function pdfFromJpegs(pages) {
+    const enc = new TextEncoder(), chunks = [], offs = []; let len = 0;
+    const put = (x) => { const u = typeof x === 'string' ? enc.encode(x) : x; chunks.push(u); len += u.length; };
+    const obj = (n, body, stream) => { offs[n] = len; put(`${n} 0 obj\n${body}\n`); if (stream) { put('stream\n'); put(stream); put('\nendstream\n'); } put('endobj\n'); };
+    put('%PDF-1.4\n'); put(new Uint8Array([37, 226, 227, 207, 211, 10])); // binary marker comment
+    const n = pages.length, kids = pages.map((_, i) => `${3 + i * 3} 0 R`).join(' ');
+    obj(1, '<< /Type /Catalog /Pages 2 0 R >>');
+    obj(2, `<< /Type /Pages /Kids [${kids}] /Count ${n} >>`);
+    pages.forEach((p, i) => {
+      const o = 3 + i * 3, pw = +(p.w * 0.75).toFixed(2), ph = +(p.h * 0.75).toFixed(2), draw = `q ${pw} 0 0 ${ph} 0 0 cm /Im0 Do Q`;
+      obj(o, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] /Resources << /XObject << /Im0 ${o + 2} 0 R >> >> /Contents ${o + 1} 0 R >>`);
+      obj(o + 1, `<< /Length ${draw.length} >>`, enc.encode(draw));
+      obj(o + 2, `<< /Type /XObject /Subtype /Image /Width ${p.pxW} /Height ${p.pxH} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${p.data.length} >>`, p.data);
+    });
+    const xref = len, total = 3 + n * 3;
+    put(`xref\n0 ${total}\n0000000000 65535 f \n` + offs.slice(1, total).map((o) => String(o).padStart(10, '0') + ' 00000 n \n').join(''));
+    put(`trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+    return new Blob(chunks, { type: 'application/pdf' });
+  }
+  const fileBase = (d) => (d.name || 'design').trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60) || 'design';
+  function download(blob, name) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  }
+  const bytes = async (b) => new Uint8Array(await b.arrayBuffer());
+  /** Renders and downloads; `onStep(i, n)` reports progress. Several images are zipped into one file. */
+  async function runExport(d, pgs, s, fmt, onStep) {
+    const [w, h] = RATIOS[d.ratio], base = fileBase(d), multi = pgs.length > 1, ext = fmt === 'png' ? 'png' : 'jpg';
+    const out = [];
+    for (const [k, i] of pgs.entries()) {
+      onStep(k, pgs.length);
+      if (fmt === 'pdf') { const c = await renderCanvas(d, i, s, true); out.push({ data: await bytes(await toBlob(c, 'image/jpeg', 0.95)), w, h, pxW: c.width, pxH: c.height }); }
+      else out.push({ name: `${base}${multi || d.pages.length > 1 ? '-' + String(i + 1).padStart(2, '0') : ''}.${ext}`, blob: await renderBlob(d, i, s, fmt) });
+    }
+    if (fmt === 'pdf') return download(pdfFromJpegs(out), base + '.pdf');
+    if (!multi) return download(out[0].blob, out[0].name);
+    download(zipStore(await Promise.all(out.map(async (f) => ({ name: f.name, data: await bytes(f.blob) })))), base + '.zip');
+  }
+  const FMT_KEY = { PNG: 'png', JPG: 'jpeg', PDF: 'pdf' }, FMT_SET = { png: 'PNG', jpeg: 'JPG', pdf: 'PDF' };
   openExport = function (d, pi) {
-    const n = d.pages.length, [w] = RATIOS[d.ratio];
-    modal(`<div class="mh"><h2>Export</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
-    <div class="mb"><div class="g2f"><label class="lab">Format<select class="field" id="exF"><option value="png">PNG</option><option value="jpeg">JPG</option></select></label><label class="lab">Size<select class="field" id="exS"><option value="1">1× · ${w} px</option><option value="2">2× · ${w * 2} px</option></select></label></div>
-    <label class="lab">Pages<select class="field" id="exP"><option value="cur">Current slide (${pi + 1})</option>${n > 1 ? `<option value="all">All ${n} slides</option>` : ''}</select></label><p class="xs-t muted" id="exM">Fonts are embedded so the file matches the canvas.</p></div>
+    const n = d.pages.length, [w, h] = RATIOS[d.ratio], top = Math.floor(maxScale(w, h) * 10) / 10;
+    const scales = [1, 2, 3].filter((x) => x <= top).concat(top < 1 ? [top] : []);
+    const defS = Math.min(parseFloat(S.set.quality) || 2, scales[scales.length - 1]), defF = FMT_KEY[S.set.fmt] || 'png';
+    const fmtOpt = (v, l) => `<option value="${v}" ${v === defF ? 'selected' : ''}>${l}</option>`;
+    modal(`<div class="mh"><h2>Export</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[pi], d.ratio, 96, 120)}<div class="grow" style="display:flex;flex-direction:column;gap:12px">
+      <div class="g2f"><label class="lab">Format<select class="field" id="exF">${fmtOpt('png', 'PNG · lossless')}${fmtOpt('jpeg', 'JPG · smaller file')}${fmtOpt('pdf', 'PDF · document')}</select></label>
+      <label class="lab">Size<select class="field" id="exS">${scales.map((x) => `<option value="${x}" ${x === defS ? 'selected' : ''}>${x}× · ${Math.round(w * x)} × ${Math.round(h * x)} px</option>`).join('')}</select></label></div>
+      <label class="lab">Slides<select class="field" id="exP"><option value="cur">Current slide (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} slides</option>` : ''}</select></label></div></div>
+      <p class="xs-t muted" id="exM">Same layout, fonts and images as the canvas.</p></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="exGo">${ic('download', 18)}Download</button></div>`, {
-      onMount: (bg, close) => bg.addEventListener('click', async (e) => {
-        const go = e.target.closest('#exGo'); if (!go || go.disabled) return; go.disabled = true; $('#exM', bg).textContent = 'Rendering…';
-        try { const f = $('#exF', bg).value, s = +$('#exS', bg).value, pgs = $('#exP', bg).value === 'all' ? d.pages.map((p, i) => i) : [pi]; for (const i of pgs) { await exportPage(d, i, s, f); await agSleep(250); } close(); toast('Exported ' + pgs.length + ' file' + (pgs.length > 1 ? 's' : '')); }
-        catch (x) { go.disabled = false; $('#exM', bg).textContent = 'Export failed in this browser. Try Chrome or Edge.'; }
-      }),
+      onMount: (bg, close) => {
+        const hint = () => { const f = $('#exF', bg).value, all = $('#exP', bg).value === 'all' && n > 1; $('#exM', bg).textContent = f === 'pdf' ? `One PDF${all ? ` with ${n} pages` : ''}, ready for LinkedIn documents and print.` : all ? `${n} ${f === 'png' ? 'PNG' : 'JPG'} files in one ZIP, numbered in slide order.` : 'Same layout, fonts and images as the canvas.'; };
+        bg.addEventListener('change', hint); hint();
+        bg.addEventListener('click', async (e) => {
+          const go = e.target.closest('#exGo'); if (!go || go.disabled) return;
+          const f = $('#exF', bg).value, s = +$('#exS', bg).value, pgs = $('#exP', bg).value === 'all' ? d.pages.map((p, i) => i) : [pi];
+          S.set.fmt = FMT_SET[f]; S.set.quality = s + 'x'; save();
+          busy(go, true, 'Rendering…');
+          try {
+            await runExport(d, pgs, s, f, (k, t) => { $('#exM', bg).textContent = t > 1 ? `Rendering slide ${k + 1} of ${t}…` : 'Rendering…'; });
+            close(); toast(f === 'pdf' ? 'PDF downloaded' : pgs.length > 1 ? `${pgs.length} slides downloaded as a ZIP` : 'Image downloaded');
+          } catch (x) { busy(go, false); $('#exM', bg).textContent = 'Export failed: ' + String((x && x.message) || 'this browser could not render the design').replace(/\.$/, '') + '. Try Chrome, Edge or Firefox.'; }
+        });
+      },
     });
   };
 
@@ -2690,7 +2823,7 @@ Object.assign(IC, {
     pnew: (a) => openSchedule(null, { date: a && a.dataset && a.dataset.date, time: a && a.dataset && a.dataset.time }),
     pnewd: (a) => openSchedule(getD(a.dataset.id), {}),
     pedit: (a) => { const p = S.posts.find((x) => x.id === a.dataset.id); p && openSchedule(getD(p.d), { post: p }); },
-    pdup: (a) => { const p = S.posts.find((x) => x.id === a.dataset.id); if (!p) return; const c = { ...clone(p), id: 'p' + uid(), status: 'Draft' }; S.posts.push(c); save(); toastU('Duplicated as a draft', () => { S.posts.splice(S.posts.indexOf(c), 1); save(); route(); }); route(); },
+    pdup: (a) => { const p = S.posts.find((x) => x.id === a.dataset.id); if (!p) return; const { publish: _pub, media: _media, ...rest } = clone(p), c = { ...rest, id: 'p' + uid(), status: 'Draft' }; S.posts.push(c); save(); toastU('Duplicated as a draft', () => { S.posts.splice(S.posts.indexOf(c), 1); save(); route(); }); route(); },
     pdel: (a) => { const i = S.posts.findIndex((x) => x.id === a.dataset.id); if (i < 0) return; const [p] = S.posts.splice(i, 1); save(); toastU('Post deleted', () => { S.posts.splice(Math.min(i, S.posts.length), 0, p); save(); route(); }); route(); },
     pnow: (a) => { const p = S.posts.find((x) => x.id === a.dataset.id); if (p) PUB.publishNow(p); },
   });
@@ -2704,7 +2837,11 @@ Object.assign(IC, {
     const day = e.target.closest && e.target.closest('.day'); if (!day || !day.dataset.date) return; const v = e.dataTransfer.getData('text/plain'); if (!v) return;
     e.preventDefault(); e.stopImmediatePropagation(); $$('.day.over').forEach((x) => x.classList.remove('over')); const k = day.dataset.date;
     if (v.startsWith('post:')) {
-      const p = S.posts.find((x) => x.id === v.slice(5)); if (!p || p.date === k) return; const old = p.date; p.date = k; if (p.status === 'Published') p.status = 'Scheduled'; save();
+      const p = S.posts.find((x) => x.id === v.slice(5)); if (!p || p.date === k) return;
+      // a published post already went out: moving it would not publish it again, so don't pretend it does
+      if (p.status === 'Published' || (p.publish && ['published', 'partial', 'publishing'].includes(p.publish.state))) return toast('Published posts can’t be moved. Duplicate the design to post it again.');
+      if (p.status === 'Scheduled' && zonedToUtc(k, p.time, tzValid(p.tz) ? p.tz : schedTz()) < new Date()) return toast(`${dlabel(k)} at ${p.time} is in the past. Pick a later day.`);
+      const old = p.date; p.date = k; save();
       toastU('Moved to ' + dlabel(k) + ' at ' + p.time, () => { p.date = old; save(); route(); }); route();
     } else { const d = getD(v); d && openSchedule(d, { date: k }); }
   }, true);
@@ -2814,9 +2951,9 @@ Object.assign(IC, {
       }
       function drawWhen() {
         R('cMode').innerHTML = `<button class="${!st.now ? 'on' : ''}" data-c="mode" data-m="s">Schedule</button><button class="${st.now ? 'on' : ''}" data-c="mode" data-m="n">Publish now</button>`;
-        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '', off = -new Date().getTimezoneOffset() / 60; R('cTz').textContent = st.now ? 'Goes out as soon as you confirm.' : `Times are in ${tz.replace(/_/g, ' ')} (GMT${off >= 0 ? '+' : ''}${off}).`;
+        R('cTz').textContent = st.now ? 'Goes out as soon as you confirm.' : `Times are in ${tzLabel(schedTz())}, the workspace time zone (Settings → Export & publishing).`;
         R('cWhen').hidden = st.now; if (st.now) return; R('cD').value = st.date; R('cT').value = st.time;
-        R('cQD').innerHTML = [['Today', iso(new Date())], ['Tomorrow', tomorrow], ['Next Mon', iso(monday(addD(new Date(), 7)))]].map(([l, k]) => `<button class="chip ${st.date === k ? 'on' : ''}" data-c="qd" data-k="${k}">${l}</button>`).join('');
+        R('cQD').innerHTML = [['Today', nowIn(schedTz()).date], ['Tomorrow', tomorrow], ['Next Mon', iso(monday(addD(new Date(), 7)))]].map(([l, k]) => `<button class="chip ${st.date === k ? 'on' : ''}" data-c="qd" data-k="${k}">${l}</button>`).join('');
         const bt = bestTimes(nets(), st.date, 3); R('cBT').innerHTML = `<span class="label" style="margin:0 0 6px">Best times on ${fmt(dparse(st.date), { weekday: 'long' })}</span><div class="chips">${bt.map((b) => `<button class="chip bt7 ${st.time === b.t ? 'on' : ''}" data-c="bt" data-t="${b.t}"><b>${b.t}</b><small>${level(b.s)}</small></button>`).join('')}</div>`;
       }
       function checks() {
@@ -2830,7 +2967,7 @@ Object.assign(IC, {
         if (st.d && st.d.ratio === '9:16' && st.pf.has('ig')) out.push(['warn', 'Instagram: 9:16 publishes as a Story, and Stories do not show captions']);
         if (st.link && st.pf.has('ig')) out.push(['warn', 'Links in Instagram captions are not clickable. Use link in bio']);
         if (!st.now && st.d) {
-          if (!st.date || !st.time) out.push(['err', 'Pick a date and time']); else if (w < now) out.push(['err', 'This time is in the past']);
+          if (!st.date || !st.time) out.push(['err', 'Pick a date and time']); else if (zonedToUtc(st.date, st.time, schedTz()) < now) out.push(['err', 'This time is in the past']);
           else { ns.forEach((n) => { const same = S.posts.filter((p) => p !== ed && p.date === k && p.pf.includes(n)), near = same.find((p) => Math.abs(tmin(p.time) - tmin(tm)) < 60); if (near) out.push(['warn', `${PLATFORMS[n].n} already has a post at ${near.time} that day`]); else if (same.length >= 2) out.push(['warn', `That is the ${same.length + 1}rd post on ${PLATFORMS[n].n} that day`]); });
             if (ns.length && nsc(ns, w.getDay(), w.getHours() + w.getMinutes() / 60) > .72) out.push(['ok', 'High-engagement time for your networks']); }
         }
@@ -2865,8 +3002,8 @@ Object.assign(IC, {
         setCap(t.trim()); toast('Caption written in your brand voice');
       }
       function commit(kind) {
-        const d = st.d; if (!d) return; const n = new Date(), status = kind === 'draft' ? 'Draft' : 'Scheduled';
-        const rec = { d: d.id, date: kind === 'now' ? iso(n) : st.date || tomorrow, time: kind === 'now' ? pad(n.getHours()) + ':' + pad(n.getMinutes()) : st.time || '09:00', pf: nets(), status, cap: st.cap, caps: Object.fromEntries(Object.entries(st.caps).filter(([k]) => st.pf.has(k))), fc: st.fc, link: st.link, utm: st.utm, tz: Intl.DateTimeFormat().resolvedOptions().timeZone };
+        const d = st.d; if (!d) return; const tz = schedTz(), n = nowIn(tz), status = kind === 'draft' ? 'Draft' : 'Scheduled';
+        const rec = { d: d.id, date: kind === 'now' ? n.date : st.date || tomorrow, time: kind === 'now' ? n.time : st.time || '09:00', pf: nets(), status, cap: st.cap, caps: Object.fromEntries(Object.entries(st.caps).filter(([k]) => st.pf.has(k))), fc: st.fc, link: st.link, utm: st.utm, tz };
         const post = ed ? Object.assign(ed, rec) : S.posts[S.posts.push({ id: 'p' + uid(), ...rec }) - 1]; if (kind === 'schedule') d.status = status; save(); close();
         // publishing goes through the API: "now" sends it right away, "schedule" uploads the rendered slides for the scheduler
         if (kind === 'now') PUB.publishNow(post);
@@ -4375,7 +4512,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const designHash = (d) => fnv(d.ratio + JSON.stringify(d.pages.map((p) => [p.bg, p.layers])));
   const toDataUrl = (blob) => new Promise((r) => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(blob); });
   const plain = (p) => { const { publish, media, ...rest } = p; return JSON.parse(JSON.stringify(rest)); };
-  async function render(d) { const [w, h] = RATIOS[d.ratio], sc = Math.min(1, 2160 / Math.max(w, h)), out = []; for (let i = 0; i < d.pages.length; i++) out.push(await toDataUrl(await renderSlide(d, i, sc, 'jpeg'))); return out; }
+  /** Slides for publishing: lossless PNG at the design's size (at most 2160 px), the API encodes the JPEG once */
+  async function render(d) { const [w, h] = RATIOS[d.ratio], sc = Math.min(1, 2160 / Math.max(w, h)), out = []; for (let i = 0; i < d.pages.length; i++) out.push(await toDataUrl(await renderSlide(d, i, sc, 'png'))); return out; }
   function merge(st) {
     const p = S.posts.find((x) => x.id === st.id); if (!p) return false;
     const before = JSON.stringify([p.status, p.publish, p.media]);
@@ -4388,7 +4526,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const state = st.publish && st.publish.state;
     return state === 'published' ? `Published to ${ok.join(', ')}` : state === 'partial' ? `Published to ${ok.join(', ')}. ${bad.join(', ')} failed: open the post to see why` : `Publishing failed${st.publish && st.publish.lastError ? ': ' + st.publish.lastError : ''}`;
   };
-  const busy = new Set();
+  const busy = new Set(), unready = new Set();
   PUB = {
     /** Scheduled post: upload its slides so the API can publish it on time, even with the studio closed */
     async prepare(post) {
@@ -4413,6 +4551,10 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       let changed = false; list.forEach((st) => { changed = merge(st) || changed; });
       if (changed) { save(); refreshViews(); }
       S.posts.filter((p) => p.status === 'Scheduled' && p.media && p.publish && p.publish.state === 'pending').forEach((p) => { const d = getD(p.d); if (d && p.media.hash && p.media.hash !== designHash(d)) PUB.prepare(p); });
+      // scheduled posts without rendered slides (created before the API had them, or a failed upload): render once per session
+      if (persist.readOnly) return;
+      S.posts.filter((p) => p.status === 'Scheduled' && !p.media && !unready.has(p.id) && p.pf && p.pf.length && zonedToUtc(p.date, p.time || '09:00', tzValid(p.tz) ? p.tz : schedTz()) > new Date())
+        .forEach((p) => { unready.add(p.id); PUB.prepare(p); });
     },
   };
 
@@ -4468,6 +4610,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   polledBrand = S.active; setTimeout(() => PUB.poll(), 1500);
   setInterval(() => PUB.poll(), 20000);
 })();
+
+/* ============ first paint, with every renderer installed ============ */
+/* The page was first drawn halfway through boot, before the later sections replaced textHTML / lstyle
+   (mixed text runs, text effects, image adjustments, Google Fonts…). Draw it again so the canvas,
+   thumbnails and exports all use the same renderer, also when the editor is opened from a link or a reload. */
+renderSide(); route();
 
 /* ============ unmount ============ */
 const destroy = () => {
