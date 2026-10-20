@@ -22,6 +22,7 @@ import { FigmaService } from "./figma/figma.service";
 import { AiModule } from "../ai/ai.module";
 import { CalendarController } from "./calendar/calendar.controller";
 import { CalendarService } from "./calendar/calendar.service";
+import { BrandGuideController } from "./brand-guide/guide.controller";
 
 /** Social Media workspace: brands, designs, posts, settings, connected accounts, publishing and Figma import (collections prefixed social_). */
 @Module({
@@ -39,7 +40,7 @@ import { CalendarService } from "./calendar/calendar.service";
       { name: SocialIntegration.name, schema: SocialIntegrationSchema },
     ]),
   ],
-  controllers: [SocialWorkspaceController, SocialBrandsController, PublishingController, FigmaController, CalendarController],
+  controllers: [SocialWorkspaceController, SocialBrandsController, PublishingController, FigmaController, CalendarController, BrandGuideController],
   providers: [WorkspaceService, BrandsService, ConnectionsService, PublisherService, PublishScheduler, LiveRenderService, FigmaService, CalendarService],
 })
 export class SocialModule {}

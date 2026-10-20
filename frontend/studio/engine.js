@@ -735,7 +735,10 @@ function openBrands() {
 function openAddBrand() {
   let touched = false;
   modal(`<div class="mh"><h2>Add a brand</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
-  <div class="mb"><div class="note">${ic('layers', 16)}<span>Every brand gets its own workspace. Designs, planner, connected accounts, templates and brand kit stay separate from your other brands.</span></div>
+  <div class="mb"><button type="button" class="bg-drop" id="nbGuide"><span class="bg-ic">${ic('doc', 22)}</span><span class="grow"><b>Start from a brand guide</b><small>Upload a brand guide or company profile (PDF). Claude fills in the name, tone, colors, fonts and logos for you to review.</small></span>${ic('upload', 18)}</button>
+  <input type="file" id="nbPdf" accept="application/pdf,.pdf" hidden>
+  <div class="bg-or"><span>or set it up yourself</span></div>
+  <div class="note">${ic('layers', 16)}<span>Every brand gets its own workspace. Designs, planner, connected accounts, templates and brand kit stay separate from your other brands.</span></div>
   <label class="lab">Brand name<input class="field" id="nbName" maxlength="40" placeholder="e.g. Nuba Capital"></label>
   <div class="g2f"><label class="lab">Industry<input class="field" id="nbInd" placeholder="e.g. Fintech"></label><label class="lab">Website<input class="field" id="nbWeb" placeholder="example.com"></label></div>
   <div class="g2f"><label class="lab">Primary color<input type="color" id="nbCol" value="#6366f1"></label><label class="lab">Start from<select class="field" id="nbFrom"><option value="">Empty brand kit</option>${S.brands.map((b) => `<option value="${b.id}">Copy colors, fonts &amp; guidelines from ${esc(b.name)}</option>`).join('')}</select></label></div>
@@ -751,12 +754,173 @@ function openAddBrand() {
         location.hash === '#/brand' ? route() : (location.hash = '#/brand');
       };
       $('#nbGo', bg).addEventListener('click', go);
+      $('#nbGuide', bg).addEventListener('click', () => $('#nbPdf', bg).click());
+      $('#nbPdf', bg).addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; if (f) { close(); openGuideImport(f); } });
       $('#nbCol', bg).addEventListener('input', () => { touched = true; });
       bg.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'color') go(); });
       setTimeout(() => $('#nbName', bg).focus(), 30);
     },
   });
 }
+/* ---------- New brand from a brand guide (PDF) ----------
+   pdf.js renders the pages in the browser and reads their text; Claude (/social/brand-guide/read) returns the brand
+   kit and where the logos are; the logos are cut out of a sharp render of their page, with a transparent background. */
+const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+let pdfjsP = null;
+const loadPdfJs = () => (pdfjsP ??= new Promise((ok, ko) => {
+  if (window.pdfjsLib) return ok(window.pdfjsLib);
+  const sc = document.createElement('script'); sc.src = PDFJS + 'pdf.min.js'; sc.async = true;
+  sc.onload = () => { const L = window.pdfjsLib; if (!L) return ko(new Error('PDF reader unavailable')); L.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.js'; ok(L); };
+  sc.onerror = () => { pdfjsP = null; ko(new Error('Could not load the PDF reader. Check your connection.')); };
+  document.head.append(sc);
+}));
+/** One page as a canvas, `w` pixels wide */
+async function pdfPage(doc, n, w) {
+  const page = await doc.getPage(n), v0 = page.getViewport({ scale: 1 }), vp = page.getViewport({ scale: w / v0.width });
+  const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+  await page.render({ canvasContext: g, viewport: vp }).promise; return c;
+}
+/** Which pages Claude sees: all of a short guide, else the first ones and a spread of the rest */
+const guidePages = (N, max = 10) => { if (N <= max) return [...Array(N)].map((_, i) => i + 1); const head = [1, 2, 3, 4, 5, 6], rest = max - head.length, out = new Set(head); for (let i = 1; i <= rest; i++) out.add(Math.round(6 + (i * (N - 6)) / (rest + 1))); return [...out].sort((a, b) => a - b); };
+const hexRgb = (h) => { const m = /^#?([0-9a-f]{6})$/i.exec(h || ''); const n = m ? parseInt(m[1], 16) : 0xffffff; return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+const lumRgb = ([r, g, b]) => (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+/**
+ * A logo cut out of a page: the background (the median of the box's edge) becomes transparent, each pixel keeps the
+ * colour it has over that background, and the result is trimmed to the logo. `recolor` paints it in one colour.
+ */
+function cutLogo(page, box, ink, photo) {
+  const W = page.width, H = page.height, pad = 0.012;
+  const x0 = Math.max(0, Math.floor((box.x0 - pad) * W)), y0 = Math.max(0, Math.floor((box.y0 - pad) * H)), x1 = Math.min(W, Math.ceil((box.x1 + pad) * W)), y1 = Math.min(H, Math.ceil((box.y1 + pad) * H));
+  const w = x1 - x0, h = y1 - y0; if (w < 8 || h < 8) return null;
+  const d = page.getContext('2d').getImageData(x0, y0, w, h), px = d.data;
+  if (photo) { const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').putImageData(d, 0, 0); return { canvas: c, mono: false }; }
+  const ring = []; for (let x = 0; x < w; x++) for (const y of [0, 1, h - 2, h - 1]) ring.push((y * w + x) * 4); for (let y = 0; y < h; y++) for (const x of [0, 1, w - 2, w - 1]) ring.push((y * w + x) * 4);
+  const med = (k) => { const v = ring.map((i) => px[i + k]).sort((a, b) => a - b); return v[v.length >> 1]; };
+  const bg = [med(0), med(1), med(2)], ik = hexRgb(ink), D = Math.max(70, Math.hypot(ik[0] - bg[0], ik[1] - bg[1], ik[2] - bg[2]));
+  let bx0 = w, by0 = h, bx1 = -1, by1 = -1, solid = 0, spread = 0, mean = [0, 0, 0];
+  for (let i = 0, j = 0; i < px.length; i += 4, j++) {
+    const dist = Math.hypot(px[i] - bg[0], px[i + 1] - bg[1], px[i + 2] - bg[2]), a = Math.max(0, Math.min(1, (dist - 22) / (D * 0.82 - 22)));
+    if (a < 0.06) { px[i + 3] = 0; continue; }
+    for (let k = 0; k < 3; k++) px[i + k] = Math.max(0, Math.min(255, Math.round(bg[k] + (px[i + k] - bg[k]) / a)));
+    px[i + 3] = Math.round(a * 255);
+    if (a > 0.35) { const x = j % w, y = (j / w) | 0; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; } // the trim ignores faint gradient specks
+    if (a > 0.9) { solid++; for (let k = 0; k < 3; k++) mean[k] += px[i + k]; }
+  }
+  if (bx1 < 0) return null;
+  mean = mean.map((v) => v / Math.max(1, solid));
+  for (let i = 0; i < px.length; i += 4) if (px[i + 3] > 230) spread += Math.hypot(px[i] - mean[0], px[i + 1] - mean[1], px[i + 2] - mean[2]);
+  const src = document.createElement('canvas'); src.width = w; src.height = h; src.getContext('2d').putImageData(d, 0, 0);
+  const tw = bx1 - bx0 + 5, th = by1 - by0 + 5, k = Math.min(1, 1400 / Math.max(tw, th));
+  const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(tw * k)); c.height = Math.max(1, Math.round(th * k));
+  const g = c.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(src, bx0 - 2, by0 - 2, tw, th, 0, 0, c.width, c.height);
+  return { canvas: c, mono: solid > 0 && spread / solid < 38 }; // one-colour logos can be recoloured for the other background
+}
+/** The symbol at the start of a horizontal logo (separated from the wordmark by a clear gap), or null */
+function splitIcon(c) {
+  const w = c.width, h = c.height, d = c.getContext('2d').getImageData(0, 0, w, h).data, col = new Array(w).fill(0);
+  for (let x = 0; x < w; x++) for (let y = 0; y < h; y++) if (d[(y * w + x) * 4 + 3] > 90) col[x]++;
+  const start = col.findIndex((v) => v > 0); if (start < 0) return null;
+  let x = start, gap = 0;
+  for (; x < w; x++) { if (col[x] === 0) { if (++gap >= Math.max(6, w * 0.02)) break; } else gap = 0; }
+  const end = x - gap + 1, iw = end - start;
+  if (x >= w || iw < h * 0.4 || iw > w * 0.4) return null; // no gap, or not a symbol-sized part
+  let y0 = h, y1 = -1; for (let y = 0; y < h; y++) for (let xx = start; xx < end; xx++) if (d[(y * w + xx) * 4 + 3] > 90) { if (y < y0) y0 = y; if (y > y1) y1 = y; break; }
+  if (y1 < 0) return null;
+  const o = document.createElement('canvas'); o.width = iw + 4; o.height = y1 - y0 + 5; o.getContext('2d').drawImage(c, start - 2, y0 - 2, o.width, o.height, 0, 0, o.width, o.height); return o;
+}
+const recolor = (c, hex) => { const o = document.createElement('canvas'); o.width = c.width; o.height = c.height; const g = o.getContext('2d'); g.drawImage(c, 0, 0); g.globalCompositeOperation = 'source-in'; g.fillStyle = hex; g.fillRect(0, 0, o.width, o.height); return o; };
+
+/** Reads the PDF and asks Claude: { guide, logos: [{ name, kind, src }] }. `step(i, text)` reports progress. */
+async function readBrandGuide(file, step) {
+  step(0, 'Opening the PDF');
+  const L = await loadPdfJs(), doc = await L.getDocument({ data: await file.arrayBuffer() }).promise, N = doc.numPages, list = guidePages(N);
+  let text = '';
+  for (let n = 1; n <= Math.min(N, 40) && text.length < 30000; n++) { const t = await (await doc.getPage(n)).getTextContent(); text += `\n--- Page ${n} ---\n` + t.items.map((x) => x.str).join(' ').replace(/\s+/g, ' '); }
+  const pages = [];
+  for (const [i, n] of list.entries()) { step(1, `Reading page ${i + 1} of ${list.length}`); const c = await pdfPage(doc, n, 1100); pages.push({ n, image: c.toDataURL('image/jpeg', 0.72) }); }
+  step(2, 'Claude is reading the brand');
+  const r = await api('/social/brand-guide/read', { method: 'POST', body: { pages, text, fileName: file.name } }), g = r.guide;
+  step(3, 'Cutting out the logos');
+  const dark = (g.colors.find((c) => c.role === 'dark') || [...g.colors].sort((a, b) => lumRgb(hexRgb(a.hex)) - lumRgb(hexRgb(b.hex)))[0] || { hex: '#0B1220' }).hex;
+  const primary = (g.colors.find((c) => c.role === 'primary') || g.colors[0] || { hex: '#6366f1' }).hex;
+  const logos = [], sharp = new Map();
+  for (const l of g.logos) {
+    try {
+      const pg = sharp.get(l.page) || sharp.set(l.page, await pdfPage(doc, l.page, 2600)).get(l.page);
+      const cut = cutLogo(pg, l.box, l.ink, l.background === 'photo'); if (!cut) continue;
+      const light = lumRgb(hexRgb(l.ink)) > 0.6, nm = g.name || 'Logo', src = (c) => c.toDataURL('image/png');
+      if (l.kind === 'icon') {
+        logos.push({ name: nm + ' icon', kind: 'Icon', src: src(cut.mono && light ? recolor(cut.canvas, primary) : cut.canvas) });
+        if (cut.mono && light) logos.push({ name: nm + ' icon white', kind: 'Primary', src: src(cut.canvas) });
+      } else {
+        logos.push({ name: nm + (light ? ' white' : ''), kind: l.background === 'photo' ? 'Primary' : light ? 'Dark background' : 'Light background', src: src(cut.canvas) });
+        if (cut.mono && l.background !== 'photo') logos.push(light ? { name: nm + ' dark', kind: 'Light background', src: src(recolor(cut.canvas, dark)) } : { name: nm + ' white', kind: 'Dark background', src: src(recolor(cut.canvas, '#FFFFFF')) });
+        // no separate symbol in the guide: take it from the full logo
+        const icon = !g.logos.some((o) => o.kind === 'icon') && cut.mono && l.background !== 'photo' && splitIcon(cut.canvas);
+        if (icon) { logos.push({ name: nm + ' icon', kind: 'Icon', src: src(recolor(icon, light ? primary : lumRgb(hexRgb(l.ink)) < 0.25 ? primary : l.ink)) }); logos.push({ name: nm + ' icon white', kind: 'Primary', src: src(recolor(icon, '#FFFFFF')) }); }
+      }
+    } catch (e) { /* a logo that can't be cut is skipped; the others still come */ }
+  }
+  return { guide: g, logos, pages: N };
+}
+
+function openGuideImport(file) {
+  const steps = ['Opening the PDF', 'Reading the pages', 'Claude is reading the brand', 'Cutting out the logos'];
+  let at = 0, sub = '', res = null, err = '', alive = true;
+  const st = { colors: null, logos: null };
+  const head = (t) => `<div class="mh"><span style="color:var(--text-2)">${ic('doc', 22)}</span><h2>${t}</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>`;
+  const view = () => {
+    if (err) return `${head('Start from a brand guide')}<div class="mb"><div class="note warn">${ic('alert', 16)}<span>${esc(err)}</span></div><p class="sm-t muted">You can still create the brand yourself and fill in its kit.</p></div>
+      <div class="mf"><button class="btn secondary" data-close>Close</button><button class="btn primary" id="bgManual">${ic('plus', 18)}Create it myself</button></div>`;
+    if (!res) return `${head('Reading your brand guide')}<div class="mb"><p class="sm-t muted">${esc(file.name)} · ${(file.size / 1048576).toFixed(1)} MB</p>
+      <ol class="bg-steps">${steps.map((t, i) => `<li class="${i < at ? 'done' : i === at ? 'on' : ''}"><span class="bg-dot">${i < at ? ic('check', 12) : ''}</span><span>${i === at && sub ? esc(sub) : t}</span></li>`).join('')}</ol>
+      <p class="xs-t muted">This takes about a minute. The PDF is read in your browser; only page previews and text are sent to Claude.</p></div>`;
+    const g = res.guide, cols = st.colors, lg = st.logos, fonts = g.fonts;
+    const fontRow = (k, l) => `<div class="bg-font"><span class="lv-l">${l}</span><b style="font-family:'${esc(fonts[k].studio)}'">${esc(fonts[k].studio)}</b>${fonts[k].found && fonts[k].found !== fonts[k].studio ? `<small>for ${esc(fonts[k].found)}</small>` : ''}</div>`;
+    return `${head('Review the brand')}<div class="mb bg-review">
+      ${g.isBrandGuide ? '' : `<div class="note warn">${ic('alert', 16)}<span>This document doesn't look like a brand guide. Check everything before creating the brand.</span></div>`}
+      <div class="g2f"><label class="lab">Brand name<input class="field" id="bgName" maxlength="40" value="${esc(g.name)}"></label><label class="lab">Website<input class="field" id="bgWeb" value="${esc(g.website)}"></label></div>
+      <div class="g2f"><label class="lab">Industry<input class="field" id="bgInd" value="${esc(g.industry)}"></label><label class="lab">Tagline<input class="field" id="bgTag" value="${esc(g.tagline)}"></label></div>
+      <div class="lab">Colors <small class="muted">${cols.filter((c) => c.on).length} kept · click one to leave it out</small><div class="bg-cols">${cols.map((c, i) => `<button type="button" class="bg-col ${c.on ? 'on' : ''}" data-i="${i}" title="${esc(c.name)} ${c.hex}"><i style="background:${c.hex}"></i><span><b>${esc(c.name)}</b><small>${c.hex}</small></span></button>`).join('')}</div></div>
+      <div class="lab">Typography<div class="bg-fonts">${fontRow('heading', 'Headings')}${fontRow('body', 'Body')}${fontRow('arabic', 'Arabic')}</div></div>
+      <div class="lab">Logos <small class="muted">${lg.length ? 'cut out with a transparent background · click one to leave it out' : 'none found: upload them later in Brand kit → Logos'}</small>${lg.length ? `<div class="bg-logos">${lg.map((l, i) => `<button type="button" class="bg-logo ${l.on ? 'on' : ''} ${l.kind === 'Dark background' || /white/i.test(l.name) ? 'dk' : ''}" data-i="${i}"><img src="${l.src}" alt=""><span>${esc(l.kind)}</span></button>`).join('')}</div>` : ''}</div>
+      <details class="bg-more"><summary>About, tone and guidelines</summary><div class="bg-more-b"><p><b>About</b>${esc(g.about)}</p><p><b>Audience</b>${esc(g.audience)}</p><p><b>Voice</b>${esc(g.voice)}</p><p><b>Do</b>${esc(g.dos).replace(/\n/g, '<br>')}</p><p><b>Don't</b>${esc(g.donts).replace(/\n/g, '<br>')}</p><p><b>Hashtags</b>${esc(g.hashtags)}</p></div></details>
+      ${g.note ? `<p class="xs-t muted">${esc(g.note)}</p>` : ''}<p class="xs-t" id="bgErr" style="color:var(--neg)" hidden></p></div>
+      <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="bgGo">${ic('plus', 18)}Create brand</button></div>`;
+  };
+  let bgEl = null;
+  const paint = () => { if (!bgEl || !alive) return; const m = $('.modal', bgEl), keep = res ? { name: $('#bgName', bgEl)?.value, web: $('#bgWeb', bgEl)?.value, ind: $('#bgInd', bgEl)?.value, tag: $('#bgTag', bgEl)?.value } : null; m.innerHTML = view();
+    if (keep && keep.name != null) { $('#bgName', bgEl).value = keep.name; $('#bgWeb', bgEl).value = keep.web; $('#bgInd', bgEl).value = keep.ind; $('#bgTag', bgEl).value = keep.tag; } };
+  const create = () => {
+    const g = res.guide, name = $('#bgName', bgEl).value.trim(), e = $('#bgErr', bgEl);
+    if (!name) { e.textContent = 'Give your brand a name.'; e.hidden = false; return; }
+    if (S.brands.some((b) => b.name.toLowerCase() === name.toLowerCase())) { e.textContent = 'You already have a brand with this name.'; e.hidden = false; return; }
+    const cols = st.colors.filter((c) => c.on), b = makeBrand({ name, industry: $('#bgInd', bgEl).value.trim(), website: $('#bgWeb', bgEl).value.trim(), color: (cols[0] || { hex: '#6366f1' }).hex });
+    Object.assign(b, {
+      initials: g.initials || initialsOf(name), handle: g.handle || '', tagline: $('#bgTag', bgEl).value.trim(), about: g.about, audience: g.audience, voice: g.voice, dos: g.dos, donts: g.donts, hashtags: g.hashtags, cta: g.cta || b.website, lang: g.lang || 'English',
+      fonts: { heading: g.fonts.heading.studio, body: g.fonts.body.studio, arabic: g.fonts.arabic.studio },
+      logos: st.logos.filter((l) => l.on).map((l) => ({ id: 'l' + uid(), name: l.name.slice(0, 40), kind: l.kind, src: l.src })),
+    });
+    if (cols.length) b.colors = mkColors(cols.map((c) => [c.name, c.hex]));
+    closeAll(); S.active = b.id; save(); BK.tab = 'info'; ST.q = ''; ST.tab = 0; ST.cat = 'All'; renderSide(); toast('“' + b.name + '” created from its brand guide');
+    location.hash === '#/brand' ? route() : (location.hash = '#/brand');
+  };
+  const closeAll = modal(view(), { wide: true, onClose: () => { alive = false; }, onMount: (bg) => {
+    bgEl = bg;
+    bg.addEventListener('click', (e) => {
+      const c = e.target.closest('.bg-col'), l = e.target.closest('.bg-logo');
+      if (c) { st.colors[+c.dataset.i].on = !st.colors[+c.dataset.i].on; paint(); }
+      else if (l) { st.logos[+l.dataset.i].on = !st.logos[+l.dataset.i].on; paint(); }
+      else if (e.target.closest('#bgGo')) create();
+      else if (e.target.closest('#bgManual')) { closeAll(); openAddBrand(); }
+    });
+  } });
+  readBrandGuide(file, (i, t) => { at = i; sub = t; paint(); })
+    .then((r) => { res = r; st.colors = r.guide.colors.map((c) => ({ ...c, on: true })); st.logos = r.logos.map((l) => ({ ...l, on: true })); paint(); })
+    .catch((e) => { err = e.message || 'Could not read this PDF'; paint(); });
+}
+
 Object.assign(ACT, {
   switchBrand: (a) => {
     closeModals(); if (a.dataset.id === S.active) { closeDrawer(); return; }
