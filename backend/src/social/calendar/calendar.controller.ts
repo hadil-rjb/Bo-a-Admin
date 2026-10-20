@@ -29,6 +29,12 @@ class AnalyzeDto {
   @IsOptional() @IsIn(["auto", "heuristic"]) engine?: "auto" | "heuristic";
 }
 
+class ImportDto {
+  @IsString() @Matches(/^data:image\/(png|jpeg|webp);base64,/) @MaxLength(8_000_000) image!: string;
+  @IsNumber() imgW!: number;
+  @IsNumber() imgH!: number;
+}
+
 /** Live economic calendar for the studio: events from TradingView / Forex Factory, and slide analysis. */
 @Controller("social/calendar")
 export class CalendarController {
@@ -39,6 +45,12 @@ export class CalendarController {
   events(@Query("date") date: string, @Query("tz") tz?: string, @Query("countries") countries?: string, @Query("source") source?: string) {
     const d = /^\d{4}-\d{2}-\d{2}$/.test(date || "") ? date : new Date().toISOString().slice(0, 10);
     return this.svc.events({ date: d, tz, countries, source });
+  }
+
+  /** A screenshot or exported design (PNG/JPEG) → editable layers */
+  @Roles("admin", "editor") @Post("import") @HttpCode(200)
+  importImage(@Body() dto: ImportDto) {
+    return this.svc.importImage(dto);
   }
 
   @Roles("admin", "editor") @Post("analyze") @HttpCode(200)

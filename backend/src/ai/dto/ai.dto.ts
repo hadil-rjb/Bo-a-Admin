@@ -31,6 +31,22 @@ export class GenerateIdeasDto {
 export class GenerateArticleDto {
   @IsOptional() @Matches(/^(\d{4}-\d{2}-\d{2})?$/, { message: "date au format YYYY-MM-DD" }) date?: string;
 }
+export class SocialCaptionDto {
+  @IsString() @MinLength(1) @MaxLength(120) brand: string;
+  @IsOptional() @IsString() @MaxLength(2000) voice?: string;
+  @IsOptional() @IsString() @MaxLength(1000) dos?: string;
+  @IsOptional() @IsString() @MaxLength(1000) donts?: string;
+  @IsOptional() @IsString() @MaxLength(400) hashtags?: string;
+  @IsOptional() @IsString() @MaxLength(200) cta?: string;
+  @IsOptional() @IsString() @MaxLength(40) language?: string;
+  @IsOptional() @IsString() @MaxLength(40) tone?: string;
+  @IsString() @MaxLength(120) design: string;
+  /** Texts on the slides, top to bottom */
+  @IsOptional() @IsArray() @ArrayMaxSize(80) @IsString({ each: true }) @MaxLength(400, { each: true }) texts?: string[];
+  @IsOptional() @IsArray() @ArrayMaxSize(6) @IsIn(["ig", "li", "x", "fb", "tt", "tg"], { each: true }) networks?: string[];
+  /** First slide as a JPEG/PNG data URL, so the model sees the visual */
+  @IsOptional() @IsString() @Matches(/^data:image\/(png|jpeg|webp);base64,/) @MaxLength(4_000_000) image?: string;
+}
 export class CoverImageDto {
   @IsString() @MinLength(20) @MaxLength(3000) prompt: string;
   @IsOptional() @Matches(/^\d{1,2}:\d{1,2}$/) ratio?: string;
