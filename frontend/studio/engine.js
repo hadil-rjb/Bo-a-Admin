@@ -4927,17 +4927,20 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     // fit the whole week: the same number of events per day at most, keeping each day's most important ones
     const byImp = (list) => list.map((e, i) => ({ e, i })).sort((a, b) => IMP[b.e.impact] - IMP[a.e.impact] || a.i - b.i);
     const ranked = Object.fromEntries(days.map((day) => [day, byImp((byDay[day] || []).filter((e) => keep.has(e.id)))]));
-    const caps = Object.fromEntries(days.map((day) => [day, ranked[day].length ? 1 : 0]));
+    let picked = !!(cfg.pick && cfg.pick.length);
+    const caps = Object.fromEntries(days.map((day) => [day, picked ? ranked[day].length : ranked[day].length ? 1 : 0]));
     const pickDay = (day) => ranked[day].slice(0, caps[day]).sort((a, b) => a.i - b.i).map((x) => x.e);
     const height = () => {
       let h = 0, last = 0;
       days.forEach((day) => { const evs = pickDay(day); if (!evs.length) return; const groups = new Set(evs.map((e) => e.country || e.currency)).size; h += m.headEnd + m.firstGap + groups * (m.ghH + m.ghToList) + (groups - 1) * m.groupGap + evs.length * m.lineH + m.dayGap; last = m.dayGap; });
       return h - last;
     };
+    // events picked by hand are all shown when they fit; when they don't, the week is shared out like the automatic pick
+    if (picked && m.top + height() > m.limit) { picked = false; days.forEach((day) => { caps[day] = ranked[day].length ? 1 : 0; }); }
     // fewer days if even one event each doesn't fit
-    for (let k = days.length - 1; k >= 0 && m.top + height() > m.limit; k--) caps[days[k]] = 0;
+    for (let k = days.length - 1; !picked && k >= 0 && m.top + height() > m.limit; k--) caps[days[k]] = 0;
     // then add the most important remaining event, whichever day it is on, while the week still fits
-    for (let more = true; more;) {
+    for (let more = !picked; more;) {
       more = false;
       const next = days.filter((day) => caps[day] && caps[day] < ranked[day].length).map((day) => ({ day, e: ranked[day][caps[day]].e })).sort((a, b) => IMP[b.e.impact] - IMP[a.e.impact] || a.e.at.localeCompare(b.e.at));
       for (const c of next) { caps[c.day]++; if (m.top + height() <= m.limit) { more = true; break; } caps[c.day]--; }
@@ -4957,7 +4960,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           // a flag at the start of the heading is drawn as a picture (emoji flags show as letters on Windows and on the export server)
           const fs = P.gh.size || 20, flag = ghFlag && flagOf(g.e), fw = Math.round(fs * 1.1), fh = Math.round(fs * 0.78), gap = Math.round(fs * 0.4);
           const vals = { flag: flagEmoji(g.e.country), country: g.e.country || '', countryName: countryName(g.e.country, cfg.lang), currency: g.e.currency || '' };
-          if (flag) add({ type: 'image', name: 'Flag', x: P.gh.x, y: 0, w: fw, h: fh, rot: 0, op: 1, r: Math.max(2, Math.round(fs * 0.12)), fill: flag }, `lvw-${n}-f${j}`, { y: Math.round(y + (Math.min(P.gh.h, fs * (P.gh.lh || 1.2)) - fh) / 2) });
+          if (flag) add({ type: 'image', name: 'Flag', x: P.gh.x, y: 0, w: fw, h: fh, rot: 0, op: 1, r: Math.max(2, Math.round(fs * 0.12)), fill: flag, stroke: 'rgba(255,255,255,0.35)', sw: 1 }, `lvw-${n}-f${j}`, { y: Math.round(y + (Math.min(P.gh.h, fs * (P.gh.lh || 1.2)) - fh) / 2) });
           const gx = flag ? P.gh.x + fw + gap : P.gh.x;
           add(flag ? { ...P.gh, x: gx } : P.gh, `lvw-${n}-g${j}`, { y, w: Math.max(P.gh.w - (gx - P.gh.x), m.listW - (gx - P.list.x)), text: fill(flag ? ghRest : ghTpl, vals) });
           y += m.ghH + m.ghToList;
@@ -4976,6 +4979,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       y += m.dayGap - m.groupGap; n++;
     }
     cfg.shown = shown; // what the slide actually lists (the panel's ticks and count)
+    cfg.room = Math.max(0, Math.floor((m.limit - (n ? y - m.dayGap : m.top)) / m.lineH)); // event lines that still fit
     if (!out.length) { add(P.dh, 'lvw-0-day', { y: m.top + m.dhOff, text: cfg.lang === 'ar' ? 'لا توجد أحداث هذا الأسبوع' : 'No events this week' }); }
     const at = pg.layers.findIndex((l) => l.id === m.anchor); pg.layers.splice(at >= 0 ? at + 1 : pg.layers.length, 0, ...out);
     return JSON.stringify(out) !== before;
@@ -5175,6 +5179,25 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const name = cfg.lang === 'ar' ? (e.translated ? e.ar : (cfg.evAr && cfg.evAr[e.en]) || e.ar) : e.en;
     return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" aria-pressed="${on}" title="${esc(name)}${on ? ' · on the slide' : ''}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b>${flagImg(e.country)}<span class="n">${esc(name)}</span><span class="st i${IMP[e.impact]}">${'★'.repeat(IMP[e.impact])}</span>${e.actual != null ? `<span class="v">${esc(e.actual)}</span>` : ''}</button>`;
   }
+  /** The period picker's month grid (Monday first). Weekly slides pick a whole row: Monday to Friday light up together. */
+  function calPop(wk, shownDate) {
+    const ym = ED.lvCal.ym || shownDate.slice(0, 7), [y, m] = ym.split('-').map(Number), today = nowIn(schedTz()).date;
+    const first = new Date(Date.UTC(y, m - 1, 1, 12)), start = addDay(first.toISOString().slice(0, 10), -((first.getUTCDay() + 6) % 7));
+    const selW = wk ? weekDays(shownDate) : null, rows = [];
+    for (let r = 0; r < 6; r++) {
+      const mon = addDay(start, r * 7); if (r === 5 && mon.slice(0, 7) !== ym) break;
+      const on = wk && selW[0] === mon;
+      rows.push(`<div class="lv-cal-w ${wk ? 'wk' : ''} ${on ? 'on' : ''}">${[0, 1, 2, 3, 4, 5, 6].map((i) => {
+        const dd = addDay(mon, i), cls = [dd.slice(0, 7) !== ym && 'out', dd === today && 'today', i > 4 && 'we', !wk && dd === shownDate && 'sel', wk && on && i < 5 && 'in'].filter(Boolean).join(' ');
+        return `<button class="${cls}" data-act="lvCalPick" data-d="${wk ? mon : dd}" aria-label="${esc(fmt(new Date(dd + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))}">${+dd.slice(8)}</button>`;
+      }).join('')}</div>`);
+    }
+    const monthName = fmt(first, { month: 'long', year: 'numeric' }), tw = wk ? weekOf(today) : today;
+    return `<div class="lv-cal" role="dialog" aria-label="Choose a ${wk ? 'week' : 'day'}">
+      <div class="lv-cal-h"><button class="lv-pa" data-act="lvCalM" data-n="-1" aria-label="Previous month">${ic('chevL', 15)}</button><b>${esc(monthName)}</b><button class="lv-pa" data-act="lvCalM" data-n="1" aria-label="Next month">${ic('chevR', 15)}</button></div>
+      <div class="lv-cal-dw">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((x, i) => `<span class="${i > 4 ? 'we' : ''}">${x}</span>`).join('')}</div>${rows.join('')}
+      <div class="lv-cal-f"><button data-act="lvCalPick" data-d="${tw}">${wk ? 'This week' : 'Today'}</button><button data-act="lvCalPick" data-d="${wk ? addDay(tw, 7) : addDay(today, 1)}">${wk ? 'Next week' : 'Tomorrow'}</button></div></div>`;
+  }
   /** "Oct 19 – 23, 2026" / "Tue, Oct 20, 2026" */
   function periodLabel(date, wk) {
     if (!wk) return fmt(new Date(date + 'T12:00'), { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
@@ -5324,8 +5347,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       : ({ publish: 'The day of each post', today: 'Always today', tomorrow: 'Always tomorrow', fixed: 'A day you choose' })[cfg.day];
     const unit = wk ? 'week' : 'day';
     const period = `<div class="lv-period"><button class="lv-pa" data-act="lvShift" data-n="-1" aria-label="Previous ${unit}" title="Previous ${unit}">${ic('chevL', 16)}</button>
-        <button class="lv-pd" data-act="lvCal" title="Choose a ${unit}">${ic('cal', 15)}<span>${esc(periodLabel(shownDate, wk))}</span><input type="date" id="lvDate" tabindex="-1" aria-hidden="true" value="${esc(cfg.day === 'fixed' && cfg.date ? cfg.date : shownDate)}"></button>
-        <button class="lv-pa" data-act="lvShift" data-n="1" aria-label="Next ${unit}" title="Next ${unit}">${ic('chevR', 16)}</button></div>`;
+        <button class="lv-pd ${ED.lvCal && ED.lvCal.open ? 'on' : ''}" data-act="lvCal" title="Choose a ${unit}" aria-haspopup="dialog" aria-expanded="${!!(ED.lvCal && ED.lvCal.open)}">${ic('cal', 15)}<span>${esc(periodLabel(shownDate, wk))}</span>${ic('chevD', 14)}</button>
+        <button class="lv-pa" data-act="lvShift" data-n="1" aria-label="Next ${unit}" title="Next ${unit}">${ic('chevR', 16)}</button>${ED.lvCal && ED.lvCal.open ? calPop(wk, shownDate) : ''}</div>`;
     const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>` : cfg.feed ? `<p class="lv-src">${cfg.feed.count} events ${wk ? 'this week' : 'that day'} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
     const ctry = cfg.countries.length, onSlide = wk ? new Set(cfg.shown || []) : chosen;
     // the list: what's on the slide first in mind, grouped by day on weekly slides
@@ -5343,7 +5366,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           + (cfg.lang === 'ar' && (cfg.srcLang || 'en') !== 'ar' ? `<div class="lv-swr lv-rtl"><div class="grow"><b>Right-to-left</b><p>Mirror the layout for Arabic.</p></div>${sw(cfg.mirror !== false, 'lvMirror', '', 'Right-to-left layout')}</div>` : '')))
       + sec('Filters', field('Impact', `<div class="lv-imps">${['high', 'medium', 'low'].map((k) => `<button class="lv-impb i${IMP[k]} ${cfg.impact.includes(k) ? 'on' : ''}" data-act="lvImp" data-k="${k}" aria-pressed="${cfg.impact.includes(k)}"><span class="st">${'★'.repeat(IMP[k])}</span>${IMP_WORD.en[k]}</button>`).join('')}</div>`)
         + field(`Countries <em>${ctry}/${CTRY.length}</em>${ctry < CTRY.length ? '<button class="btn link sm lv-all" data-act="lvCtyAll">All</button>' : ''}`, `<div class="lv-ctys">${CTRY.map(([k, l]) => `<button class="lv-cty ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}" aria-pressed="${cfg.countries.includes(k)}" title="${esc(countryName(k, 'en'))} · ${l}">${flagImg(k)}<span>${k === 'GB' ? 'UK' : k}</span></button>`).join('')}</div>`))
-      + sec('Events', feedNote + `<div class="lv-evs">${evHtml}</div>`,
+      + sec('Events', feedNote + (wk && cfg.room != null && cfg.room < 1 && visible.length > onSlide.size ? `<p class="lv-full">${ic('alert', 14)}<span>The slide is full. Untick an event to add another.</span></p>` : '') + `<div class="lv-evs ${wk && cfg.room != null && cfg.room < 1 ? 'full' : ''}">${evHtml}</div>`,
         `<span class="lv-count" title="Events on the slide">${onSlide.size} on the slide</span>${cfg.pick ? '<button class="btn link sm lv-auto" data-act="lvAuto">Auto-pick</button>' : '<span class="lv-tag">Auto</span>'}`)
       + sec('Updates', `<div class="lv-sw">
           <div class="lv-swr"><div class="grow"><b>Actual and forecast</b><p>Show the figures line when an event has figures.</p></div>${sw(cfg.values, 'lvVals', '', 'Actual and forecast')}</div>
@@ -5567,7 +5590,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 
   /* ---------- actions ---------- */
   const cfgNow = () => curP().live;
-  const reapply = () => { const d = ED.d; d && refresh(d, { force: true }); };
+  const reapply = () => { const d = ED.d; return d ? refresh(d, { force: true }) : Promise.resolve(); };
   const busyWith = (sel, label) => { const b = $(sel); b && busy(b, true, label); return () => b && b.isConnected && busy(b, false); };
   Object.assign(ACT, {
     lvTab: (a) => { ED.liveTab = a.dataset.v; edPanel(); },
@@ -5612,20 +5635,35 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     lvMirror: () => { const c = cfgNow(); c.mirror = c.mirror === false; save(); reapply(); },
     lvImp: (a) => { const c = cfgNow(), k = a.dataset.k; c.impact = c.impact.includes(k) ? c.impact.filter((x) => x !== k) : [...c.impact, k]; if (!c.impact.length) c.impact = [k]; c.pick = null; save(); reapply(); },
     lvCty: (a) => { const c = cfgNow(), k = a.dataset.k; c.countries = c.countries.includes(k) ? c.countries.filter((x) => x !== k) : [...c.countries, k]; if (!c.countries.length) c.countries = [k]; c.pick = null; save(); reapply(); },
-    lvPick: (a) => {
-      const c = cfgNow(), n = isWeek(c) ? 999 : c.map.rows.length, cur = isWeek(c) ? [...(c.shown || [])] : choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id;
-      let next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    lvPick: async (a) => {
+      if (ED.lvPicking) return; // one change at a time: each one re-renders the slide
+      const c = cfgNow(), wk = isWeek(c), n = wk ? 999 : c.map.rows.length, cur = wk ? [...(c.shown || [])] : choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id, adding = !cur.includes(id);
+      const next = adding ? [...cur, id] : cur.filter((x) => x !== id);
       if (next.length > n) { toast(`This design has ${n} rows: untick an event first`); return; }
-      const order = new Map((c.events || []).map((e, i) => [e.id, i])); c.pick = next.sort((x, y) => order.get(x) - order.get(y)); save(); reapply();
+      if (!next.length) { toast('Keep at least one event on the slide, or use Auto-pick'); return; }
+      if (wk && adding && c.room != null && c.room < 1) { toast('The slide is full: untick an event to make room'); return; }
+      const order = new Map((c.events || []).map((e, i) => [e.id, i])), prev = c.pick;
+      c.pick = next.sort((x, y) => order.get(x) - order.get(y)); save();
+      ED.lvPicking = true;
+      try {
+        await reapply();
+        // a weekly slide has limited room: an event that doesn't fit is not added
+        if (wk && adding && !c.pick.every((x) => (c.shown || []).includes(x))) { c.pick = prev; save(); await reapply(); toast('No room left on the slide: untick an event first'); }
+      } finally { ED.lvPicking = false; }
     },
     lvAuto: () => { cfgNow().pick = null; save(); reapply(); },
     lvCtyAll: () => { const c = cfgNow(); c.countries = CTRY.map(([k]) => k); c.pick = null; save(); reapply(); },
     /** ‹ › steps the shown day or week (and switches to Pick); the middle button opens the date picker */
     lvShift: (a) => { const c = cfgNow(), base = (c.feed && c.feed.date) || dayFor(c, ED.d); c.date = addDay(base, +a.dataset.n * (isWeek(c) ? 7 : 1)); c.day = 'fixed'; c.pick = null; save(); reapply(); },
-    lvCal: () => { const i = $('#lvDate'); if (!i) return; try { i.showPicker(); } catch (x) { i.focus(); i.click(); } },
+    lvCal: () => { const c = cfgNow(), d0 = (c.feed && c.feed.date) || dayFor(c, ED.d); ED.lvCal = ED.lvCal && ED.lvCal.open ? { open: false } : { open: true, ym: d0.slice(0, 7) }; edPanel(); },
+    lvCalM: (a) => { const [y, m] = ED.lvCal.ym.split('-').map(Number), x = new Date(Date.UTC(y, m - 1 + +a.dataset.n, 1)); ED.lvCal.ym = x.toISOString().slice(0, 7); edPanel(); },
+    lvCalPick: (a) => { const c = cfgNow(); c.date = a.dataset.d; c.day = 'fixed'; c.pick = null; ED.lvCal = { open: false }; save(); reapply(); edPanel(); },
     lvVals: () => { const c = cfgNow(); c.values = !c.values; save(); reapply(); },
     lvPause: () => { const c = cfgNow(); c.paused = !c.paused; save(); if (!c.paused) reapply(); else edPanel(); },
   });
+  // the period picker closes on a click elsewhere or Escape
+  document.addEventListener('click', (e) => { if (ED.lvCal && ED.lvCal.open && e.target.isConnected && !e.target.closest('.lv-period')) { ED.lvCal = { open: false }; edPanel(); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ED.lvCal && ED.lvCal.open) { ED.lvCal = { open: false }; edPanel(); } });
   document.addEventListener('change', (e) => {
     const t = e.target; if (!ED.d || ED.tab !== 'data' || !curP().live) return; const c = cfgNow();
     if (t.id === 'lvSrc') { c.src = t.value; save(); reapply(); }

@@ -1521,7 +1521,6 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .lv-pd:hover{background:var(--pill)}
 .lv-pd .ic{color:var(--accent);flex:none}
 .lv-pd span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lv-pd input{position:absolute;inset:auto 0 0 0;width:100%;height:0;opacity:0;pointer-events:none;border:0;padding:0}
 .lv-imps{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
 .lv-impb{height:34px;display:flex;align-items:center;justify-content:center;gap:5px;border:1px solid var(--border);border-radius:9px;font-size:12.5px;font-weight:500;color:var(--text-2);background:var(--surface)}
 .lv-impb .st{font-size:10px;letter-spacing:.5px;color:var(--text-3)}
@@ -1541,3 +1540,36 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .lv-evd b{font-weight:600;color:var(--text-2)}
 .lv-evd span{text-transform:none;letter-spacing:0}
 @media (max-width:380px){.lv-ctys{grid-template-columns:repeat(4,1fr)}}
+/* v25 period picker: a calendar popover (weeks light up Monday to Friday) */
+.lv-period{position:relative}
+.lv-pd .ic:last-child{color:var(--text-3);transition:transform .15s}
+.lv-pd.on{background:var(--pill)}.lv-pd.on .ic:last-child{transform:rotate(180deg)}
+.lv-cal{position:absolute;z-index:30;top:calc(100% + 6px);left:0;right:0;padding:12px;border:1px solid var(--border);border-radius:14px;background:var(--surface);box-shadow:0 18px 40px rgba(15,23,42,.18),0 2px 6px rgba(15,23,42,.06);animation:tin .14s ease-out}
+.lv-cal-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.lv-cal-h b{font-size:13.5px;font-weight:600}
+.lv-cal-dw,.lv-cal-w{display:grid;grid-template-columns:repeat(7,1fr)}
+.lv-cal-dw span{height:24px;display:grid;place-items:center;font-size:10.5px;font-weight:600;color:var(--text-3)}
+.lv-cal-dw .we{opacity:.6}
+.lv-cal-w{margin-top:2px;border-radius:9px}
+.lv-cal-w button{height:32px;display:grid;place-items:center;border-radius:8px;font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--text-1)}
+.lv-cal-w button:hover{background:var(--pill)}
+.lv-cal-w button.out{color:var(--text-3);opacity:.55}
+.lv-cal-w button.we{color:var(--text-3)}
+.lv-cal-w button.today{box-shadow:inset 0 0 0 1px var(--accent);font-weight:600}
+.lv-cal-w button.sel{background:var(--accent);color:#fff;font-weight:600}
+/* weekly: the whole row is one choice */
+.lv-cal-w.wk{cursor:pointer}
+.lv-cal-w.wk:hover{background:var(--pill)}
+.lv-cal-w.wk:hover button{background:transparent}
+.lv-cal-w.wk.on{background:rgba(253,14,53,.1)}
+.lv-cal-w.wk button.in{color:var(--accent);font-weight:600}
+.lv-cal-w.wk.on button.in:first-child{background:var(--accent);color:#fff}
+.lv-cal-w.wk.on button.in:nth-child(5){background:var(--accent);color:#fff}
+.lv-cal-f{display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.lv-cal-f button{flex:1;height:30px;border-radius:8px;font-size:12px;font-weight:600;color:var(--text-2);background:var(--pill)}
+.lv-cal-f button:hover{color:var(--text-1)}
+.lv-sec:has(.lv-cal){position:relative;z-index:20}
+.lv-full{display:flex;align-items:center;gap:6px;padding:7px 9px;border-radius:9px;background:rgba(251,191,36,.12);font-size:11.5px;color:var(--text-1)}
+.lv-full .ic{flex:none;color:#d97706}
+.lv-evs.full .lv-ev:not(.on){opacity:.55}
+.lv-evs.full .lv-ev:not(.on):hover{opacity:.8}
