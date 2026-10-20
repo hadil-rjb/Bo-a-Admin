@@ -5202,6 +5202,14 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       <div class="lv-cal-dw">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((x, i) => `<span class="${i > 4 ? 'we' : ''}">${x}</span>`).join('')}</div>${rows.join('')}
       <div class="lv-cal-f"><button data-act="lvCalPick" data-d="${tw}">${wk ? 'This week' : 'Today'}</button><button data-act="lvCalPick" data-d="${wk ? addDay(tw, 7) : addDay(today, 1)}">${wk ? 'Next week' : 'Tomorrow'}</button></div></div>`;
   }
+  /** The figures switch, only when the slide prints figures (rows with {actual} {forecast} {previous} {value}), named after them */
+  function figSw(map, cfg) {
+    const kinds = new Set(); (map.rows || []).forEach((r) => r.fields.forEach((f) => (String(f.template || '').match(/\{(actual|forecast|previous|value)\}/g) || []).forEach((m) => kinds.add(m.slice(1, -1)))));
+    if (!kinds.size) return '';
+    const names = { actual: 'Actual', forecast: 'Forecast', previous: 'Previous', value: 'Value' }, list = ['actual', 'forecast', 'previous', 'value'].filter((k) => kinds.has(k)).map((k) => names[k]);
+    const title = list.length > 1 ? list.slice(0, -1).join(', ') + ' & ' + list[list.length - 1].toLowerCase() : list[0];
+    return `<div class="lv-swr"><div class="grow"><b>${title}</b><p>Show the figures line. Events without figures hide it.</p></div>${sw(cfg.values, 'lvVals', '', title)}</div>`;
+  }
   /** "Oct 19 – 23, 2026" / "Tue, Oct 20, 2026" */
   function periodLabel(date, wk) {
     if (!wk) return fmt(new Date(date + 'T12:00'), { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
@@ -5373,7 +5381,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       + sec('Events', feedNote + (wk && cfg.room != null && cfg.room < 1 && visible.length > onSlide.size ? `<p class="lv-full">${ic('alert', 14)}<span>The slide is full. Untick an event to add another.</span></p>` : '') + `<div class="lv-evs ${wk && cfg.room != null && cfg.room < 1 ? 'full' : ''}">${evHtml}</div>`,
         `<span class="lv-count" title="Events on the slide">${onSlide.size} on the slide</span>${cfg.pick ? '<button class="btn link sm lv-auto" data-act="lvAuto">Auto-pick</button>' : '<span class="lv-tag">Auto</span>'}`)
       + sec('Updates', `<div class="lv-sw">
-          <div class="lv-swr"><div class="grow"><b>Actual and forecast</b><p>Show the figures line when an event has figures.</p></div>${sw(cfg.values, 'lvVals', '', 'Actual and forecast')}</div>
+          ${figSw(map, cfg)}
           <div class="lv-swr"><div class="grow"><b>Update automatically</b><p>While the studio is open, and before each scheduled post.</p></div>${sw(!cfg.paused, 'lvPause', '', 'Update automatically')}</div>
         </div>` + field('Check for new data every', `<select class="field sm" id="lvEvery" ${cfg.paused ? 'disabled' : ''}>${EVERY.map(([v, l]) => `<option value="${v}" ${+cfg.every === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
         + `<button class="btn secondary lv-wide" data-act="lvRefresh">${ic('refresh', 16)}Refresh now</button>`)
