@@ -3,6 +3,7 @@
 cp .env.example .env   # puis éditez JWT_SECRET et ADMIN_PASSWORD
 npm install
 npm run seed           # importe les articles existants
+npm run seed:brands    # crée les marques Social Media de data/brands (ex. Neomarkets) si elles n'existent pas
 npm run dev            # http://localhost:4000/api
 ```
 Auth : `POST /api/auth/login` → `{ token, user }`, puis `Authorization: Bearer <token>`.
