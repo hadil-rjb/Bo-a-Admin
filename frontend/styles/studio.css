@@ -1395,3 +1395,32 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
   .cards{grid-template-columns:repeat(auto-fill,minmax(min(210px,100%),1fr));gap:12px}
 }
 }}
+/* ============ v23 · Live data panel (live calendar templates) ============ */
+@layer components{:where([data-ws="social"]){
+#edPanel .lv-ok{flex-shrink:0;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:600;color:var(--pos);background:var(--pos-bg);white-space:nowrap}
+#edPanel .lv-tabs{margin-top:4px}
+#edPanel .lv-tabs button{gap:6px;display:flex;align-items:center;justify-content:center;height:34px;font-size:13px}
+.lv-card{border:1px solid var(--border);border-radius:14px;padding:14px 16px;background:var(--surface)}
+.lv-card b{display:block;font-size:14px;font-weight:600;color:var(--text-1)}
+.lv-card p{margin-top:4px;font-size:12px;line-height:1.45;color:var(--text-2)}
+.lv-dots{display:flex;flex-shrink:0}.lv-dots i{width:26px;height:26px;border-radius:50%;border:2px solid var(--surface);margin-left:-8px;box-shadow:0 0 0 1px var(--border)}.lv-dots i:first-child{margin-left:0}
+.btn.lv-go{width:100%;height:46px;font-size:15px;border-radius:12px}
+.lv-evs{display:flex;flex-direction:column;gap:6px}
+.lv-ev{display:flex;align-items:center;gap:10px;width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:12px;text-align:left;background:var(--surface);transition:border-color .12s,background .12s}
+.lv-ev:hover{border-color:var(--text-3)}
+.lv-ev.on{border-color:var(--accent);background:rgba(253,14,53,.05)}
+.lv-ev .cbx{display:grid;place-items:center;width:18px;height:18px;flex-shrink:0;border:1.5px solid var(--border);border-radius:5px}
+.lv-ev .cbx.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.lv-ev .t{flex-shrink:0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
+.lv-ev .grow{min-width:0}
+.lv-ev .n{display:block;font-size:13px;color:var(--text-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lv-ev small{display:block;font-size:11px;color:var(--text-3)}
+.lv-ev .v{flex-shrink:0;font-size:12px;font-weight:600;color:var(--pos)}
+.lv-sw .swrow{padding:10px 0}.lv-sw .swrow b{font-size:13px}.lv-sw .swrow p{font-size:11px}
+.lv-how{border:1px solid var(--border);border-radius:12px;padding:10px 12px}
+.lv-how summary{cursor:pointer;font-size:13px;font-weight:500;color:var(--text-1)}
+.lv-how[open] summary{margin-bottom:8px}
+.lv-how>*+*{margin-top:8px}
+.lv-map{display:grid;grid-template-columns:minmax(0,1fr) 130px;gap:8px;align-items:center}
+.lv-map .tx{padding:6px 8px;border-radius:8px;background:var(--pill);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+}}

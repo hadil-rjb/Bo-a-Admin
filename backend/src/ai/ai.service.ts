@@ -64,6 +64,8 @@ export class AiService {
     if (!e) return null;
     try { return decrypt(e, this.secret); } catch { return null; }
   }
+  /** Claude key from Settings → AI (decrypted), for other features that call Claude, or null */
+  async anthropicKey() { return this.key(await this.load(), "anthropic"); }
   private hfToken(s: AiSettingsDocument) { if (!s.hfKey) return null; try { return decrypt(s.hfKey, this.secret); } catch { return null; } }
   async imageModels() { return hfImageModels(this.hfToken(await this.load()) ?? undefined); }
 
