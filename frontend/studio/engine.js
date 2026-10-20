@@ -5177,11 +5177,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const flagImg = (cc) => (/^[A-Z]{2}$/.test(cc || '') ? `<img class="lv-flag" src="https://flagcdn.com/${cc.toLowerCase()}.svg" alt="" loading="lazy">` : '');
   function evRow(e, on, cfg) {
     const name = cfg.lang === 'ar' ? (e.translated ? e.ar : (cfg.evAr && cfg.evAr[e.en]) || e.ar) : e.en;
-    const fig = [['A', e.actual], ['F', e.forecast], ['P', e.previous]].filter(([, v]) => v != null && v !== '').map(([k, v]) => `<span class="fg${k === 'A' ? ' a' : ''}"><i>${k}</i>${esc(v)}</span>`).join('');
+    const fig = [['A', e.actual, 'Actual'], ['F', e.forecast, 'Forecast'], ['P', e.previous, 'Previous']].filter(([, v]) => v != null && v !== '').map(([k, v, t]) => `<span class="fg${k === 'A' ? ' a' : ''}" title="${t}"><em>${k}</em>${esc(v)}</span>`).join('');
     return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" data-ev="${esc(e.id)}" aria-pressed="${on}" title="${esc(name)}${on ? ' · on the slide' : ''}">
       <span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span>
-      <span class="lv-evb"><span class="n">${esc(name)}</span>
-        <span class="mt"><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b><span class="cc">${flagImg(e.country)}${esc(e.currency || e.country)}</span><span class="st i${IMP[e.impact]}">${'★'.repeat(IMP[e.impact])}</span>${fig ? `<span class="fgs">${fig}</span>` : ''}</span></span></button>`;
+      <span class="lv-evb"><span class="r1"><span class="n">${esc(name)}</span><span class="st i${IMP[e.impact]}">${'★'.repeat(IMP[e.impact])}</span></span>
+        <span class="r2"><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b><span class="cc">${flagImg(e.country)}${esc(e.currency || e.country)}</span>${fig ? `<span class="fgs">${fig}</span>` : ''}</span></span></button>`;
   }
   /** The period picker's month grid (Monday first). Weekly slides pick a whole row: Monday to Friday light up together. */
   function calPop(wk, shownDate) {
@@ -5429,7 +5429,14 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const box = $('.lv-evs', p);
     if (box) {
       box.scrollTop = ey;
-      if (ED.lvAnchor) { const c = box.querySelector(`.lv-ev[data-ev="${CSS.escape(ED.lvAnchor.id)}"]`); if (c) box.scrollTop += c.getBoundingClientRect().top - ED.lvAnchor.top; }
+      if (ED.lvAnchor) {
+        const c = box.querySelector(`.lv-ev[data-ev="${CSS.escape(ED.lvAnchor.id)}"]`);
+        if (c) {
+          // the box scrolls on wide screens; on phones the panel (a bottom sheet) does
+          let sc = box; while (sc && sc.scrollHeight <= sc.clientHeight + 1) sc = sc.parentElement;
+          if (sc) sc.scrollTop += c.getBoundingClientRect().top - ED.lvAnchor.top;
+        }
+      }
       box.addEventListener('scroll', () => { ED.lvEvsTop = box.scrollTop; }, { passive: true });
     }
     const how = $('.lv-how', p); how && how.addEventListener('toggle', () => { ED.liveHow = how.open; });
