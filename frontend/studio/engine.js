@@ -4957,11 +4957,23 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /* A rating drawn as a picture can't follow the data. Claude reads one of them (symbol, colours);
      each picture's own pixels give the exact size, spacing and position of its symbols; then every
      row's picture is replaced by two aligned text layers: the empty "track" behind, the filled ones in front. */
-  /** Picture layers in the rows that look like ratings (wide, not the flag) */
-  function ratingPictures(pg, map) {
+  /** Per row, the pictures that draw its rating: one wide picture, or one small picture per symbol (Figma exports) */
+  function ratingGroups(pg, map) {
     const byId = new Map(pg.layers.map((l) => [l.id, l])), mapped = new Set(map.rows.flatMap((r) => r.fields.map((f) => f.layerId)));
-    return map.rows.map((row) => row.layerIds.map((id) => byId.get(id)).find((l) => l && l.type === 'image' && !mapped.has(l.id) && l.w >= l.h * 1.6 && l.w < (pg.layers[0] ? pg.layers[0].w * 0.5 : 600))).filter(Boolean);
+    const W = (pg.layers[0] && pg.layers[0].w) || 1080;
+    return map.rows.map((row) => {
+      const own = row.layerIds.map((id) => byId.get(id)).filter(Boolean), texts = own.filter((l) => l.type === 'text');
+      const card = own.find((l) => l.type !== 'text' && l.w > W * 0.5);
+      const band = card ? [card.y, card.y + card.h] : [Math.min(...texts.map((l) => l.y)) - 24, Math.max(...texts.map((l) => l.y + l.h)) + 24];
+      const ev = row.fields.find((f) => f.role === 'event'), evL = ev && byId.get(ev.layerId), minX = evL ? evL.x + 40 : W * 0.4;
+      const pics = pg.layers.filter((l) => l.type !== 'text' && l !== card && !mapped.has(l.id) && !l.hidden && /url\(/.test(String(l.fill || '')) && l.w < W * 0.5 && l.h <= band[1] - band[0] + 4 && l.y >= band[0] - 4 && l.y + l.h <= band[1] + 4 && l.x >= minX);
+      const wide = pics.filter((l) => l.w >= l.h * 1.6);
+      const sym = pics.filter((l) => Math.abs(l.w - l.h) <= Math.max(l.w, l.h) * 0.4).sort((x, y) => x.x - y.x);
+      const layers = sym.length >= 2 ? sym : wide.length ? [wide[0]] : null;
+      return layers ? { row, card, layers } : null;
+    }).filter(Boolean);
   }
+  const ratingPictures = (pg, map) => ratingGroups(pg, map);
   async function pictureOf(l) {
     const m = /url\((['"]?)(.*?)\1\)/.exec(String(l.fill || '')); if (!m) throw new Error('This layer has no picture');
     const src = m[2].startsWith('data:') ? m[2] : URL.createObjectURL(await (await fetch(new URL(m[2], location.href))).blob());
@@ -4973,7 +4985,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0); const d = x.getImageData(0, 0, W, H).data;
     const px = (i, j) => { const k = (j * W + i) * 4; return [d[k], d[k + 1], d[k + 2], d[k + 3]]; };
     const bg = [px(0, 0), px(W - 1, 0), px(0, H - 1), px(W - 1, H - 1)].reduce((a, p) => a.map((v, n) => v + p[n] / 4), [0, 0, 0, 0]);
-    const ink = (p) => p[3] > 40 && Math.abs(p[0] - bg[0]) + Math.abs(p[1] - bg[1]) + Math.abs(p[2] - bg[2]) > 70;
+    const ink = bg[3] < 40 ? (p) => p[3] > 60 : (p) => p[3] > 40 && Math.abs(p[0] - bg[0]) + Math.abs(p[1] - bg[1]) + Math.abs(p[2] - bg[2]) > 70;
     const cols = Array.from({ length: W }, (_, i) => { let n = 0; for (let j = 0; j < H; j++) if (ink(px(i, j))) n++; return n; });
     const groups = []; let s = -1;
     cols.forEach((n, i) => { if (n > 1 && s < 0) s = i; if ((n <= 1 || i === W - 1) && s >= 0) { if (i - s >= Math.max(3, W * 0.02)) groups.push([s, i]); s = -1; } });
@@ -5006,31 +5018,63 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const filled = Tx(x, y, w, sym.repeat(Math.max(1, info.filled)), { ...o, name: 'Rating', color: info.filledColor });
     track.h = filled.h = size; return [track, filled];
   }
+  /** Symbols of one row's rating, in layer coordinates (one picture per symbol, or one picture for all) */
+  async function readGroup(layers) {
+    if (layers.length === 1) { const img = await pictureOf(layers[0]); return { gs: readPixels(img, layers[0]), imgs: [img] }; }
+    const gs = [], imgs = [];
+    for (const l of layers) {
+      const img = await pictureOf(l); imgs.push(img); const parts = readPixels(img, l); if (!parts.length) continue;
+      const big = parts.reduce((a, g) => ((g.x1 - g.x0) * (g.y1 - g.y0) > (a.x1 - a.x0) * (a.y1 - a.y0) ? g : a));
+      gs.push({ x0: Math.min(...parts.map((g) => g.x0)), x1: Math.max(...parts.map((g) => g.x1)), y0: Math.min(...parts.map((g) => g.y0)), y1: Math.max(...parts.map((g) => g.y1)), color: big.color, score: big.score });
+    }
+    return { gs, imgs };
+  }
+  /** The row's rating as one picture, for Claude */
+  function composite(layers, imgs) {
+    const x0 = Math.min(...layers.map((l) => l.x)), y0 = Math.min(...layers.map((l) => l.y)), x1 = Math.max(...layers.map((l) => l.x + l.w)), y1 = Math.max(...layers.map((l) => l.y + l.h)), k = 2;
+    const c = document.createElement('canvas'); c.width = Math.ceil((x1 - x0) * k) + 8; c.height = Math.ceil((y1 - y0) * k) + 8; const x = c.getContext('2d');
+    x.fillStyle = '#7f7f7f'; x.fillRect(0, 0, c.width, c.height); // neutral backdrop: black and white stars both show
+    layers.forEach((l, i) => x.drawImage(imgs[i], (l.x - x0) * k + 4, (l.y - y0) * k + 4, l.w * k, l.h * k));
+    return c.toDataURL('image/png');
+  }
   async function editableStars(btn) {
-    if (!canEdit()) return; const d = ED.d, pg = curP(), cfg = pg.live; if (!cfg || !cfg.map) return;
-    const pics = ratingPictures(pg, cfg.map); if (!pics.length) return toast('No star pictures found in the rows');
+    if (!canEdit()) return; const pg = curP(), cfg = pg.live; if (!cfg || !cfg.map) return;
+    const groups = ratingGroups(pg, cfg.map); if (!groups.length) return addStars(btn);
     btn && busy(btn, true, 'Reading the stars…');
     try {
-      // Claude reads the first picture's symbol and colours; the pixels give every row's geometry
-      const img0 = await pictureOf(pics[0]), c = document.createElement('canvas'); c.width = img0.naturalWidth; c.height = img0.naturalHeight; c.getContext('2d').drawImage(img0, 0, 0);
+      const reads = []; for (const g of groups) reads.push({ g, ...(await readGroup(g.layers)) });
+      const first = reads.find((r) => r.gs.length); if (!first) throw new Error('No symbols found in the pictures');
+      // Claude reads the symbol and colours on the first row; the pixels give every row's geometry
       let ai = null, note = '';
-      try { const r = await api('/social/calendar/rating', { method: 'POST', body: { image: c.toDataURL('image/png') } }); ai = r.rating && r.rating.isRating ? r.rating : null; if (!r.rating) note = 'Colours read from the picture (add a Claude key in Settings → AI assistant to let Claude read it).'; } catch (e) { note = 'Colours read from the picture.'; }
-      const repl = [];
-      for (const l of pics) {
-        const gs = readPixels(l === pics[0] ? img0 : await pictureOf(l), l); if (!gs.length) continue;
+      try { const r = await api('/social/calendar/rating', { method: 'POST', body: { image: composite(first.g.layers, first.imgs) } }); ai = r.rating && r.rating.isRating ? r.rating : null; if (!r.rating) note = 'Colours read from the pictures (add a Claude key in Settings → AI assistant to let Claude read them).'; } catch (e) { note = 'Colours read from the pictures.'; }
+      const repl = reads.filter((r) => r.gs.length).map(({ g, gs }) => {
         const px = splitColors(gs), info = { symbol: ai ? ai.symbol : '★', total: gs.length, filled: px.filled, filledColor: ai ? ai.filledColor : px.filledColor, emptyColor: ai ? ai.emptyColor : px.emptyColor };
-        repl.push({ id: l.id, layers: ratingLayers(l, gs, info) });
-      }
-      if (!repl.length) throw new Error('No symbols found in the pictures');
+        return { ids: g.layers.map((l) => l.id), layers: ratingLayers(g.layers[0], gs, info) };
+      });
       mutate(() => {
         if (pg.live) unbind(pg);
-        repl.forEach(({ id, layers }) => { const i = pg.layers.findIndex((x) => x.id === id); if (i >= 0) pg.layers.splice(i, 1, ...layers); });
+        repl.forEach(({ ids, layers }) => { const i = pg.layers.findIndex((x) => x.id === ids[0]); pg.layers = pg.layers.filter((x) => !ids.includes(x.id)); pg.layers.splice(Math.min(i, pg.layers.length), 0, ...layers); });
         ED.sel = null;
       });
       toast(`${repl.length} star ratings are now editable${ai ? ' (read by Claude)' : ''}. ${note}`.trim());
       peek.clear(); await ACT.lvAnalyze();
     } catch (e) { btn && btn.isConnected && busy(btn, false); toast('Could not convert the stars: ' + e.message); }
   }
+  /** No rating on the slide at all: add editable stars at the end of each row's card */
+  async function addStars(btn) {
+    const pg = curP(), cfg = pg.live, byId = new Map(pg.layers.map((l) => [l.id, l])), W = (pg.layers[0] && pg.layers[0].w) || 1080;
+    const accent = (brand().colors.find((c) => c.name === 'Primary') || {}).hex || '#FD0E35';
+    const adds = cfg.map.rows.map((row) => {
+      const own = row.layerIds.map((id) => byId.get(id)).filter(Boolean), card = own.find((l) => l.type !== 'text' && l.w > W * 0.5), t = own.find((l) => l.type === 'text');
+      if (!card || !t) return null; const size = Math.round(Math.min(card.h * 0.38, (t.size || 28) * 1.1)), pitch = Math.round(size * 1.35), w = pitch * 3, x = Math.round(card.x + card.w - 28 - w), y = Math.round(card.y + card.h / 2 - size / 2);
+      const gs = [0, 1, 2].map((i) => ({ x0: x + i * pitch, x1: x + i * pitch + size, y0: y, y1: y + size * 0.95 }));
+      return { after: card.id, layers: ratingLayers(card, gs, { symbol: '★', total: 3, filled: 2, filledColor: accent, emptyColor: 'rgba(127,127,127,.35)' }) };
+    }).filter(Boolean);
+    if (!adds.length) return toast('Add a ★★★ text to the first row, then re-analyze');
+    mutate(() => { if (pg.live) unbind(pg); adds.forEach(({ after, layers }) => { const i = pg.layers.findIndex((l) => l.id === after); pg.layers.splice(i + 1, 0, ...layers); }); });
+    toast(`Added live stars to ${adds.length} rows`); peek.clear(); await ACT.lvAnalyze();
+  }
+
   /** What a mapped layer shows: its original text, or a preview of a picture (flags) */
   function mapChip(f, cfg, byId) {
     const l = byId.get(f.layerId) || {}, o = cfg.orig[f.layerId] || {};
@@ -5062,14 +5106,20 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         </div>` + field('Check for new data every', `<select class="field sm" id="lvEvery" ${cfg.paused ? 'disabled' : ''}>${EVERY.map(([v, l]) => `<option value="${v}" ${+cfg.every === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
         + `<button class="btn secondary lv-wide" data-act="lvRefresh">${ic('refresh', 16)}Refresh now</button>`)
       + `<details class="lv-sec lv-how"${ED.liveHow ? ' open' : ''}><summary><b>How we read this slide</b><span class="lv-tag ${map.engine === 'claude' ? 'ai' : ''}">${map.engine === 'claude' ? 'Claude' : 'Layout'}</span></summary>
-        <p class="lv-hint">${esc(map.reason || '')}${map.note ? ' ' + esc(map.note) : ''}</p>
-        <div class="lv-maps">${r1 ? r1.fields.map((f, n) => `<div class="lv-map">${mapChip(f, cfg, byId)}<select class="field sm" data-lvrole="${n}" aria-label="Field type">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
-        ${map.date ? `<div class="lv-map"><span class="tx">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 28))}</span><span class="lv-fixed">Date</span></div>` : ''}</div>
-        ${r1 && !r1.fields.some((f) => f.role === 'impact') ? (ratingPictures(pg, map).length
-          ? `<div class="lv-note warn lv-fix">${ic('alert', 14)}<span><b>Impact isn't live: its stars are pictures.</b> Turn them into editable stars that follow each event's impact. Size, spacing and colours stay the same.</span><button class="btn primary sm" data-act="lvStars">${ic('wand', 14)}Make stars editable with AI</button></div>`
-          : `<p class="lv-note warn">${ic('alert', 14)}<span>Impact isn't live on this slide. Add an impact text (★★★) to the first row and re-analyze, or import the design again.</span></p>`) : ''}
-        <p class="lv-hint">Based on row 1; the other ${map.rows.length - 1} rows follow it. Change colours, fonts and layout freely. After moving or adding text, re-analyze.</p>
-        <div class="lv-row"><button class="btn secondary sm" data-act="lvAnalyze">${ic('refresh', 14)}Re-analyze</button><button class="btn ghost sm lv-danger" data-act="lvRemove">Remove live data</button></div>
+        <div class="lv-how-b">
+          ${map.reason || map.note ? `<p class="lv-hint">${esc(map.reason || '')}${map.note ? ' ' + esc(map.note) : ''}</p>` : ''}
+          <div class="lv-maps" role="table" aria-label="Fields read on the slide">
+            <div class="lv-map lv-map-h" role="row"><span role="columnheader">On the slide</span><span role="columnheader">Reads as</span></div>
+            ${r1 ? r1.fields.map((f, n) => `<div class="lv-map" role="row">${mapChip(f, cfg, byId)}<select class="field sm" data-lvrole="${n}" aria-label="Field type">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
+            ${map.date ? `<div class="lv-map" role="row"><span class="tx" title="${esc((cfg.orig[map.date.layerId] || {}).text || '')}">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 28))}</span><span class="lv-fixed">Date</span></div>` : ''}
+            ${map.tz ? `<div class="lv-map" role="row"><span class="tx">${esc(((cfg.orig[map.tz.layerId] || {}).text || '').split('\n')[0].slice(0, 28))}</span><span class="lv-fixed">Time zone</span></div>` : ''}
+          </div>
+          ${r1 && !r1.fields.some((f) => f.role === 'impact') ? (ratingPictures(pg, map).length
+            ? `<div class="lv-fixcard">${ic('alert', 16)}<div><b>Impact isn't live: the stars are pictures</b><p>AI turns them into editable stars that follow each event's impact, with the same size, spacing and colours.</p></div><button class="btn primary sm" data-act="lvStars">${ic('wand', 15)}Make stars editable with AI</button></div>`
+            : `<div class="lv-fixcard">${ic('alert', 16)}<div><b>Impact isn't on this slide</b><p>Add live stars at the end of each row. They follow each event's impact; edit their colours like any text.</p></div><button class="btn primary sm" data-act="lvStars">${ic('wand', 15)}Add live stars</button></div>`) : ''}
+          <p class="lv-hint lv-foot">Based on row 1: the other ${map.rows.length - 1} rows follow it. Change colours, fonts and layout freely; after moving or adding text, re-analyze.</p>
+          <div class="lv-row"><button class="btn secondary sm" data-act="lvAnalyze">${ic('refresh', 14)}Re-analyze</button><button class="btn ghost sm lv-danger" data-act="lvRemove">Remove live data</button></div>
+        </div>
       </details>`;
   }
   const importCard = () => `<div class="lv-or"><span>or bring your own</span></div>
