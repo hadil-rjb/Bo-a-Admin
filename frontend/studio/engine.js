@@ -5177,7 +5177,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const flagImg = (cc) => (/^[A-Z]{2}$/.test(cc || '') ? `<img class="lv-flag" src="https://flagcdn.com/${cc.toLowerCase()}.svg" alt="" loading="lazy">` : '');
   function evRow(e, on, cfg) {
     const name = cfg.lang === 'ar' ? (e.translated ? e.ar : (cfg.evAr && cfg.evAr[e.en]) || e.ar) : e.en;
-    return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" aria-pressed="${on}" title="${esc(name)}${on ? ' · on the slide' : ''}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b>${flagImg(e.country)}<span class="n">${esc(name)}</span><span class="st i${IMP[e.impact]}">${'★'.repeat(IMP[e.impact])}</span>${e.actual != null ? `<span class="v">${esc(e.actual)}</span>` : ''}</button>`;
+    const fig = [['A', e.actual], ['F', e.forecast], ['P', e.previous]].filter(([, v]) => v != null && v !== '').map(([k, v]) => `<span class="fg${k === 'A' ? ' a' : ''}"><i>${k}</i>${esc(v)}</span>`).join('');
+    return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" data-ev="${esc(e.id)}" aria-pressed="${on}" title="${esc(name)}${on ? ' · on the slide' : ''}">
+      <span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span>
+      <span class="lv-evb"><span class="n">${esc(name)}</span>
+        <span class="mt"><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b><span class="cc">${flagImg(e.country)}${esc(e.currency || e.country)}</span><span class="st i${IMP[e.impact]}">${'★'.repeat(IMP[e.impact])}</span>${fig ? `<span class="fgs">${fig}</span>` : ''}</span></span></button>`;
   }
   /** The period picker's month grid (Monday first). Weekly slides pick a whole row: Monday to Friday light up together. */
   function calPop(wk, shownDate) {
@@ -5420,6 +5424,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (cfg) h += bound(pg);
     else h += `<div class="seg lv-tabs">${[['slide', 'layers', 'This slide'], ['brand', 'palette', 'Brand Kit']].map(([v, i, l]) => `<button class="${tab() === v ? 'on' : ''}" data-act="lvTab" data-v="${v}">${ic(i, 15)}${l}</button>`).join('')}</div>` + (tab() === 'slide' ? unboundSlide(d, ED.pi) : unboundBrand(d));
     const y = p.scrollTop; p.innerHTML = h; p.scrollTop = y; p.classList.add('lv-panel');
+    // a tick re-renders the panel: the clicked card stays exactly where it was on screen
+    if (ED.lvAnchor) { const c = p.querySelector(`.lv-ev[data-ev="${CSS.escape(ED.lvAnchor.id)}"]`); if (c) p.scrollTop += c.getBoundingClientRect().top - ED.lvAnchor.top; }
     const how = $('.lv-how', p); how && how.addEventListener('toggle', () => { ED.liveHow = how.open; });
     if (cfg && !cfg.events) refresh(d, { force: true });
   }
@@ -5637,6 +5643,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     lvCty: (a) => { const c = cfgNow(), k = a.dataset.k; c.countries = c.countries.includes(k) ? c.countries.filter((x) => x !== k) : [...c.countries, k]; if (!c.countries.length) c.countries = [k]; c.pick = null; save(); reapply(); },
     lvPick: async (a) => {
       if (ED.lvPicking) return; // one change at a time: each one re-renders the slide
+      ED.lvAnchor = { id: a.dataset.id, top: a.getBoundingClientRect().top };
       const c = cfgNow(), wk = isWeek(c), n = wk ? 999 : c.map.rows.length, cur = wk ? [...(c.shown || [])] : choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id, adding = !cur.includes(id);
       const next = adding ? [...cur, id] : cur.filter((x) => x !== id);
       if (next.length > n) { toast(`This design has ${n} rows: untick an event first`); return; }
@@ -5649,7 +5656,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         await reapply();
         // a weekly slide has limited room: an event that doesn't fit is not added
         if (wk && adding && !c.pick.every((x) => (c.shown || []).includes(x))) { c.pick = prev; save(); await reapply(); toast('No room left on the slide: untick an event first'); }
-      } finally { ED.lvPicking = false; }
+      } finally { ED.lvPicking = false; setTimeout(() => { ED.lvAnchor = null; }, 400); }
     },
     lvAuto: () => { cfgNow().pick = null; save(); reapply(); },
     lvCtyAll: () => { const c = cfgNow(); c.countries = CTRY.map(([k]) => k); c.pick = null; save(); reapply(); },
