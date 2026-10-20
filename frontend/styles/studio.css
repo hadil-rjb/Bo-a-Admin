@@ -1484,6 +1484,10 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .lv-map .tx.pic i{width:18px;height:18px;flex-shrink:0;box-shadow:0 0 0 1px var(--border);background-size:cover!important;background-position:center!important}
 .lv-map>.field{padding-top:0;padding-bottom:0;font-size:12.5px}
 .lv-fixed{display:flex;align-items:center;padding:0 10px;border:1px dashed var(--border);font-size:12.5px;color:var(--text-3)}
+.lv-fixed.live{border-style:solid;border-color:rgba(34,162,76,.35);color:var(--pos);background:var(--pos-bg)}
+.lv-fixed.tr{border-style:solid;border-color:rgba(217,119,87,.35);color:#c2410c;background:rgba(217,119,87,.08)}
+.lv-rtl{padding:10px 0 0;border-top:0}
+.lv-langnote{margin-top:-2px}
 .lv-map-h{min-height:0}.lv-map-h span{font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--text-3)}
 .lv-fixcard{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px;padding:12px;border:1px solid rgba(217,154,30,.35);border-radius:12px;background:rgba(251,191,36,.10)}
 .lv-fixcard>.ic{margin-top:1px;color:#b7791f}

@@ -35,6 +35,16 @@ class ImportDto {
   @IsNumber() imgH!: number;
 }
 
+class TranslateItem {
+  @IsString() @MaxLength(80) id!: string;
+  @IsString() @MaxLength(600) text!: string;
+}
+class TranslateDto {
+  @IsArray() @ArrayMaxSize(120) @ValidateNested({ each: true }) @Type(() => TranslateItem) items!: TranslateItem[];
+  @IsIn(["ar", "en"]) to!: "ar" | "en";
+  @IsOptional() @IsString() @MaxLength(120) brand?: string;
+}
+
 class RatingDto {
   @IsString() @Matches(/^data:image\/(png|jpeg|webp);base64,/) @MaxLength(3_000_000) image!: string;
 }
@@ -61,6 +71,12 @@ export class CalendarController {
   @Roles("admin", "editor") @Post("rating") @HttpCode(200)
   rating(@Body() dto: RatingDto) {
     return this.svc.rating(dto.image);
+  }
+
+  /** Fixed texts and templates of a slide, translated (Arabic / English) */
+  @Roles("admin", "editor") @Post("translate") @HttpCode(200)
+  translate(@Body() dto: TranslateDto) {
+    return this.svc.translate(dto);
   }
 
   @Roles("admin", "editor") @Post("analyze") @HttpCode(200)
