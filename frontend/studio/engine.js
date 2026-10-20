@@ -4953,6 +4953,84 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   function evRow(e, on, cfg) {
     return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" aria-pressed="${on}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b><span class="grow" title="${esc(cfg.lang === 'ar' ? e.ar : e.en)}"><span class="n">${esc(cfg.lang === 'ar' ? e.ar : e.en)}</span><small>${esc(e.currency || e.country)} · <span class="st">${'★'.repeat(IMP[e.impact])}</span></small></span>${e.actual != null ? `<span class="v">${esc(e.actual)}</span>` : ''}</button>`;
   }
+  /* ---------- star pictures → editable stars ---------- */
+  /* A rating drawn as a picture can't follow the data. Claude reads one of them (symbol, colours);
+     each picture's own pixels give the exact size, spacing and position of its symbols; then every
+     row's picture is replaced by two aligned text layers: the empty "track" behind, the filled ones in front. */
+  /** Picture layers in the rows that look like ratings (wide, not the flag) */
+  function ratingPictures(pg, map) {
+    const byId = new Map(pg.layers.map((l) => [l.id, l])), mapped = new Set(map.rows.flatMap((r) => r.fields.map((f) => f.layerId)));
+    return map.rows.map((row) => row.layerIds.map((id) => byId.get(id)).find((l) => l && l.type === 'image' && !mapped.has(l.id) && l.w >= l.h * 1.6 && l.w < (pg.layers[0] ? pg.layers[0].w * 0.5 : 600))).filter(Boolean);
+  }
+  async function pictureOf(l) {
+    const m = /url\((['"]?)(.*?)\1\)/.exec(String(l.fill || '')); if (!m) throw new Error('This layer has no picture');
+    const src = m[2].startsWith('data:') ? m[2] : URL.createObjectURL(await (await fetch(new URL(m[2], location.href))).blob());
+    return loadImg(src);
+  }
+  /** Symbols found in a rating picture: boxes and colours, in layer coordinates */
+  function readPixels(img, l) {
+    const W = img.naturalWidth, H = img.naturalHeight, c = document.createElement('canvas'); c.width = W; c.height = H;
+    const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0); const d = x.getImageData(0, 0, W, H).data;
+    const px = (i, j) => { const k = (j * W + i) * 4; return [d[k], d[k + 1], d[k + 2], d[k + 3]]; };
+    const bg = [px(0, 0), px(W - 1, 0), px(0, H - 1), px(W - 1, H - 1)].reduce((a, p) => a.map((v, n) => v + p[n] / 4), [0, 0, 0, 0]);
+    const ink = (p) => p[3] > 40 && Math.abs(p[0] - bg[0]) + Math.abs(p[1] - bg[1]) + Math.abs(p[2] - bg[2]) > 70;
+    const cols = Array.from({ length: W }, (_, i) => { let n = 0; for (let j = 0; j < H; j++) if (ink(px(i, j))) n++; return n; });
+    const groups = []; let s = -1;
+    cols.forEach((n, i) => { if (n > 1 && s < 0) s = i; if ((n <= 1 || i === W - 1) && s >= 0) { if (i - s >= Math.max(3, W * 0.02)) groups.push([s, i]); s = -1; } });
+    const sx = l.w / W, sy = l.h / H;
+    return groups.map(([a, b]) => {
+      let y0 = H, y1 = 0, r = 0, g = 0, bl = 0, n = 0;
+      for (let i = a; i < b; i++) for (let j = 0; j < H; j++) { const p = px(i, j); if (!ink(p)) continue; y0 = Math.min(y0, j); y1 = Math.max(y1, j); r += p[0]; g += p[1]; bl += p[2]; n++; }
+      const col = [r / n, g / n, bl / n], hex = '#' + col.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+      const mx = Math.max(...col), mn = Math.min(...col);
+      return { x0: l.x + a * sx, x1: l.x + b * sx, y0: l.y + y0 * sy, y1: l.y + y1 * sy, color: hex, score: (mx - mn) + mx * 0.3 };
+    });
+  }
+  /** Filled vs empty by colour: the most vivid group of symbols is "filled" */
+  function splitColors(gs) {
+    const sorted = [...gs].sort((a, b) => b.score - a.score), top = sorted[0].score;
+    const filled = gs.filter((g) => g.score >= top - Math.max(40, top * 0.25));
+    const empty = gs.filter((g) => !filled.includes(g));
+    return { filled: filled.length, filledColor: filled[0].color, emptyColor: empty.length ? empty[0].color : filled[0].color + '55' };
+  }
+  /** Two text layers that draw the rating exactly over the picture's symbols */
+  function ratingLayers(l, gs, info) {
+    const n = Math.max(gs.length, 1), sym = info.symbol || '★', font = 'Inter';
+    const gh = gs.reduce((a, g) => a + (g.y1 - g.y0), 0) / n, cy = gs.reduce((a, g) => a + (g.y0 + g.y1) / 2, 0) / n;
+    const pitch = n > 1 ? (gs[n - 1].x0 + gs[n - 1].x1 - gs[0].x0 - gs[0].x1) / 2 / (n - 1) : gh * 1.3;
+    mctx.font = `400 100px '${font}', sans-serif`; const mt = mctx.measureText(sym), glyphH = (mt.actualBoundingBoxAscent + mt.actualBoundingBoxDescent) || 72, glyphW = (mt.actualBoundingBoxLeft + mt.actualBoundingBoxRight) || mt.width;
+    const size = Math.max(8, Math.round((gh / glyphH) * 100)), k = size / 100, adv = mt.width * k, ls = Math.round((pitch - adv) * 10) / 10;
+    const x = Math.round(gs[0].x0 - (adv - glyphW * k) / 2 - Math.max(0, mt.actualBoundingBoxLeft || 0) * 0), y = Math.round(cy - size / 2);
+    const w = Math.round(n * pitch + size), o = { size, weight: 400, font, align: 'left', ls, lh: 1, dir: 'ltr' };
+    const track = Tx(x, y, w, sym.repeat(info.total || n), { ...o, name: 'Rating track', color: info.emptyColor });
+    const filled = Tx(x, y, w, sym.repeat(Math.max(1, info.filled)), { ...o, name: 'Rating', color: info.filledColor });
+    track.h = filled.h = size; return [track, filled];
+  }
+  async function editableStars(btn) {
+    if (!canEdit()) return; const d = ED.d, pg = curP(), cfg = pg.live; if (!cfg || !cfg.map) return;
+    const pics = ratingPictures(pg, cfg.map); if (!pics.length) return toast('No star pictures found in the rows');
+    btn && busy(btn, true, 'Reading the stars…');
+    try {
+      // Claude reads the first picture's symbol and colours; the pixels give every row's geometry
+      const img0 = await pictureOf(pics[0]), c = document.createElement('canvas'); c.width = img0.naturalWidth; c.height = img0.naturalHeight; c.getContext('2d').drawImage(img0, 0, 0);
+      let ai = null, note = '';
+      try { const r = await api('/social/calendar/rating', { method: 'POST', body: { image: c.toDataURL('image/png') } }); ai = r.rating && r.rating.isRating ? r.rating : null; if (!r.rating) note = 'Colours read from the picture (add a Claude key in Settings → AI assistant to let Claude read it).'; } catch (e) { note = 'Colours read from the picture.'; }
+      const repl = [];
+      for (const l of pics) {
+        const gs = readPixels(l === pics[0] ? img0 : await pictureOf(l), l); if (!gs.length) continue;
+        const px = splitColors(gs), info = { symbol: ai ? ai.symbol : '★', total: gs.length, filled: px.filled, filledColor: ai ? ai.filledColor : px.filledColor, emptyColor: ai ? ai.emptyColor : px.emptyColor };
+        repl.push({ id: l.id, layers: ratingLayers(l, gs, info) });
+      }
+      if (!repl.length) throw new Error('No symbols found in the pictures');
+      mutate(() => {
+        if (pg.live) unbind(pg);
+        repl.forEach(({ id, layers }) => { const i = pg.layers.findIndex((x) => x.id === id); if (i >= 0) pg.layers.splice(i, 1, ...layers); });
+        ED.sel = null;
+      });
+      toast(`${repl.length} star ratings are now editable${ai ? ' (read by Claude)' : ''}. ${note}`.trim());
+      peek.clear(); await ACT.lvAnalyze();
+    } catch (e) { btn && btn.isConnected && busy(btn, false); toast('Could not convert the stars: ' + e.message); }
+  }
   /** What a mapped layer shows: its original text, or a preview of a picture (flags) */
   function mapChip(f, cfg, byId) {
     const l = byId.get(f.layerId) || {}, o = cfg.orig[f.layerId] || {};
@@ -4987,7 +5065,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         <p class="lv-hint">${esc(map.reason || '')}${map.note ? ' ' + esc(map.note) : ''}</p>
         <div class="lv-maps">${r1 ? r1.fields.map((f, n) => `<div class="lv-map">${mapChip(f, cfg, byId)}<select class="field sm" data-lvrole="${n}" aria-label="Field type">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
         ${map.date ? `<div class="lv-map"><span class="tx">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 28))}</span><span class="lv-fixed">Date</span></div>` : ''}</div>
-        ${r1 && !r1.fields.some((f) => f.role === 'impact') ? `<p class="lv-note warn">${ic('alert', 14)}<span>Impact isn't live on this slide${/image|picture/i.test(map.reason || '') ? ': its stars are pictures' : ''}. Import the design again (Import an image) to get editable stars.</span></p>` : ''}
+        ${r1 && !r1.fields.some((f) => f.role === 'impact') ? (ratingPictures(pg, map).length
+          ? `<div class="lv-note warn lv-fix">${ic('alert', 14)}<span><b>Impact isn't live: its stars are pictures.</b> Turn them into editable stars that follow each event's impact. Size, spacing and colours stay the same.</span><button class="btn primary sm" data-act="lvStars">${ic('wand', 14)}Make stars editable with AI</button></div>`
+          : `<p class="lv-note warn">${ic('alert', 14)}<span>Impact isn't live on this slide. Add an impact text (★★★) to the first row and re-analyze, or import the design again.</span></p>`) : ''}
         <p class="lv-hint">Based on row 1; the other ${map.rows.length - 1} rows follow it. Change colours, fonts and layout freely. After moving or adding text, re-analyze.</p>
         <div class="lv-row"><button class="btn secondary sm" data-act="lvAnalyze">${ic('refresh', 14)}Re-analyze</button><button class="btn ghost sm lv-danger" data-act="lvRemove">Remove live data</button></div>
       </details>`;
@@ -5218,6 +5298,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         await refresh(d, { silent: false, force: true });
       } catch (e) { done(); toast('Could not build the template: ' + e.message); }
     },
+    lvStars: (a) => { if (!a.getAttribute('aria-busy')) editableStars(a); },
     lvRemove: () => { const pg = curP(); if (!pg.live) return; mutate(() => unbind(pg)); toast('Live data removed. The slide keeps its original text.'); },
     lvRefresh: async () => { const done = busyWith('[data-act=lvRefresh]', 'Checking…'); feed.clear(); await refresh(ED.d, { silent: false, force: true }); done(); },
     lvDay: (a) => { const c = cfgNow(); c.day = a.dataset.v; c.pick = null; save(); reapply(); },

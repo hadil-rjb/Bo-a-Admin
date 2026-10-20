@@ -1418,6 +1418,8 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .lv-hint.c{text-align:center}
 .lv-note{display:flex;align-items:flex-start;gap:6px;font-size:12px;line-height:1.45;color:var(--text-2)}.lv-note .ic{margin-top:2px}
 .lv-note.warn{padding:9px 10px;border-radius:9px;background:rgba(251,191,36,.12);color:var(--text-1)}
+.lv-note.lv-fix{flex-wrap:wrap;padding:12px}.lv-note.lv-fix>span{flex:1 1 0;min-width:0}.lv-note.lv-fix b{display:block;font-weight:600;margin-bottom:2px}
+.lv-note.lv-fix .btn{flex:1 1 100%;margin-top:4px;height:36px}
 .lv-note.err{color:var(--neg)}
 .lv-sec .chips{gap:6px}
 .lv-sec .chip{height:28px;padding:0 11px;display:inline-flex;align-items:center;font-size:12.5px}

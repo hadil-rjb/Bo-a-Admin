@@ -286,3 +286,39 @@ export async function importWithClaude(apiKey: string, input: { image: string; i
     .filter((l) => l.w > 1 && l.h > 1 && (l.kind !== "text" || (l.text || "").trim()));
   return { design, model: res.model };
 }
+
+/* ---------------- reading a rating picture (stars drawn as an image) ---------------- */
+
+const RatingSchema = z.object({
+  isRating: z.boolean().describe("true when the picture is a row of rating symbols (stars, dots, bars, flames…)"),
+  symbol: z.string().describe("The single Unicode character closest to one symbol, e.g. ★ for stars, ● for dots, ■ for squares, ▮ for bars"),
+  total: z.number().describe("How many symbols in the row, filled or not"),
+  filled: z.number().describe("How many are filled / highlighted"),
+  filledColor: z.string().describe("Hex colour of the filled symbols"),
+  emptyColor: z.string().describe("Hex colour of the empty symbols (or a faint version of the filled colour if none are empty)"),
+});
+export type Rating = z.infer<typeof RatingSchema>;
+
+/** Claude's reading of a rating picture: which symbol, how many, which colours */
+export async function ratingWithClaude(apiKey: string, image: string) {
+  const m = /^data:image\/(png|jpeg|webp);base64,/.exec(image);
+  if (!m) throw new Error("Expected a PNG, JPEG or WebP image");
+  const client = new Anthropic({ apiKey, timeout: 60_000, maxRetries: 1 });
+  const res = await client.beta.messages.create({
+    model: ANALYZE_MODEL,
+    max_tokens: 4000,
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+    output_config: { effort: "low", format: zodOutputFormat(RatingSchema) },
+    system: "You read small pictures cropped from social media designs. Describe the rating symbols in the picture exactly: their kind, how many there are, how many are filled, and their colours.",
+    messages: [{ role: "user", content: [
+      { type: "image", source: { type: "base64", media_type: `image/${m[1]}` as "image/png" | "image/jpeg" | "image/webp", data: image.slice(m[0].length) } },
+      { type: "text", text: "Describe this rating." },
+    ] }],
+  });
+  if (res.stop_reason === "refusal") throw new Error("Claude declined to read this picture");
+  const text = res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
+  const r = RatingSchema.parse(JSON.parse(text));
+  const hex = (c: string, d: string) => (/^#[0-9a-f]{3,8}$/i.test(c.trim()) ? c.trim() : d);
+  return { ...r, total: Math.max(1, Math.min(10, Math.round(r.total))), filled: Math.max(0, Math.min(10, Math.round(r.filled))), symbol: [...(r.symbol || "★")][0] || "★", filledColor: hex(r.filledColor, "#FFC107"), emptyColor: hex(r.emptyColor, "#444444"), model: res.model };
+}

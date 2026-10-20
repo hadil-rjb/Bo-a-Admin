@@ -35,6 +35,10 @@ class ImportDto {
   @IsNumber() imgH!: number;
 }
 
+class RatingDto {
+  @IsString() @Matches(/^data:image\/(png|jpeg|webp);base64,/) @MaxLength(3_000_000) image!: string;
+}
+
 /** Live economic calendar for the studio: events from TradingView / Forex Factory, and slide analysis. */
 @Controller("social/calendar")
 export class CalendarController {
@@ -51,6 +55,12 @@ export class CalendarController {
   @Roles("admin", "editor") @Post("import") @HttpCode(200)
   importImage(@Body() dto: ImportDto) {
     return this.svc.importImage(dto);
+  }
+
+  /** A picture of a rating (stars as an image) → symbol, count and colours, to rebuild it as editable text */
+  @Roles("admin", "editor") @Post("rating") @HttpCode(200)
+  rating(@Body() dto: RatingDto) {
+    return this.svc.rating(dto.image);
   }
 
   @Roles("admin", "editor") @Post("analyze") @HttpCode(200)
