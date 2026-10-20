@@ -20,6 +20,8 @@ export class SocialTemplate {
   @Prop() bg?: string;
   /** Canvas layers of the saved slide */
   @Prop({ type: [MongooseSchema.Types.Mixed], default: [] }) layers!: Record<string, unknown>[];
+  /** Live data settings when the slide was a dynamic (live calendar) slide */
+  @Prop({ type: MongooseSchema.Types.Mixed }) live?: Record<string, unknown>;
 }
 export type SocialTemplateDocument = HydratedDocument<SocialTemplate>;
 export const SocialTemplateSchema = SchemaFactory.createForClass(SocialTemplate);

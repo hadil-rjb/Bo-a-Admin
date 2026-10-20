@@ -258,6 +258,14 @@ const remapIds = (v, m) => {
   if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [m.get(k) || k.replace(/^([a-z]:)(.+)$/, (s, p, id) => (m.has(id) ? p + m.get(id) : s)), remapIds(x, m)]));
   return typeof v === 'string' && m.has(v) ? m.get(v) : v;
 };
+/** Live data settings worth keeping in a template: the mapping and choices, not this week's events or picks */
+const liveForTemplate = (live) => {
+  if (!live || !live.map) return null;
+  const { events, feed, shown, room, at, err, pick, ...keep } = JSON.parse(JSON.stringify(live));
+  return keep;
+};
+/** A template's slide as a fresh page: new layer ids, its Live data following them */
+const pageFromTemplate = (t) => reIdPage(JSON.parse(JSON.stringify({ bg: t.bg || '#0b1220', layers: t.layers || [], ...(t.live ? { live: t.live } : {}) })));
 /** A copied page gets new layer ids; its Live data settings, which name layers by id, follow them */
 function reIdPage(pg) {
   const m = new Map(); (pg.layers || []).forEach((l) => { const n = uid(); m.set(l.id, n); l.id = n; });
@@ -299,7 +307,8 @@ function busy(btn, on, label) {
   if (on) { btn.dataset.l = btn.innerHTML; btn.disabled = true; btn.setAttribute('aria-busy', 'true'); btn.innerHTML = `<i class="spin"></i>${esc(label)}`; }
   else if (btn.dataset.l) { btn.disabled = false; btn.removeAttribute('aria-busy'); btn.innerHTML = btn.dataset.l; }
 }
-const btThumb = (t, bw, bh) => thumb({ bg: t.bg || '#0b1220', layers: t.layers }, t.ratio, bw, bh);
+/** A brand template's preview; dynamic (live data) templates carry a Live badge */
+const btThumb = (t, bw, bh) => { const h = thumb({ bg: t.bg || '#0b1220', layers: t.layers }, t.ratio, bw, bh); return t.live ? h.replace(/<\/div>$/, `<span class="tpl-live">${ic('chart', 11)}Live</span></div>`) : h; };
 function aiCaption(d) {
   const b = brand(), tags = b.hashtags ? '\n\n' + b.hashtags : '';
   if (d.tpl === 'calendar') return CAPS[Math.floor(Math.random() * CAPS.length)] + tags;
@@ -796,7 +805,7 @@ Object.assign(ACT, {
   },
   fromBTpl: (a) => {
     const t = brand().templates.find((x) => x.id === a.dataset.id); if (!t) return;
-    const d = createDesign({ name: t.name, tpl: 'blank', ratio: t.ratio, mutate: (d) => { d.pages = [{ id: uid(), bg: t.bg || '#0b1220', layers: cloneLayers(t.layers) }]; } });
+    const d = createDesign({ name: t.name, tpl: 'blank', ratio: t.ratio, mutate: (d) => { d.pages = [{ id: uid(), ...pageFromTemplate(t) }]; } });
     toast('Design created from “' + t.name + '”'); location.hash = '#/editor/' + d.id;
   },
   dupBrand: () => {
@@ -837,18 +846,26 @@ Object.assign(ACT, {
   },
   edBTpl: (a) => {
     const t = brand().templates.find((x) => x.id === a.dataset.id); if (!t) return;
-    mutate(() => { curP().layers = fitLayers(cloneLayers(t.layers), t.ratio, ED.d.ratio); ED.sel = null; }); toast('Template applied');
+    const same = t.ratio === ED.d.ratio, pg = pageFromTemplate(t), live = same && pg.live;
+    mutate(() => {
+      const cur = curP(); cur.layers = same ? pg.layers : fitLayers(pg.layers, t.ratio, ED.d.ratio);
+      if (live) cur.live = live; else delete cur.live; // the old mapping named the replaced layers
+      ED.sel = null;
+    });
+    if (live) { LIVE && LIVE.refresh(ED.d, { force: true }); toast('Template applied: its live data is updating'); }
+    else toast(t.live ? 'Template applied. Re-analyze it in Live data to make it live at this size' : 'Template applied');
   },
   edSaveTpl: () => {
     modal(`<div class="mh"><h2>Save as brand template</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
-    <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(curP(), ED.d.ratio, 100, 130)}<div class="grow"><label class="lab">Template name<input class="field" id="tpN" value="${esc(ED.d.name)}" maxlength="50"></label><p class="xs-t muted" style="margin-top:8px">Saved to ${esc(brand().name)} only. Text and shapes stay editable when you reuse it.</p></div></div></div>
+    <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(curP(), ED.d.ratio, 100, 130)}<div class="grow"><label class="lab">Template name<input class="field" id="tpN" value="${esc(ED.d.name)}" maxlength="50"></label><p class="xs-t muted" style="margin-top:8px">Saved to ${esc(brand().name)} only. Text and shapes stay editable when you reuse it.${curP().live && curP().live.map ? ' <b>Live data is kept</b>: the template stays a live calendar.' : ''}</p></div></div></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="tpGo">Save template</button></div>`, {
       onMount: (bg, close) => {
         const g = $('#tpGo', bg), i = $('#tpN', bg);
         const go = async () => {
           if (g.disabled || !canEdit()) return;
           const b = brand(), n = i.value.trim() || 'Untitled template';
-          const tpl = { id: 't' + uid(), name: n.slice(0, 80), ratio: ED.d.ratio, bg: curP().bg, layers: cloneLayers(curP().layers) };
+          const src = reIdPage(JSON.parse(JSON.stringify({ layers: curP().layers, live: liveForTemplate(curP().live) })));
+          const tpl = { id: 't' + uid(), name: n.slice(0, 80), ratio: ED.d.ratio, bg: curP().bg, layers: src.layers, ...(src.live ? { live: src.live } : {}) };
           busy(g, true, 'Saving…');
           try {
             await persist.flush(); // a brand created a moment ago must exist on the server first

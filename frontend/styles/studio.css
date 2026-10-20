@@ -1587,3 +1587,6 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 @media (max-width:420px){.lv-ctys{grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}.lv-cty{height:28px;font-size:11.5px}.lv-impb{font-size:12px;gap:3px}.lv-ev{padding:9px 10px;gap:8px}}
 /* phones: the panel is a bottom sheet that scrolls itself, so the list doesn't get a second scroll */
 @media (max-width:700px){.lv-evs{max-height:none;overflow:visible;margin:0;padding:0}}
+/* brand templates made from a live (dynamic) slide */
+.thumb{position:relative}
+.tpl-live{position:absolute;left:6px;top:6px;z-index:1;display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border-radius:99px;background:var(--accent);color:#fff;font:600 10px/1.4 var(--sans);box-shadow:0 2px 6px rgba(0,0,0,.25)}
