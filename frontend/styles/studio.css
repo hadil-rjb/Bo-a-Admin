@@ -1078,6 +1078,10 @@ input[type=range]:disabled{opacity:.45;cursor:not-allowed}
   #cmdk,.cmdk{max-width:calc(100vw - 16px)}
   .cp{width:min(252px,calc(100vw - 16px))}
 }
+/* editor: toasts sit under the top bar, over the canvas, so they never cover the slides strip or the panels */
+@media (min-width:1100px){body.in-editor .toast{bottom:auto;top:72px}}
+.toast{max-width:min(560px,calc(100vw - 32px));line-height:1.4;pointer-events:auto;cursor:pointer}
+.toast>svg{flex:none}
 @media (max-width:1099px){body.in-editor .toast{bottom:156px}}
 @media (max-width:700px){body.in-editor .toast{bottom:calc(76px + env(safe-area-inset-bottom));max-width:calc(100vw - 24px)}body.in-editor.ftb-on .toast{bottom:calc(132px + env(safe-area-inset-bottom))}}
 @media (max-width:900px) and (max-height:500px){

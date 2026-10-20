@@ -374,7 +374,8 @@ const pfDots = (a) => `<span class="pfs">${a.map((k) => `<span class="pf" title=
 const badge = (s) => `<span class="badge b-${s}">${s}</span>`;
 const ACT = {};
 
-function toast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.innerHTML = ic('check', 16) + esc(msg); document.body.append(t); setTimeout(() => t.remove(), 2600); }
+/** Short notice; longer messages stay longer, a click dismisses it, and a new one replaces the previous */
+function toast(msg) { document.querySelectorAll('.toast:not(.tu)').forEach((x) => x.remove()); const t = document.createElement('div'); t.className = 'toast'; t.innerHTML = ic('check', 16) + '<span>' + esc(msg) + '</span>'; t.onclick = () => t.remove(); document.body.append(t); setTimeout(() => t.remove(), Math.min(7000, Math.max(2600, String(msg).length * 50))); }
 function modal(html, { wide = false, onMount, onClose } = {}) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true">${html}</div>`;
@@ -4763,10 +4764,15 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   /** Country flag (vector, so it stays sharp at any size) */
   const flagOf = (e) => { const cc = String(e.country || '').toLowerCase(); return /^[a-z]{2}$/.test(cc) ? `url('https://flagcdn.com/${cc}.svg') center/cover no-repeat` : null; }; // single quotes: layer styles sit in a double-quoted attribute
+  /** "United States" / "الولايات المتحدة"; the euro area has no region code of its own */
+  const countryName = (cc, lang) => {
+    if (cc === 'EU') return lang === 'ar' ? 'منطقة اليورو' : 'Euro Area';
+    try { return new Intl.DisplayNames([lang === 'ar' ? 'ar' : 'en'], { type: 'region' }).of(cc) || cc; } catch (x) { return cc || ''; }
+  };
   function values(e, cfg) {
     const v = (x) => (x == null || x === '' ? '—' : x), sym = cfg.map.impactSymbol;
     return {
-      time: timeIn(e.at, cfg.map.timeFmt), currency: e.currency || e.country, country: e.country, event: cfg.lang === 'ar' ? (e.translated ? e.ar : (cfg.evAr && cfg.evAr[e.en]) || e.ar) : e.en,
+      time: timeIn(e.at, cfg.map.timeFmt), currency: e.currency || e.country, country: e.country, countryName: countryName(e.country, cfg.lang), event: cfg.lang === 'ar' ? (e.translated ? e.ar : (cfg.evAr && cfg.evAr[e.en]) || e.ar) : e.en,
       actual: v(e.actual), forecast: v(e.forecast), previous: v(e.previous), value: v(e.actual ?? e.forecast ?? e.previous),
       impact: sym ? Array(IMP[e.impact]).fill(sym).join(cfg.map.impactSep || '') : IMP_WORD[cfg.lang === 'ar' ? 'ar' : 'en'][e.impact],
     };
@@ -4928,7 +4934,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       const groups = []; evs.forEach((e) => { const k = e.country || e.currency; let g = groups.find((x) => x.k === k); if (!g) groups.push(g = { k, e, list: [] }); g.list.push(e); });
       groups.forEach((g, j) => {
         if (y + m.ghH + m.ghToList + m.lineH > m.limit) return;
-        if (P.gh) { add(P.gh, `lvw-${n}-g${j}`, { y, text: fill(ghTpl, { flag: flagEmoji(g.e.country), country: g.e.country || '', currency: g.e.currency || '' }) }); y += m.ghH + m.ghToList; }
+        if (P.gh) { add(P.gh, `lvw-${n}-g${j}`, { y, w: Math.max(P.gh.w, m.listW - (P.gh.x - P.list.x)), text: fill(ghTpl, { flag: flagEmoji(g.e.country), country: g.e.country || '', countryName: countryName(g.e.country, cfg.lang), currency: g.e.currency || '' }) }); y += m.ghH + m.ghToList; }
         const room = Math.max(1, Math.floor((m.limit - y) / m.lineH)), lines = g.list.slice(0, room).map((e) => {
           let v = values(e, cfg), t = fill(lineTpl, { ...v, tz: tzShort() || schedTz(), flag: flagEmoji(e.country) });
           // a line never wraps: long names are shortened, the time stays

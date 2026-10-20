@@ -9,7 +9,7 @@ import { z } from "zod";
  * itself (colours, fonts, spacing, positions) never changes.
  *
  * Each mapped text keeps its own wording through a template, e.g. "Actual {actual} · Forecast {forecast}".
- * Row placeholders: {time} {currency} {country} {flag} {event} {actual} {forecast} {previous} {value} {impact}
+ * Row placeholders: {time} {currency} {country} (code) {countryName} (full name) {flag} {event} {actual} {forecast} {previous} {value} {impact}
  * Date placeholders: {weekday} {day} {month} {year}; time zone label: {tz}
  * {flag} goes on an image layer (the country flag); every other placeholder on text.
  *
@@ -23,7 +23,7 @@ export type Layer = {
   size?: number; weight?: number | string; color?: string; fill?: string; locked?: boolean; hidden?: boolean;
 };
 
-export const ROW_PLACEHOLDERS = ["time", "currency", "country", "flag", "event", "actual", "forecast", "previous", "value", "impact"] as const;
+export const ROW_PLACEHOLDERS = ["time", "currency", "country", "countryName", "flag", "event", "actual", "forecast", "previous", "value", "impact"] as const;
 export const DATE_PLACEHOLDERS = ["weekday", "day", "month", "year"] as const;
 /** Placeholders for slide texts outside the rows: the post's day, its week (Mon–Fri) and the time zone */
 export const TEXT_PLACEHOLDERS = ["weekday", "wd", "day", "month", "mon", "year", "weekStartDay", "weekStartMon", "weekStartMonth", "weekEndDay", "weekEndMon", "weekEndMonth", "tz"] as const;
@@ -32,8 +32,8 @@ const WeekSchema = z.object({
   container: z.string().nullable().describe("The panel/card shape the day blocks sit in (its bottom edge is where content must stop), or null"),
   dayBar: z.string().nullable().describe("Shape behind the first day's heading (e.g. a coloured bar), or null"),
   dayHeader: z.object({ layerId: z.string(), template: z.string().describe("The first day heading's text with {weekday} {wd} {day} {month} {mon} {year}") }),
-  groupHeader: z.object({ layerId: z.string(), template: z.string().describe("The first group heading inside a day (usually a country) with {flag} (flag emoji) {country} (code) {currency}") }).nullable(),
-  list: z.object({ layerId: z.string(), lineTemplate: z.string().describe("ONE line of the first events list with its data replaced, e.g. '• {event} – {time} {tz}'; placeholders {time} {currency} {country} {flag} {event} {actual} {forecast} {previous} {value} {impact} {tz}") }),
+  groupHeader: z.object({ layerId: z.string(), template: z.string().describe("The first group heading inside a day (usually a country) with {flag} (flag emoji) {country} (code, e.g. US) {countryName} (full name, e.g. United States) {currency}; use the form the design shows") }).nullable(),
+  list: z.object({ layerId: z.string(), lineTemplate: z.string().describe("ONE line of the first events list with its data replaced, e.g. '• {event} – {time} {tz}'; placeholders {time} {currency} {country} {countryName} {flag} {event} {actual} {forecast} {previous} {value} {impact} {tz}") }),
   slotLayerIds: z.array(z.string()).describe("Every layer of the day blocks (all day bars, day headings, group headings and event lists) - they are rebuilt from the first ones"),
 });
 
@@ -170,6 +170,19 @@ function dateTemplate(text: string): string | null {
 }
 
 const LINE_RE = /^\s*([•·\-–*▪◦])?\s*.+?\s*[-–—|:]\s*\d{1,2}[:.]\d{2}/;
+/** Full English names of the calendar's countries ("United States", "Euro Area"), longest first */
+const REGION = new Intl.DisplayNames(["en"], { type: "region" });
+const COUNTRY_NAMES = ["US", "EU", "GB", "JP", "CN", "CA", "AU", "NZ", "CH", "DE", "FR", "IT", "ES"]
+  .flatMap((c) => (c === "EU" ? ["Euro Area", "Eurozone", "European Union"] : c === "GB" ? ["United Kingdom", "Great Britain"] : c === "US" ? ["United States"] : [REGION.of(c) || c]))
+  .sort((a, b) => b.length - a.length);
+/** "🇺🇸 United States" → "{flag} {countryName}"; "🇺🇸 US" → "{flag} {country}"; "USD" → "{currency}" */
+export function countryTemplate(text: string) {
+  const t = text.replace(/(\p{Regional_Indicator}{2})/u, "{flag}");
+  const name = COUNTRY_NAMES.find((n) => new RegExp(`(^|[^\\p{L}])${n}(?![\\p{L}])`, "u").test(t));
+  if (name) return t.replace(name, "{countryName}");
+  return t.replace(/\b([A-Z]{2,3})\b(?!.*\b[A-Z]{2,3}\b)/, (m) => (m.length === 3 ? "{currency}" : "{country}"));
+}
+
 /** Weekly layouts: day headings, then (country) headings, then multi-line event lists */
 function weekHeuristic(texts: Layer[], vis: Layer[], w: number, h: number): Omit<Mapping, "engine"> | null {
   const lists = texts.filter((l) => { const lines = l.text!.split("\n").filter((x) => x.trim()); return lines.length >= 1 && lines.filter((x) => LINE_RE.test(x)).length >= Math.max(1, lines.length * 0.6); }).sort((a, b) => a.y - b.y);
@@ -185,12 +198,12 @@ function weekHeuristic(texts: Layer[], vis: Layer[], w: number, h: number): Omit
   const day0 = days[0], gh = heads.filter((t) => t.y > day0.y).sort((a, b) => a.y - b.y)[0] || null;
   const bars = vis.filter((s) => s.type !== "text" && days.some((d) => d.x >= s.x - 2 && d.x + Math.min(d.w, 200) <= s.x + s.w + 2 && d.y >= s.y - 2 && d.y + d.h <= s.y + s.h + 2 && s.h < 120));
   const container = vis.filter((s) => s.type !== "text" && !s.locked && s.x <= list.x && s.y <= day0.y && s.x + s.w >= list.x + list.w && s.h > h * 0.4).sort((a, b) => a.w * a.h - b.w * b.h)[0] || null;
-  const groupTpl = gh ? gh.text!.replace(/(\p{Regional_Indicator}{2})/u, "{flag}").replace(/\b([A-Z]{2,3})\b(?!.*\b[A-Z]{2,3}\b)/, (m) => (m.length === 3 ? "{currency}" : "{country}")) : null;
+  const groupTpl = gh ? countryTemplate(gh.text!) : null;
   const slot = [...days, ...heads.filter((t) => t.y > day0.y), ...lists, ...bars].map((l) => l.id);
   return {
     isCalendar: true, layout: "week",
     reason: `Weekly layout: ${days.length} day blocks with ${lists.length} event lists. Rebuilt from the first day with live events.`,
-    week: { container: container?.id ?? null, dayBar: bars.find((b) => day0.y >= b.y - 2 && day0.y + day0.h <= b.y + b.h + 2)?.id ?? null, dayHeader: { layerId: day0.id, template: dateTemplate(day0.text!)! }, groupHeader: gh && groupTpl && /\{(flag|country|currency)\}/.test(groupTpl) ? { layerId: gh.id, template: groupTpl } : null, list: { layerId: list.id, lineTemplate }, slotLayerIds: slot },
+    week: { container: container?.id ?? null, dayBar: bars.find((b) => day0.y >= b.y - 2 && day0.y + day0.h <= b.y + b.h + 2)?.id ?? null, dayHeader: { layerId: day0.id, template: dateTemplate(day0.text!)! }, groupHeader: gh && groupTpl && /\{(flag|country|countryName|currency)\}/.test(groupTpl) ? { layerId: gh.id, template: groupTpl } : null, list: { layerId: list.id, lineTemplate }, slotLayerIds: slot },
     rows: [], date: null, tz: null, impactSymbol: null, texts: [], needs: { impact: "notNeeded", note: "" },
   };
 }
@@ -286,7 +299,7 @@ Decide whether the slide shows a list of economic calendar events (release times
 - "rows": one row (card or line) per event, with separate text layers for its parts. Describe "rows" below; "week" is null.
 - "week": blocks per day (a day heading, often on a bar), each with one or more groups (usually a country heading) whose events are written as lines inside one text layer, e.g. "• US Housing Starts – 13:30 GMT+4". Return "week" built from the FIRST day and FIRST group (the studio rebuilds every day and group from them with live data, keeping their style and spacing) and leave "rows" empty: give the day heading template, the group heading template ({flag} is a flag emoji, {country} a country code), ONE line template for the events list, the container panel and the first day bar, and every layer of the day blocks in "slotLayerIds".
 For "rows", describe every row, top to bottom:
-- "fields": each text layer of the row that shows data, with its role and a template. The template is the layer's exact text with the data replaced by placeholders: {time} {currency} {country} {event} {actual} {forecast} {previous} {value} {impact}. A country flag picture in the row is a field too: role "flag", template "{flag}". Keep labels, punctuation and separators exactly as written, e.g. "Actual 0.4% · Forecast 0.3%" becomes "Actual {actual} · Forecast {forecast}". Use {value} for a lone figure without a label. A time like 13:30 is "{time}"; a currency code is "{currency}"; stars or dots showing impact are "{impact}".
+- "fields": each text layer of the row that shows data, with its role and a template. The template is the layer's exact text with the data replaced by placeholders: {time} {currency} {country} (code) {countryName} (full name) {event} {actual} {forecast} {previous} {value} {impact}. A country flag picture in the row is a field too: role "flag", template "{flag}". Keep labels, punctuation and separators exactly as written, e.g. "Actual 0.4% · Forecast 0.3%" becomes "Actual {actual} · Forecast {forecast}". Use {value} for a lone figure without a label. A time like 13:30 is "{time}"; a currency code is "{currency}"; stars or dots showing impact are "{impact}".
 - "layerIds": every layer that belongs to the row, including its background card, badges and dividers, so the row can be hidden when there are fewer events than rows.
 Text that stays the same on every post (titles, headings, column headers, brand name, website, legal notes) is not a field. When a rating is drawn twice on top of itself (all symbols in a faint colour behind, the filled ones in front), only the front layer is the impact field.
 
