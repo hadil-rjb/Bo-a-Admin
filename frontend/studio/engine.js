@@ -24,10 +24,12 @@ let mounted = null; // destroy() of the running instance
  * @param {{ initialState: any, persist: import('../lib/social/persist').Persist,
  *   user: { name: string, email: string, avatar?: string, role: string },
  *   blogArticles: { t: string, c: string }[] | null, navigate: (href: string) => void,
- *   api: (path: string, o?: { method?: string, body?: unknown }) => Promise<any> }} opts
+ *   api: (path: string, o?: { method?: string, body?: unknown }) => Promise<any>,
+ *   headless?: (renderer: { renderPost: (designId: string, postId: string) => Promise<{ images: string[], live: any[] }> }) => void }} opts
+ *   headless: server-side rendering (see app/(social)/social-media/render): receives the publishing renderer once booted
  * @returns {() => void} destroy: removes every listener, observer, timer and popup the studio added
  */
-export function bootStudio({ initialState, persist, user, blogArticles, navigate, api }) {
+export function bootStudio({ initialState, persist, user, blogArticles, navigate, api, headless }) {
 if (mounted) mounted();
 const runtime = createRuntime();
 // Page-level globals the engine hooks into, tracked so destroy() can undo them (see runtime.js)
@@ -873,7 +875,7 @@ document.addEventListener('change', (e) => {
 });
 
 /* ---------- Settings (same layout as Blog Admin → Settings) ---------- */
-S.set = Object.assign({ sec: 'accounts', provider: 'claude', claudeModel: 'claude-sonnet-5-5', groqModel: 'llama-3.3-70b-versatile', lang: 'English', brief: 'Friendly, clear and expert. Short sentences. No hype. Always end with a useful question.', figUrl: 'https://www.figma.com/design/Kf2x9Q/Boga-Social-Kit', sync: 'manual', fonts: 1, fmt: 'PNG', quality: '1x', exLang: 'English only', tz: 'Africa/Tunis', safe: 1, auto: 1 }, S.set || {});
+S.set = Object.assign({ sec: 'accounts', provider: 'claude', claudeModel: 'claude-sonnet-5-5', groqModel: 'llama-3.3-70b-versatile', lang: 'English', brief: 'Friendly, clear and expert. Short sentences. No hype. Always end with a useful question.', figUrl: 'https://www.figma.com/design/Kf2x9Q/Boga-Social-Kit', sync: 'manual', fonts: 1, fmt: 'PNG', quality: '1x', exLang: 'English only', tz: 'Africa/Tunis', safe: 1, auto: 1, liveServer: 1 }, S.set || {});
 const SETS = [['accounts', 'Connected accounts', 'globe'], ['figma', 'Figma', 'figma'], ['ai', 'AI assistant', 'studio'], ['export', 'Export & publishing', 'download'], ['look', 'Appearance', 'palette'], ['data', 'Data & backup', 'layers']];
 const sbadge = (on, a, b) => `<span class="sbadge ${on ? 'on' : ''}">${on ? a : b}</span>`;
 const phead = (t, d, right = '') => `<div class="phead"><div><h2>${t}</h2><p>${d}</p></div>${right}</div>`;
@@ -937,7 +939,7 @@ const SP = {
   export: () => phead('Export & publishing', 'Defaults used by the Export button and the Schedule dialog.') +
     fgrid(fld('Format', dd('fmt', S.set.fmt, [['PNG', 'PNG (lossless)'], ['JPG', 'JPG (smaller file)'], ['PDF', 'PDF (carousel document)']])) + fld('Quality', dd('quality', S.set.quality, [['1x', '1× (the design’s size)'], ['2x', '2× (sharp on high-density screens)'], ['3x', '3× (print and large displays)']])) +
       fld('Languages', dd('exLang', S.set.exLang, [['English only', 'English only'], ['Arabic only', 'Arabic only'], ['English + Arabic', 'English + Arabic (auto-translate)']])) + fld('Time zone', `<input class="inp" data-s="tz" value="${esc(S.set.tz)}">`, { hint: 'Scheduled posts go out in this time zone.' })) +
-    `<div class="swlist">${swRow('Check safe zones before export', 'Warn when text sits under the profile bar or the reply bar of a story.', 'safe')}${swRow('Create every ratio automatically', 'Export 1:1, 4:5 and 9:16 from one design with Magic resize.', 'auto')}</div>` +
+    `<div class="swlist">${swRow('Check safe zones before export', 'Warn when text sits under the profile bar or the reply bar of a story.', 'safe')}${swRow('Create every ratio automatically', 'Export 1:1, 4:5 and 9:16 from one design with Magic resize.', 'auto')}${swRow('Refresh live calendar posts on the server', 'Just before a scheduled post with live data goes out, the server fills in that day’s events and renders its slides again, even with no studio tab open.', 'liveServer')}</div>` +
     acts(`<button class="btn primary" data-act="saveSet">Save export settings</button>`, 1),
   look: () => phead('Appearance', 'Choose how the admin looks.') +
     `<div class="themes">${['dark', 'light'].map((x) => `<button class="theme ${S.theme === x ? 'active' : ''}" data-act="pickTheme" data-t="${x}"><span class="tprev ${x}"><i style="height:12px"></i><i style="height:24px"></i><i style="height:36px"></i></span>${x === 'dark' ? 'Dark' : 'Light'}</button>`).join('')}</div>`,
@@ -4518,6 +4520,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   async function render(d, post) {
     // live calendar slides show the events of the day the post goes out
     if (LIVE && post) d = await LIVE.forPost(d, post);
+    return renderPages(d);
+  }
+  async function renderPages(d) {
     const [w, h] = RATIOS[d.ratio], sc = Math.min(1, 2160 / Math.max(w, h)), out = []; for (let i = 0; i < d.pages.length; i++) out.push(await toDataUrl(await renderSlide(d, i, sc, 'png'))); return out;
   }
   function merge(st) {
@@ -4534,6 +4539,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   };
   const busy = new Set(), unready = new Set();
   PUB = {
+    renderPages,
     /** Scheduled post: upload its slides so the API can publish it on time, even with the studio closed */
     async prepare(post) {
       const d = getD(post.d); if (!d || busy.has(post.id)) return; busy.add(post.id);
@@ -4749,7 +4755,14 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   async function forPost(d, post) {
     if (!livePages(d).length) return d;
     const c = JSON.parse(JSON.stringify(d));
-    for (const pg of livePages(c)) { try { const date = dayFor(pg.live, c, post), r = await fetchDay(pg.live, date); applyPage(pg, r.events, date); } catch (e) { /* keep the last data */ } }
+    c.liveUsed = [];
+    for (const [i, pg] of c.pages.entries()) {
+      if (!pg.live || !pg.live.map) continue;
+      try {
+        const date = dayFor(pg.live, c, post), r = await fetchDay(pg.live, date); applyPage(pg, r.events, date);
+        c.liveUsed.push({ page: i, date, source: r.source, events: r.events.length, shown: choose(r.events, pg.live, pg.live.map.rows.length).map((e) => `${hhmm(e.at)} ${e.currency || e.country} ${e.en}`) });
+      } catch (e) { c.liveUsed.push({ page: i, error: e.message }); /* keep the last data */ }
+    }
     return c;
   }
   LIVE = { forPost, refresh };
@@ -4968,6 +4981,34 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const _oe23 = openEditor;
   openEditor = function (id) { _oe23(id); const d = ED.d; if (d && livePages(d).some((pg) => Date.now() - (pg.live.at || 0) > 60_000)) refresh(d); };
 })();
+
+/* ============ headless: slides rendered by the API (live calendar posts with no studio tab open) ============ */
+/* The server opens /social-media/render in a headless browser, boots this engine with that post's brand,
+   design and settings, and calls renderPost: the same live data mapping and the same export renderer as
+   "Schedule" in the studio, so the published file is identical to a studio export. */
+if (headless) {
+  /** Fonts the slides use, loaded before the live texts are measured (fitSize) and rendered */
+  async function fontsFor(d) {
+    const box = document.createElement('div'); box.setAttribute('aria-hidden', 'true');
+    box.style.cssText = 'position:fixed;left:-99999px;top:0;opacity:0;pointer-events:none';
+    box.innerHTML = d.pages.map((pg) => `<div class="poster" style="position:relative">${posterHTML(pg)}</div>`).join('');
+    document.body.appendChild(box);
+    const links = $$('link[data-studio-font]');
+    await Promise.all(links.map((ln) => (ln.sheet ? null : new Promise((r) => { ln.addEventListener('load', r, { once: true }); ln.addEventListener('error', r, { once: true }); setTimeout(r, 8000); }))));
+    if (document.fonts) { await document.fonts.ready; await new Promise((r) => setTimeout(r, 50)); await document.fonts.ready; }
+    box.remove();
+  }
+  headless({
+    async renderPost(designId, postId) {
+      const d = getD(designId), post = S.posts.find((p) => p.id === postId);
+      if (!d) throw new Error('Design not found'); if (!post) throw new Error('Post not found');
+      await fontsFor(d);
+      const live = LIVE ? await LIVE.forPost(d, post) : d;
+      await fontsFor(live); // Arabic events may switch a text to the brand's Arabic font
+      return { images: await PUB.renderPages(live), live: live.liveUsed || [] };
+    },
+  });
+}
 
 /* ============ first paint, with every renderer installed ============ */
 /* The page was first drawn halfway through boot, before the later sections replaced textHTML / lstyle

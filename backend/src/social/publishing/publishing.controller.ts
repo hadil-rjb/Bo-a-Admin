@@ -3,6 +3,7 @@ import { ArrayMaxSize, IsArray, IsObject, IsOptional, IsString } from "class-val
 import { Public } from "../../common/public.decorator";
 import { Roles } from "../../common/roles.decorator";
 import { ConnectionsService } from "./connections.service";
+import { LiveRenderService } from "./live-render.service";
 import { PublisherService } from "./publisher.service";
 
 const EDIT = ["admin", "editor"];
@@ -24,7 +25,7 @@ export class TokenConnectDto {
 /** Connected accounts (Settings → Connected accounts) and publishing. */
 @Controller("social")
 export class PublishingController {
-  constructor(private conns: ConnectionsService, private publisher: PublisherService) {}
+  constructor(private conns: ConnectionsService, private publisher: PublisherService, private live: LiveRenderService) {}
 
   /* ---------- connected accounts ---------- */
   @Get("brands/:brandId/connections")
@@ -59,6 +60,16 @@ export class PublishingController {
     if (d.images?.length) await this.publisher.saveMedia(brandId, id, { images: d.images, hash: d.hash, post: d.post });
     else if (d.post) await this.publisher.upsertPost(brandId, { ...d.post, id });
     return this.publisher.publish(brandId, id, { manual: true });
+  }
+
+  /**
+   * Re-renders a live calendar post on the server now, with its day's events (what the scheduler does
+   * just before publishing). `refreshed` is null when there's nothing to refresh (no live page, setting off).
+   */
+  @Roles(...EDIT) @Post("brands/:brandId/posts/:id/live-refresh")
+  async liveRefresh(@Param("brandId") brandId: string, @Param("id") id: string) {
+    const refreshed = await this.live.refresh(brandId, id);
+    return { refreshed, ...(await this.publisher.state(brandId, id)) };
   }
 
   @Get("brands/:brandId/publish-state")

@@ -50,8 +50,18 @@ export class PublisherService {
     const post = await this.posts.findOne({ brandId, id: postId }).lean<Record<string, any>>();
     if (!post) throw new NotFoundException("Post not found");
     if (!body.images?.length) throw new BadRequestException("No images");
+    const saved = await this.store(brandId, postId, body.images);
+    const media = { ids: saved.map((d) => String(d._id)), hash: body.hash || "", count: saved.length, at: new Date() };
+    const pub = post.publish || { state: "idle", results: {}, attempts: 0 };
+    const armed = post.status === "Scheduled" && !["published", "partial", "publishing"].includes(pub.state);
+    await this.posts.updateOne({ brandId, id: postId }, { $set: { media, publish: armed ? { ...pub, state: "pending", attempts: 0, nextTry: null } : pub } });
+    return this.state(brandId, postId);
+  }
+
+  /** Encodes the slides (PNG/JPEG data URLs) and replaces the stored files of a post. */
+  private async store(brandId: string, postId: string, images: string[]) {
     const docs = [];
-    for (const [index, url] of body.images.slice(0, 20).entries()) {
+    for (const [index, url] of images.slice(0, 20).entries()) {
       const m = DATA_URL.exec(url);
       if (!m) throw new BadRequestException("Expected PNG or JPEG data URLs");
       const img = sharp(Buffer.from(m[2], "base64")).flatten({ background: "#ffffff" });
@@ -61,12 +71,20 @@ export class PublisherService {
       docs.push({ brandId, postId, index, data, mime: "image/jpeg", width: info.width, height: info.height });
     }
     await this.media.deleteMany({ brandId, postId });
-    const saved = await this.media.insertMany(docs);
-    const media = { ids: saved.map((d) => String(d._id)), hash: body.hash || "", count: saved.length, at: new Date() };
-    const pub = post.publish || { state: "idle", results: {}, attempts: 0 };
-    const armed = post.status === "Scheduled" && !["published", "partial", "publishing"].includes(pub.state);
-    await this.posts.updateOne({ brandId, id: postId }, { $set: { media, publish: armed ? { ...pub, state: "pending", attempts: 0, nextTry: null } : pub } });
-    return this.state(brandId, postId);
+    return this.media.insertMany(docs);
+  }
+
+  /**
+   * Slides re-rendered by the server (live calendar data, see LiveRenderService). The publish state is
+   * left as it is, and the design hash too: the design didn't change, so an open studio doesn't re-send them.
+   */
+  async replaceRendered(brandId: string, postId: string, images: string[], live: Record<string, unknown>) {
+    if (!images.length) throw new BadRequestException("No images");
+    const post = await this.posts.findOne({ brandId, id: postId }).select("media").lean<Record<string, any>>();
+    if (!post) throw new NotFoundException("Post not found");
+    const saved = await this.store(brandId, postId, images);
+    const media = { ids: saved.map((d) => String(d._id)), hash: post.media?.hash || "", count: saved.length, at: new Date(), live };
+    await this.posts.updateOne({ brandId, id: postId }, { $set: { media } });
   }
 
   async state(brandId: string, postId: string) {
