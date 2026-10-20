@@ -1,7 +1,7 @@
-import { BadGatewayException, Injectable, Logger } from "@nestjs/common";
+import { BadGatewayException, BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { AiService } from "../../ai/ai.service";
 import { validTz } from "../../framer/time";
-import { analyzeWithClaude, heuristic, Layer, Mapping, sanitize } from "./analyze";
+import { analyzeWithClaude, heuristic, importWithClaude, Layer, Mapping, sanitize } from "./analyze";
 import { COUNTRY_CODES, dayEvents, Source } from "./feeds";
 
 @Injectable()
@@ -27,7 +27,7 @@ export class CalendarService {
     const quick = () => ({ ...sanitize(heuristic(input.layers, input.w, input.h), input.layers), engine: "heuristic" as const });
     if (input.engine === "heuristic") return quick();
     const key = await this.ai.anthropicKey();
-    if (!key) return { ...quick(), note: "Read from the layout. Add a Claude key in Blog Admin → Settings → AI for a deeper analysis." };
+    if (!key) return { ...quick(), note: "Read from the layout. Add a Claude key in Settings → AI assistant for a deeper analysis." };
     try {
       const { mapping, model } = await analyzeWithClaude(key, input);
       // Claude found nothing but the layout clearly is a calendar: trust the layout
@@ -36,6 +36,18 @@ export class CalendarService {
     } catch (e: any) {
       this.log.warn(`Claude analysis failed, using the layout heuristic: ${e?.message || e}`);
       return { ...quick(), note: `Claude was unavailable (${e?.message || "error"}), so the slide was read from its layout.` };
+    }
+  }
+
+  /** Rebuilds a picture as editable layers (needs a Claude key: reading a picture needs vision) */
+  async importImage(input: { image: string; imgW: number; imgH: number }) {
+    const key = await this.ai.anthropicKey();
+    if (!key) throw new BadRequestException("Add a Claude key in Settings → AI assistant to turn pictures into editable layers");
+    try {
+      return await importWithClaude(key, input);
+    } catch (e: any) {
+      this.log.warn(`Image import failed: ${e?.message || e}`);
+      throw new BadGatewayException(`Claude couldn't rebuild this picture: ${e?.message || "error"}`);
     }
   }
 }

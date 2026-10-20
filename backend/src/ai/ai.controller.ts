@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Post, Put, Query, Req } from "@ne
 import { Roles } from "../common/roles.decorator";
 import { AiService, Provider } from "./ai.service";
 import { CoverImageService } from "./cover-image.service";
-import { CoverImageDto, CoverPromptDto, GenerateArticleDto, GenerateIdeasDto, UpdateAiSettingsDto } from "./dto/ai.dto";
+import { CoverImageDto, CoverPromptDto, GenerateArticleDto, GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto } from "./dto/ai.dto";
 
 const actor = (r: any) => ({ id: r.user.sub as string, name: r.user.name as string });
 
@@ -19,5 +19,6 @@ export class AiController {
   @Roles("admin", "editor") @Post("cover-image") coverImage(@Req() r: any, @Body() d: CoverImageDto) { return this.img.generate(d, actor(r)); }
   @Roles("admin") @Post("cover-style/analyze") analyzeCover() { return this.s.analyzeCoverStyle(); }
   @Roles("admin", "editor") @Post("cover-prompt") cover(@Req() r: any, @Body() d: CoverPromptDto) { return this.s.coverPrompt(d, actor(r)); }
+  @Roles("admin", "editor") @Post("social-caption") caption(@Req() r: any, @Body() d: SocialCaptionDto) { return this.s.socialCaption(d, actor(r)); }
   @Roles("admin", "editor") @Delete("ideas/:id") dismiss(@Param("id") id: string) { return this.s.dismiss(id); }
 }

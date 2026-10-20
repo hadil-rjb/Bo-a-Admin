@@ -886,6 +886,20 @@ const how = (items) => `<div class="how"><b>How to connect</b><ol>${items.map((i
 const sw = (on, act, attrs, label) => `<button class="sw ${on ? 'on' : ''}" data-act="${act}" ${attrs} aria-label="${label}" aria-pressed="${!!on}"><span></span></button>`;
 const dd = (id, val, opts) => `<div class="dd"><button type="button" class="ddb" data-act="ddt"><span class="grow">${esc((opts.find((o) => o[0] === val) || opts[0])[1])}</span>${ic('chevD', 16)}</button><div class="ddm" hidden>${opts.map(([v, l]) => `<button type="button" data-act="ddp" data-id="${id}" data-v="${esc(v)}" class="${v === val ? 'on' : ''}"><span class="grow">${esc(l)}</span>${v === val ? ic('check', 14) : ''}</button>`).join('')}</div></div>`;
 const swRow = (title, hint, key) => `<div class="swrow"><div class="grow"><b>${title}</b><p>${hint}</p></div>${sw(S.set[key], 'setSw', `data-k="${key}"`, title)}</div>`;
+const AI_NAME = { anthropic: 'Claude (Anthropic)', groq: 'Groq' };
+const AI_MODELS = { anthropic: [['claude-opus-5-5', 'Claude Opus 5.5'], ['claude-sonnet-5-5', 'Claude Sonnet 5.5'], ['claude-haiku-5-5', 'Claude Haiku 5.5']], groq: [['llama-3.3-70b-versatile', 'Llama 3.3 70B'], ['llama-3.1-8b-instant', 'Llama 3.1 8B']] };
+/** AI settings from the API: view = { provider, anthropic: { hasKey, last4, model }, groq: {…}, ready } */
+const AIS = { view: null, pick: null, models: {}, loading: null };
+function aiLoad(force) {
+  if (AIS.loading && !force) return AIS.loading;
+  AIS.loading = api('/ai/settings').then((v) => {
+    AIS.view = v; S.set.provider = v.provider === 'groq' ? 'groq' : 'claude';
+    if (user.role === 'admin') ['anthropic', 'groq'].forEach((k) => { if (v[k].hasKey && !AIS.models[k]) api('/ai/models?provider=' + k).then((r) => { AIS.models[k] = r.models || []; aiRerender(); }).catch(() => { AIS.models[k] = []; }); });
+    aiRerender();
+  }).catch((e) => toast('Could not load the AI settings: ' + e.message)).finally(() => { AIS.loading = null; });
+  return AIS.loading;
+}
+const aiRerender = () => { if (/^#\/settings/.test(location.hash) && S.set.sec === 'ai') rerender(); };
 const SP = {
   /* Connections come from the API (v14 section: CONN). Each network has a Connect button. */
   accounts: () => {
@@ -928,14 +942,24 @@ const SP = {
     acts(`<button class="btn primary" data-act="saveSet">Save Figma settings</button>`, 1) +
     how(['Click <b>Connect Figma</b> and allow access on figma.com: you come back here connected.', 'Choose a <b>default file</b> (or pick any file when you import: recent files are remembered).', 'In the Studio click <b>Import from Figma</b> and choose the frames to bring in as editable layers.']);
   },
-  ai: () => { const p = S.set.provider, nm = p === 'claude' ? 'Claude' : 'Groq';
-    return phead('AI assistant', 'Write captions, headlines and hashtags in your brand voice. API keys are stored encrypted on the server and are never shown again.', sbadge(true, 'Ready', 'Not configured')) +
-    `<div class="provgrid">${[['claude', 'Claude (Anthropic)', '#d97757', 'C', '4f2a'], ['groq', 'Groq', '#f55036', 'G', '9c1d']].map(([k, n, c, l, last]) => `<button class="prov pick ${p === k ? 'active' : ''}" data-act="setProv" data-k="${k}"><span class="pcirc" style="background:${c}">${l}</span><div><b>${n}</b><span>Key saved ••••${last}${p === k ? ' · active' : ''}</span></div></button>`).join('')}</div>` +
-    fgrid(fld(`${nm} API key`, `<div class="inrow"><input class="inp" type="password" autocomplete="off" placeholder="Paste a new key to replace the saved one"><button class="btn secondary" data-act="saveTok">Save key</button><button class="btn secondary" data-act="rmTok">Remove</button></div>`, { full: 1, hint: `It is checked with ${nm} before being saved.` }) +
-      fld('Model', dd(p + 'Model', S.set[p + 'Model'], p === 'claude' ? [['claude-sonnet-5-5', 'Claude Sonnet 5.5'], ['claude-haiku-5-5', 'Claude Haiku 5.5'], ['claude-opus-5-5', 'Claude Opus 5.5']] : [['llama-3.3-70b-versatile', 'Llama 3.3 70B'], ['llama-3.1-8b-instant', 'Llama 3.1 8B']]), { full: 1 }) +
-      fld('Brand voice', `<textarea class="inp ta" data-b="voice" maxlength="2000" placeholder="Audience, tone of voice, words to use or avoid…">${esc(brand().voice)}</textarea>`, { full: 1, hint: `Saved on ${brand().name}. Added to every prompt so captions follow its voice.` }) +
-      fld('Caption language', dd('b:lang', brand().lang || 'English', ['English', 'French', 'Spanish', 'German', 'Arabic', 'Italian', 'Portuguese'].map((l) => [l, l])), {})) +
-    acts(`<button class="btn primary" data-act="saveSet">Use ${nm} and save settings</button>`, 1); },
+  /* AI assistant: the real provider settings (/api/ai/settings), shared with Blog Admin → Settings → AI */
+  ai: () => {
+    if (!AIS.view) { aiLoad(); return phead('AI assistant', 'Write captions in your brand voice, read calendar slides and rebuild pictures as layers.') + '<div class="ai-sk"><div class="skel" style="height:76px"></div><div class="skel" style="height:76px"></div><div class="skel" style="height:44px;grid-column:1/-1"></div></div>'; }
+    const v = AIS.view, owner = user.role === 'admin', p = AIS.pick || v.provider, cur = v[p], nm = AI_NAME[p];
+    const models = (AIS.models[p] || []).length ? AIS.models[p].map((m) => [m.id, m.name || m.id]) : AI_MODELS[p];
+    if (cur.model && !models.some(([id]) => id === cur.model)) models.unshift([cur.model, cur.model]);
+    const card = (k) => { const x = v[k]; return `<button class="prov pick ${p === k ? 'active' : ''}" data-act="aiProv" data-k="${k}" ${owner ? '' : 'disabled'}><span class="pcirc" style="background:${k === 'anthropic' ? '#d97757' : '#f55036'}">${k === 'anthropic' ? 'C' : 'G'}</span><div><b>${AI_NAME[k]}</b><span>${x.hasKey ? `Key saved ••••${esc(x.last4)}` : 'No key yet'}${v.provider === k ? ' · in use' : ''}</span></div></button>`; };
+    return phead('AI assistant', 'Write captions in your brand voice, read calendar slides and rebuild pictures as layers. Keys are checked with the provider, stored encrypted on the server and never shown again.', sbadge(v.ready, 'Ready', 'Not configured')) +
+      (owner ? '' : `<div class="note">${ic('lock', 16)}<span>Only the workspace owner can change AI keys and models. You can still edit the brand voice.</span></div>`) +
+      `<div class="provgrid">${card('anthropic')}${card('groq')}</div>` +
+      fgrid(
+        (owner ? fld(`${nm} API key`, `<div class="inrow"><input class="inp" id="aiKey" type="password" autocomplete="off" spellcheck="false" placeholder="${cur.hasKey ? 'Paste a new key to replace the saved one' : (p === 'anthropic' ? 'sk-ant-…' : 'gsk_…')}"><button class="btn secondary" data-act="aiSaveKey">${cur.hasKey ? 'Replace key' : 'Save key'}</button>${cur.hasKey ? '<button class="btn ghost" data-act="aiRmKey" style="color:var(--neg)">Remove</button>' : ''}</div><p class="hint" id="aiKeyMsg">${p === 'anthropic' ? 'Get a key at console.anthropic.com → API keys.' : 'Get a key at console.groq.com → API keys.'} It is verified with ${nm} before it is saved.</p>`, { full: 1 }) : '') +
+        fld('Model', owner ? `<select class="field" id="aiModel" ${cur.hasKey ? '' : 'disabled'}>${models.map(([id, l]) => `<option value="${esc(id)}" ${id === cur.model ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>` : `<input class="inp" value="${esc(cur.model || '')}" disabled>`, { full: 1, hint: cur.hasKey ? (AIS.models[p] ? `${AIS.models[p].length} models available with this key.` : 'Loading the models your key can use…') : 'Save a key first.' }) +
+        fld('Brand voice', `<textarea class="inp ta" data-b="voice" maxlength="2000" placeholder="Audience, tone of voice, words to use or avoid…">${esc(brand().voice)}</textarea>`, { full: 1, hint: `Saved on ${brand().name}. Added to every caption prompt so posts follow its voice.` }) +
+        fld('Caption language', dd('b:lang', brand().lang || 'English', ['English', 'French', 'Spanish', 'German', 'Arabic', 'Italian', 'Portuguese'].map((l) => [l, l])), {})) +
+      `<div class="ai-uses"><b>Where it's used</b><ul><li>${ic('send', 15)}<span><b>Write with AI</b> in the Schedule dialog: captions from the slide's content, in your brand voice (${nm}).</span></li><li>${ic('chart', 15)}<span><b>Live data</b>: reading calendar slides and rebuilding pictures as layers always uses Claude, so add a Claude key for those even when Groq writes captions.</span></li></ul></div>` +
+      acts(`<button class="btn secondary" data-act="aiTest" ${cur.hasKey ? '' : 'disabled'}>${ic('refresh', 16)}Test connection</button><button class="btn primary" data-act="aiSave">${owner ? `Use ${nm} and save` : 'Save brand voice'}</button>`);
+  },
   export: () => phead('Export & publishing', 'Defaults used by the Export button and the Schedule dialog.') +
     fgrid(fld('Format', dd('fmt', S.set.fmt, [['PNG', 'PNG (lossless)'], ['JPG', 'JPG (smaller file)'], ['PDF', 'PDF (carousel document)']])) + fld('Quality', dd('quality', S.set.quality, [['1x', '1× (the design’s size)'], ['2x', '2× (sharp on high-density screens)'], ['3x', '3× (print and large displays)']])) +
       fld('Languages', dd('exLang', S.set.exLang, [['English only', 'English only'], ['Arabic only', 'Arabic only'], ['English + Arabic', 'English + Arabic (auto-translate)']])) + fld('Time zone', `<input class="inp" data-s="tz" value="${esc(S.set.tz)}">`, { hint: 'Scheduled posts go out in this time zone.' })) +
@@ -1063,6 +1087,38 @@ Object.assign(ACT, {
   setSec: (a) => { S.set.sec = a.dataset.k; rerender(); showTab(); },
   setSw: (a) => { S.set[a.dataset.k] = S.set[a.dataset.k] ? 0 : 1; rerender(); },
   setProv: (a) => { S.set.provider = a.dataset.k; rerender(); },
+  aiProv: (a) => { AIS.pick = a.dataset.k; rerender(); },
+  aiSaveKey: async (a) => {
+    const p = AIS.pick || AIS.view.provider, i = $('#aiKey'), key = i && i.value.trim(), msg = $('#aiKeyMsg');
+    if (!key) { i && i.focus(); return toast('Paste the API key first'); }
+    busy(a, true, 'Checking…');
+    try {
+      AIS.view = await api('/ai/settings', { method: 'PUT', body: { [p + 'Key']: key, ...(AIS.view[p === 'anthropic' ? 'groq' : 'anthropic'].hasKey ? {} : { provider: p }) } });
+      delete AIS.models[p]; AIS.pick = null; await aiLoad(true); toast(`${AI_NAME[p]} key verified and saved`);
+    } catch (e) { busy(a, false); if (msg) { msg.textContent = e.message; msg.style.color = 'var(--neg)'; } }
+  },
+  aiRmKey: (a) => {
+    const p = AIS.pick || AIS.view.provider;
+    modal(`<div class="mh"><h2>Remove the ${AI_NAME[p]} key?</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+    <div class="mb"><p class="sm-t">Features that use ${AI_NAME[p]} stop working in the Social Media and Blog Admin workspaces until a new key is saved.</p></div>
+    <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn danger" id="aiRmGo">Remove key</button></div>`, {
+      onMount: (bg, close) => $('#aiRmGo', bg).addEventListener('click', async (e) => { busy(e.currentTarget, true, 'Removing…'); try { AIS.view = await api('/ai/settings', { method: 'PUT', body: { clearKeys: [p] } }); delete AIS.models[p]; close(); aiRerender(); toast('Key removed'); } catch (x) { close(); toast(x.message); } }),
+    });
+  },
+  aiTest: async (a) => {
+    const p = AIS.pick || AIS.view.provider; busy(a, true, 'Testing…');
+    try { const r = await api('/ai/models?provider=' + p); AIS.models[p] = r.models || []; toast(`${AI_NAME[p]} answered: ${AIS.models[p].length} models available`); aiRerender(); }
+    catch (e) { busy(a, false); toast(`${AI_NAME[p]} didn't accept the key: ${e.message}`); }
+  },
+  aiSave: async (a) => {
+    save(); // brand voice and caption language live on the brand
+    if (user.role !== 'admin') return toast('Brand voice saved');
+    const p = AIS.pick || AIS.view.provider, m = $('#aiModel');
+    if (!AIS.view[p].hasKey) return toast(`Save a ${AI_NAME[p]} key first`);
+    busy(a, true, 'Saving…');
+    try { AIS.view = await api('/ai/settings', { method: 'PUT', body: { provider: p, ...(m && m.value ? { [p + 'Model']: m.value } : {}) } }); AIS.pick = null; S.set.provider = p === 'groq' ? 'groq' : 'claude'; aiRerender(); toast(`${AI_NAME[p]} is now used for AI features`); }
+    catch (e) { busy(a, false); toast(e.message); }
+  },
   pickTheme: (a) => { setTheme(a.dataset.t); rerender(); },
   saveSet: () => toast('Settings saved'), saveTok: () => toast('Key verified and saved (demo)'), rmTok: () => toast('Key removed (demo)'),
   ddt: (a) => { const m = a.nextElementSibling, h = m.hidden; $$('.ddm').forEach((x) => (x.hidden = true)); m.hidden = !h; },
@@ -3000,10 +3056,26 @@ Object.assign(IC, {
       const afterNets = () => { drawNets(); drawTabBar(); loadCap(); drawCnt(); drawTags(); drawFc(); drawPv(); drawWhen(); drawLink(); drawChk(); drawPub(); drawFoot(); };
       const setCap = (v) => { if (st.tab === 'all') st.cap = v; else st.caps[st.tab] = v; R('cCap').value = v; afterCap(); };
       const addTxt = (t) => { const cur = st.tab === 'all' ? st.cap : capFor(st.tab); setCap(cur + (cur && !/\s$/.test(cur) ? ' ' : '') + t); };
-      function aiWrite() {
-        if (!st.d) return toast('Choose a design first'); let t = aiCaption(st.d); const tone = R('cTone').value, [first, ...rest] = t.split('\n');
+      /* Write with AI: a real caption from the slides' content, in the brand voice (provider from Settings → AI) */
+      async function aiWrite(btn) {
+        if (!st.d) return toast('Choose a design first');
+        const d = st.d, b = brand(), tone = R('cTone').value;
+        const texts = d.pages.flatMap((pg) => pg.layers.filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim()).sort((x, y) => x.y - y.y || x.x - y.x).map((l) => String(l.text).trim())).slice(0, 80);
+        let image; try { const [w, h] = RATIOS[d.ratio], bl = await renderSlide(d, 0, Math.min(1, 900 / Math.max(w, h)), 'jpeg'); image = await new Promise((r) => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(bl); }); } catch (e) { image = undefined; }
+        btn && busy(btn, true, 'Writing…');
+        try {
+          const r = await api('/ai/social-caption', { method: 'POST', body: { brand: b.name, voice: b.voice || '', dos: b.dos || '', donts: b.donts || '', hashtags: b.hashtags || '', cta: b.cta || '', language: b.lang || 'English', tone, design: d.name, texts, networks: nets(), image } });
+          setCap(r.caption); toast('Caption written in your brand voice');
+        } catch (e) {
+          if (/api key|settings → ai/i.test(e.message)) { aiTemplate(); toast('No AI key yet: wrote a starter caption. Add a key in Settings → AI assistant.'); }
+          else toast('Could not write the caption: ' + e.message);
+        } finally { btn && btn.isConnected && busy(btn, false); }
+      }
+      /** Starter caption without AI (brand tagline, CTA and hashtags) */
+      function aiTemplate() {
+        let t = aiCaption(st.d); const tone = R('cTone').value, [first, ...rest] = t.split('\n');
         if (tone === 'Friendly') t = '👋 ' + first.replace(/\.$/, '') + '! Tell us what you think below.\n' + rest.join('\n'); else if (tone === 'Bold') t = first.toUpperCase() + ' 🔥\n' + rest.join('\n'); else if (tone === 'Short') t = first.split('. ')[0] + '.\n\n' + tagList().slice(0, 2).join(' ');
-        setCap(t.trim()); toast('Caption written in your brand voice');
+        setCap(t.trim());
       }
       function commit(kind) {
         const d = st.d; if (!d) return; const tz = schedTz(), n = nowIn(tz), status = kind === 'draft' ? 'Draft' : 'Scheduled';
@@ -3027,7 +3099,7 @@ Object.assign(IC, {
         else if (c === 'tags') { st.tags = !st.tags; drawTags(); }
         else if (c === 'tag') { const h = b.dataset.h, cur = (st.tab === 'all' ? st.cap : capFor(st.tab)); if (!tagsOf(cur).map((x) => x.toLowerCase()).includes(h.toLowerCase())) addTxt(h); }
         else if (c === 'tagall') { const cur = (st.tab === 'all' ? st.cap : capFor(st.tab)).toLowerCase(), add = tagList().filter((h) => !cur.includes(h.toLowerCase())); add.length && addTxt((/\n\n$/.test(cur) || !cur ? '' : '\n\n') + add.join(' ')); }
-        else if (c === 'ai') aiWrite();
+        else if (c === 'ai') { if (!b.getAttribute('aria-busy')) aiWrite(b); }
         else if (c === 'fc') { st.fcOpen = !st.fcOpen; drawFc(); const f = R('cFc'); f && f.focus(); }
         else if (c === 'utm') { st.utm = !st.utm; drawLink(); drawPv(); }
         else if (c === 'pvt') { st.pv = b.dataset.k; drawPv(); drawLink(); }
@@ -4633,9 +4705,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const IMP = { high: 3, medium: 2, low: 1 };
   const IMP_WORD = { en: { high: 'High', medium: 'Medium', low: 'Low' }, ar: { high: 'عالي', medium: 'متوسط', low: 'منخفض' } };
   const CTRY = [['US', 'USD'], ['EU', 'EUR'], ['GB', 'GBP'], ['JP', 'JPY'], ['DE', 'DE'], ['CA', 'CAD'], ['AU', 'AUD'], ['NZ', 'NZD'], ['CH', 'CHF'], ['CN', 'CNY']];
-  const SOURCES = [['tradingview', 'TradingView · actual, forecast, previous'], ['forexfactory', 'Forex Factory · forecast, previous']];
+  const SOURCES = [['tradingview', 'TradingView · with actual values'], ['forexfactory', 'Forex Factory · forecasts only']];
   const EVERY = [[1, '1 minute'], [5, '5 minutes'], [15, '15 minutes'], [60, '1 hour']];
-  const ROLES = [['time', 'Time'], ['currency', 'Currency'], ['country', 'Country'], ['event', 'Event'], ['value', 'Value'], ['actual', 'Actual'], ['forecast', 'Forecast'], ['previous', 'Previous'], ['impact', 'Impact']];
+  const ROLES = [['time', 'Time'], ['currency', 'Currency'], ['country', 'Country'], ['flag', 'Flag'], ['event', 'Event'], ['value', 'Value'], ['actual', 'Actual'], ['forecast', 'Forecast'], ['previous', 'Previous'], ['impact', 'Impact']];
   const VAL_ONLY = /^[^{}]*(\{(actual|forecast|previous|value)\}[^{}]*)+$/;
   const defaults = () => ({ v: 1, src: 'tradingview', day: 'publish', date: '', impact: ['high', 'medium'], countries: ['US', 'EU', 'GB', 'JP', 'DE', 'CA', 'AU', 'CN'], lang: 'en', pick: null, values: true, every: 15, paused: false, map: null, orig: {}, at: 0 });
   const livePages = (d) => (d && d.pages ? d.pages.filter((pg) => pg.live && pg.live.map) : []);
@@ -4669,12 +4741,26 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     return ok.map((e, i) => ({ e, i })).sort((a, b) => IMP[b.e.impact] - IMP[a.e.impact] || a.i - b.i).slice(0, n).sort((a, b) => a.i - b.i).map((x) => x.e);
   }
   const hhmm = (iso) => { const p = tzParts(Date.parse(iso), schedTz()); return pad2(+p.hour % 24) + ':' + p.minute; };
+  /** The design's own way of writing times ("13:30", "1.30 PM", "01:30 pm"), read from its first row */
+  function timeFmt(text) {
+    const m = /(\d{1,2})([:.h])(\d{2})(\s*)(am|pm)?/i.exec(String(text || '')); if (!m) return null;
+    return { sep: m[2], pad: m[1].length === 2, h12: !!m[5], space: m[4] || (m[5] ? ' ' : ''), upper: !!m[5] && m[5] === m[5].toUpperCase() };
+  }
+  function timeIn(iso, f) {
+    const p = tzParts(Date.parse(iso), schedTz()), h = +p.hour % 24;
+    if (!f) return pad2(h) + ':' + p.minute;
+    if (!f.h12) return (f.pad ? pad2(h) : h) + f.sep + p.minute;
+    const ap = h >= 12 ? 'PM' : 'AM', h12 = h % 12 || 12;
+    return (f.pad ? pad2(h12) : h12) + f.sep + p.minute + f.space + (f.upper ? ap : ap.toLowerCase());
+  }
+  /** Country flag (vector, so it stays sharp at any size) */
+  const flagOf = (e) => { const cc = String(e.country || '').toLowerCase(); return /^[a-z]{2}$/.test(cc) ? `url('https://flagcdn.com/${cc}.svg') center/cover no-repeat` : null; }; // single quotes: layer styles sit in a double-quoted attribute
   function values(e, cfg) {
     const v = (x) => (x == null || x === '' ? '—' : x), sym = cfg.map.impactSymbol;
     return {
-      time: hhmm(e.at), currency: e.currency || e.country, country: e.country, event: cfg.lang === 'ar' ? e.ar : e.en,
+      time: timeIn(e.at, cfg.map.timeFmt), currency: e.currency || e.country, country: e.country, event: cfg.lang === 'ar' ? e.ar : e.en,
       actual: v(e.actual), forecast: v(e.forecast), previous: v(e.previous), value: v(e.actual ?? e.forecast ?? e.previous),
-      impact: sym ? sym.repeat(IMP[e.impact]) : IMP_WORD[cfg.lang === 'ar' ? 'ar' : 'en'][e.impact],
+      impact: sym ? Array(IMP[e.impact]).fill(sym).join(cfg.map.impactSep || '') : IMP_WORD[cfg.lang === 'ar' ? 'ar' : 'en'][e.impact],
     };
   }
   function dateValues(date, lang) {
@@ -4692,7 +4778,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const textW = (l, text, size) => { mctx.font = `${l.it ? 'italic ' : ''}${l.weight || 400} ${size}px '${l.font}', sans-serif`; return Math.max(...String(text).split('\n').map((t) => mctx.measureText(t).width + (l.ls || 0) * [...t].length)); };
   function fitSize(l, o, text) {
     const size = o.size || l.size; if (!size || !l.w || String(o.text || '').includes('\n')) return size;
-    if (textW(l, o.text || '', size) > l.w * 1.02) return size; // the original already wrapped: leave it
+    if (textW(l, o.text || '', size) > (o.w || l.w) * 1.02) return size; // the original already wrapped: leave it
     const w = textW(l, text, size); return w <= l.w ? size : Math.max(Math.round(size * 0.72), Math.floor(size * (l.w / w) * 0.98));
   }
   /** The design's own currency colours, learned from its original rows: { USD: '#2b6cb0', … } */
@@ -4719,15 +4805,24 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       row.layerIds.forEach((id) => set(id, 'hidden', shown(id)));
       const vals = values(e, cfg), empty = e.actual == null && e.forecast == null && e.previous == null;
       row.fields.forEach((f) => {
+        if (f.role === 'flag') {
+          const fl = flagOf(e), l = byId.get(f.layerId); if (!fl || !l) return;
+          set(f.layerId, 'fill', fl);
+          // a square flag picture is a round flag cropped with its corners: keep the new one round
+          if (Math.abs(l.w - l.h) <= Math.max(l.w, l.h) * 0.12) set(f.layerId, 'r', Math.round(Math.min(l.w, l.h) / 2));
+          return;
+        }
         // speeches and auctions have no figures: hide their value line instead of printing dashes
         if (VAL_ONLY.test(f.template) && (!cfg.values || empty)) return set(f.layerId, 'hidden', true);
         const text = fill(f.template, vals), l = byId.get(f.layerId), o = cfg.orig[f.layerId] || {};
         set(f.layerId, 'text', text);
-        if (l && l.type === 'text' && o.size) set(f.layerId, 'size', fitSize(l, o, text));
+        if (l && l.type === 'text' && f.maxW && o.w) set(f.layerId, 'w', textW(l, text, o.size || l.size) > o.w ? f.maxW : o.w);
+        if (l && l.type === 'text' && o.size && f.role !== 'impact') set(f.layerId, 'size', fitSize(l, o, text));
         if (pal && f.role === 'currency') { const b = badgeOf(pg, row, f.layerId), col = pal[vals.currency] || CUR_COLOR[vals.currency]; if (b && col) set(b.id, 'fill', col); }
         if (f.role === 'event') { const o = cfg.orig[f.layerId] || {}; set(f.layerId, 'dir', cfg.lang === 'ar' ? 'rtl' : (o.dir || 'ltr')); if (o.font) set(f.layerId, 'font', cfg.lang === 'ar' ? arFont(o.font) : o.font); }
       });
     });
+    if (map.tz) set(map.tz.layerId, 'text', fill(map.tz.template, { tz: tzShort() || schedTz() }));
     if (map.date) { const o = cfg.orig[map.date.layerId] || {}; set(map.date.layerId, 'text', fill(map.date.template, dateValues(date, cfg.lang))); if (o.font) set(map.date.layerId, 'font', cfg.lang === 'ar' ? arFont(o.font) : o.font); }
     return changed;
   }
@@ -4767,6 +4862,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   LIVE = { forPost, refresh };
 
+  const tzShort = () => (tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1];
   /* ---------- reading a slide ---------- */
   const layersIn = (pg) => pg.layers.map((l) => ({ id: l.id, type: l.type, name: l.name, text: l.type === 'text' ? String(l.text ?? '') : undefined, x: +l.x || 0, y: +l.y || 0, w: +l.w || 0, h: +l.h || 0, size: l.size, weight: l.weight, color: typeof l.color === 'string' ? l.color : undefined, locked: !!l.locked, hidden: !!l.hidden }));
   async function preview(d, i) {
@@ -4780,17 +4876,36 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /** Binds the mapping to the page (undoable) and fills it with live data */
   function bind(pg, map, keep) {
     const cfg = { ...defaults(), ...(keep || {}), map, orig: {} };
-    const ids = new Set([...map.rows.flatMap((r) => r.layerIds), ...(map.date ? [map.date.layerId] : [])]);
-    pg.layers.forEach((l) => { if (ids.has(l.id)) cfg.orig[l.id] = { hidden: !!l.hidden, text: l.text, dir: l.dir, size: l.size, fill: l.fill, font: l.font }; });
+    const ids = new Set([...map.rows.flatMap((r) => r.layerIds), ...(map.date ? [map.date.layerId] : []), ...(map.tz ? [map.tz.layerId] : [])]);
+    const t0 = map.rows[0] && map.rows[0].fields.find((f) => f.role === 'time'), tl = t0 && pg.layers.find((l) => l.id === t0.layerId);
+    if (tl && !map.timeFmt) map.timeFmt = timeFmt((keep && keep.orig && keep.orig[tl.id] && keep.orig[tl.id].text) || tl.text);
+    // "★ ★ ★" keeps its spaces, so filled stars still line up with an empty track behind them
+    const i0 = map.rows[0] && map.rows[0].fields.find((f) => f.role === 'impact'), il = i0 && pg.layers.find((l) => l.id === i0.layerId);
+    if (il && map.impactSymbol && map.impactSep == null) { const t = String((keep && keep.orig && keep.orig[il.id] && keep.orig[il.id].text) || il.text || ''), a = t.indexOf(map.impactSymbol), b = t.indexOf(map.impactSymbol, a + map.impactSymbol.length); map.impactSep = a >= 0 && b > a ? t.slice(a + map.impactSymbol.length, b) : ''; }
+    pg.layers.forEach((l) => { if (ids.has(l.id)) cfg.orig[l.id] = { hidden: !!l.hidden, text: l.text, dir: l.dir, size: l.size, fill: l.fill, font: l.font, w: l.w, r: l.r }; });
+    roomFor(pg, cfg);
     if (keep && keep.orig) Object.entries(keep.orig).forEach(([id, o]) => { cfg.orig[id] = { ...(cfg.orig[id] || {}), ...o }; }); // re-analysis keeps the first originals
     // a design written in Arabic stays Arabic
     const evText = map.rows.flatMap((r) => r.fields.filter((f) => f.role === 'event')).map((f) => (pg.layers.find((l) => l.id === f.layerId) || {}).text || '').join(' ');
     cfg.lang = keep && keep.lang ? keep.lang : /[\u0600-\u06FF]/.test(evText) ? 'ar' : 'en';
     pg.live = cfg;
   }
+  /** Free space to the right of each left-aligned data text (up to the next element in its row, or its card's edge):
+      long live names use it before they shrink, so they don't wrap in a box sized for a short sample */
+  function roomFor(pg, cfg) {
+    const byId = new Map(pg.layers.map((l) => [l.id, l]));
+    cfg.map.rows.forEach((row) => row.fields.forEach((f) => {
+      const l = byId.get(f.layerId); if (!l || l.type !== 'text' || (l.align && l.align !== 'left') || l.dir === 'rtl' || ['time', 'currency', 'impact'].includes(f.role)) return;
+      const top = l.y, bot = l.y + l.h, right = l.x + l.w;
+      const side = row.layerIds.map((id) => byId.get(id)).filter((o) => o && o.id !== l.id && o.x >= right - 1 && o.y < bot && o.y + o.h > top && !(o.type !== 'text' && o.x <= l.x));
+      const card = row.layerIds.map((id) => byId.get(id)).find((o) => o && o.type !== 'text' && o.x <= l.x && o.x + o.w >= right && o.y <= top && o.y + o.h >= bot);
+      const limit = Math.min(...side.map((o) => o.x - 16), card ? card.x + card.w - 20 : pg.layers[0] && pg.layers[0].w ? pg.layers[0].w - 40 : Infinity);
+      if (Number.isFinite(limit) && limit - l.x > l.w) f.maxW = Math.round(limit - l.x);
+    }));
+  }
   function unbind(pg) {
     const cfg = pg.live; if (!cfg) return;
-    pg.layers.forEach((l) => { const o = cfg.orig[l.id]; if (!o) return; if (o.hidden) l.hidden = true; else delete l.hidden; if (o.text != null && l.type === 'text') l.text = o.text; if (o.dir) l.dir = o.dir; else delete l.dir; if (o.size) l.size = o.size; if (o.font) l.font = o.font; if (o.fill !== undefined && l.type !== 'text') l.fill = o.fill; });
+    pg.layers.forEach((l) => { const o = cfg.orig[l.id]; if (!o) return; if (o.hidden) l.hidden = true; else delete l.hidden; if (o.text != null && l.type === 'text') l.text = o.text; if (o.dir) l.dir = o.dir; else delete l.dir; if (o.size) l.size = o.size; if (o.w) l.w = o.w; if (o.r !== undefined && l.type !== 'text') l.r = o.r; if (o.font) l.font = o.font; if (o.fill !== undefined && l.type !== 'text') l.fill = o.fill; });
     delete pg.live;
   }
 
@@ -4831,73 +4946,246 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 
   /* ---------- panel ---------- */
   const tab = () => ED.liveTab || 'slide';
-  const stamp = (cfg) => (cfg && cfg.at ? `<span class="lv-ok" title="Data from ${esc(cfg.feed ? cfg.feed.source : '')}">● Updated ${esc(new Date(cfg.at).toLocaleTimeString('en-GB', { timeZone: schedTz() }))} ${esc((tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1])}</span>` : '');
+  const stamp = (cfg) => (cfg && cfg.at ? `<span class="lv-ok" title="Data from ${esc(cfg.feed ? cfg.feed.source : '')}"><i></i>Updated ${esc(new Date(cfg.at).toLocaleTimeString('en-GB', { timeZone: schedTz() }))} ${esc(tzShort())}</span>` : '');
+  const sec = (title, body, extra = '') => `<section class="lv-sec"><div class="lv-sec-h"><b>${title}</b>${extra}</div>${body}</section>`;
+  const field = (label, body) => `<div class="lv-f"><span class="lv-l">${label}</span>${body}</div>`;
+  const seg = (act, cur, opts) => `<div class="seg lv-seg">${opts.map(([v, l]) => `<button class="${cur === v ? 'on' : ''}" data-act="${act}" data-v="${v}" aria-pressed="${cur === v}">${l}</button>`).join('')}</div>`;
   function evRow(e, on, cfg) {
-    return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" aria-pressed="${on}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><b class="t">${hhmm(e.at)}</b><span class="grow"><span class="n">${esc(cfg.lang === 'ar' ? e.ar : e.en)}</span><small>${esc(e.currency || e.country)} · ${'★'.repeat(IMP[e.impact])}</small></span>${e.actual != null ? `<span class="v">${esc(e.actual)}</span>` : ''}</button>`;
+    return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" aria-pressed="${on}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b><span class="grow" title="${esc(cfg.lang === 'ar' ? e.ar : e.en)}"><span class="n">${esc(cfg.lang === 'ar' ? e.ar : e.en)}</span><small>${esc(e.currency || e.country)} · <span class="st">${'★'.repeat(IMP[e.impact])}</span></small></span>${e.actual != null ? `<span class="v">${esc(e.actual)}</span>` : ''}</button>`;
   }
-  function bound(pg, d) {
+  /** What a mapped layer shows: its original text, or a preview of a picture (flags) */
+  function mapChip(f, cfg, byId) {
+    const l = byId.get(f.layerId) || {}, o = cfg.orig[f.layerId] || {};
+    if (l.type !== 'text') {
+      const fill = typeof l.fill === 'string' ? l.fill : '';
+      return `<span class="tx pic" title="${f.role === 'flag' ? 'Country flag: changes with each event' : esc(l.name || 'Picture')}"><i style="background:${esc(fill)};border-radius:${f.role === 'flag' ? '50%' : '4px'}"></i>${f.role === 'flag' ? 'Country flag' : esc(l.name || 'Picture')}</span>`;
+    }
+    const t = o.text || l.text || '';
+    return `<span class="tx" title="${esc(t)}">${esc(t.slice(0, 28))}</span>`;
+  }
+  function bound(pg) {
     const cfg = pg.live, map = cfg.map, events = cfg.events || [], tz = schedTz();
     const list = choose(events, cfg, map.rows.length), chosen = new Set(list.map((e) => e.id));
     const visible = events.filter((e) => cfg.impact.includes(e.impact) || chosen.has(e.id));
     const r1 = map.rows[0], byId = new Map(pg.layers.map((l) => [l.id, l]));
-    const seg = (act, cur, opts) => `<div class="seg">${opts.map(([v, l]) => `<button class="${cur === v ? 'on' : ''}" data-act="${act}" data-v="${v}">${l}</button>`).join('')}</div>`;
-    const feedNote = cfg.err ? `<p class="xs-t" style="color:var(--neg)">${esc(cfg.err)}</p>` : cfg.feed ? `<p class="xs-t muted">${cfg.feed.count} events on ${esc(fmt(new Date(cfg.feed.date + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))} from ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback source)' : ''}. Times in ${esc(tzLabel(tz))}.</p>` : '<p class="xs-t muted">Loading events…</p>';
-    return `
-      <span class="label">Source</span><select class="field sm" id="lvSrc">${SOURCES.map(([v, l]) => `<option value="${v}" ${cfg.src === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      <span class="label" style="margin-top:6px">Day</span>${seg('lvDay', cfg.day, [['publish', 'Post day'], ['today', 'Today'], ['tomorrow', 'Tomorrow'], ['fixed', 'Date']])}
-      ${cfg.day === 'fixed' ? `<input class="field sm" type="date" id="lvDate" value="${esc(cfg.date || nowIn(tz).date)}">` : `<p class="xs-t muted">${cfg.day === 'publish' ? 'Each scheduled post shows the events of the day it goes out.' : ''}</p>`}
-      <span class="label" style="margin-top:6px">Language</span>${seg('lvLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']])}
-      <span class="label" style="margin-top:6px">Impact</span><div class="chips">${['high', 'medium', 'low'].map((k) => `<button class="chip ${cfg.impact.includes(k) ? 'on' : ''}" data-act="lvImp" data-k="${k}">${IMP_WORD.en[k]}</button>`).join('')}</div>
-      <span class="label" style="margin-top:6px">Countries</span><div class="chips">${CTRY.map(([k, l]) => `<button class="chip ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}">${l}</button>`).join('')}</div>
-      <div class="row sp" style="margin-top:6px"><span class="label" style="margin:0">Events on the slide · ${list.length}/${map.rows.length}</span>${cfg.pick ? '<button class="btn link sm" data-act="lvAuto">Auto-pick</button>' : '<span class="xs-t muted">Auto-picked</span>'}</div>
-      ${feedNote}
-      <div class="lv-evs">${visible.length ? visible.map((e) => evRow(e, chosen.has(e.id), cfg)).join('') : cfg.events ? '<p class="xs-t muted">No event matches these filters on that day. The rows stay hidden until there is one.</p>' : '<div class="skel" style="height:52px"></div><div class="skel" style="height:52px"></div><div class="skel" style="height:52px"></div>'}</div>
-      <div class="swlist lv-sw">
-        <div class="swrow"><div class="grow"><b>Actual and forecast</b><p>Hide the figures line when off, or when an event has none.</p></div>${sw(cfg.values, 'lvVals', '', 'Actual and forecast')}</div>
-        <div class="swrow"><div class="grow"><b>Update automatically</b><p>New figures appear while the studio is open, and before every scheduled post is sent.</p></div>${sw(!cfg.paused, 'lvPause', '', 'Update automatically')}</div>
-      </div>
-      <span class="label">Check for new data every</span><select class="field sm" id="lvEvery">${EVERY.map(([v, l]) => `<option value="${v}" ${+cfg.every === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      <button class="btn secondary" data-act="lvRefresh">${ic('refresh', 16)}Refresh now</button>
-      <details class="lv-how"><summary>How we read this slide</summary>
-        <p class="xs-t muted">${map.engine === 'claude' ? `Analysed by Claude${map.model ? ' (' + esc(map.model) + ')' : ''}` : 'Read from the layout'}. ${esc(map.reason || '')}${map.note ? ' ' + esc(map.note) : ''}</p>
-        ${r1 ? r1.fields.map((f, n) => `<div class="lv-map"><span class="tx" title="${esc((cfg.orig[f.layerId] || {}).text || '')}">${esc(((cfg.orig[f.layerId] || {}).text || (byId.get(f.layerId) || {}).text || '').slice(0, 26))}</span><select class="field sm" data-lvrole="${n}">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
-        ${map.date ? `<div class="lv-map"><span class="tx">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 26))}</span><span class="xs-t muted">Date</span></div>` : ''}
-        <p class="xs-t muted">Based on row 1: the other ${map.rows.length - 1} rows follow the same pattern. Edit colours, fonts and layout freely; after moving or adding text, re-analyze.</p>
-        <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn secondary sm" data-act="lvAnalyze">Re-analyze design</button><button class="btn ghost sm" data-act="lvRemove" style="color:var(--neg)">Remove live data</button></div>
+    const dayHint = cfg.day === 'publish' ? 'Each scheduled post shows the events of the day it goes out.' : cfg.day === 'today' ? 'Always today’s events.' : cfg.day === 'tomorrow' ? 'Always tomorrow’s events: post the evening before.' : '';
+    const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>` : cfg.feed ? `<p class="lv-note">${cfg.feed.count} events on ${esc(fmt(new Date(cfg.feed.date + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
+    const ctry = cfg.countries.length;
+    return sec('Data', field('Source', `<select class="field sm" id="lvSrc">${SOURCES.map(([v, l]) => `<option value="${v}" ${cfg.src === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
+        + field('Day', seg('lvDay', cfg.day, [['publish', 'Post day'], ['today', 'Today'], ['tomorrow', 'Tomorrow'], ['fixed', 'Date']]) + (cfg.day === 'fixed' ? `<input class="field sm" type="date" id="lvDate" value="${esc(cfg.date || nowIn(tz).date)}">` : `<p class="lv-hint">${dayHint}</p>`))
+        + field('Language', seg('lvLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']])))
+      + sec('Filters', field('Impact', `<div class="chips">${['high', 'medium', 'low'].map((k) => `<button class="chip ${cfg.impact.includes(k) ? 'on' : ''}" data-act="lvImp" data-k="${k}" aria-pressed="${cfg.impact.includes(k)}">${IMP_WORD.en[k]}</button>`).join('')}</div>`)
+        + field(`Countries <em>${ctry} selected</em>`, `<div class="chips">${CTRY.map(([k, l]) => `<button class="chip ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}" aria-pressed="${cfg.countries.includes(k)}">${l}</button>`).join('')}</div>`))
+      + sec('Events on the slide', feedNote + `<div class="lv-evs">${visible.length ? visible.map((e) => evRow(e, chosen.has(e.id), cfg)).join('') : cfg.events ? `<p class="lv-empty">No event matches these filters that day. The rows stay hidden until there is one.</p>` : '<div class="skel" style="height:54px"></div><div class="skel" style="height:54px"></div><div class="skel" style="height:54px"></div>'}</div>`,
+        `<span class="lv-count">${list.length}/${map.rows.length}</span>${cfg.pick ? '<button class="btn link sm lv-auto" data-act="lvAuto">Auto-pick</button>' : '<span class="lv-tag">Auto</span>'}`)
+      + sec('Updates', `<div class="lv-sw">
+          <div class="lv-swr"><div class="grow"><b>Actual and forecast</b><p>Show the figures line when an event has figures.</p></div>${sw(cfg.values, 'lvVals', '', 'Actual and forecast')}</div>
+          <div class="lv-swr"><div class="grow"><b>Update automatically</b><p>While the studio is open, and before each scheduled post.</p></div>${sw(!cfg.paused, 'lvPause', '', 'Update automatically')}</div>
+        </div>` + field('Check for new data every', `<select class="field sm" id="lvEvery" ${cfg.paused ? 'disabled' : ''}>${EVERY.map(([v, l]) => `<option value="${v}" ${+cfg.every === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
+        + `<button class="btn secondary lv-wide" data-act="lvRefresh">${ic('refresh', 16)}Refresh now</button>`)
+      + `<details class="lv-sec lv-how"${ED.liveHow ? ' open' : ''}><summary><b>How we read this slide</b><span class="lv-tag ${map.engine === 'claude' ? 'ai' : ''}">${map.engine === 'claude' ? 'Claude' : 'Layout'}</span></summary>
+        <p class="lv-hint">${esc(map.reason || '')}${map.note ? ' ' + esc(map.note) : ''}</p>
+        <div class="lv-maps">${r1 ? r1.fields.map((f, n) => `<div class="lv-map">${mapChip(f, cfg, byId)}<select class="field sm" data-lvrole="${n}" aria-label="Field type">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
+        ${map.date ? `<div class="lv-map"><span class="tx">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 28))}</span><span class="lv-fixed">Date</span></div>` : ''}</div>
+        ${r1 && !r1.fields.some((f) => f.role === 'impact') ? `<p class="lv-note warn">${ic('alert', 14)}<span>Impact isn't live on this slide${/image|picture/i.test(map.reason || '') ? ': its stars are pictures' : ''}. Import the design again (Import an image) to get editable stars.</span></p>` : ''}
+        <p class="lv-hint">Based on row 1; the other ${map.rows.length - 1} rows follow it. Change colours, fonts and layout freely. After moving or adding text, re-analyze.</p>
+        <div class="lv-row"><button class="btn secondary sm" data-act="lvAnalyze">${ic('refresh', 14)}Re-analyze</button><button class="btn ghost sm lv-danger" data-act="lvRemove">Remove live data</button></div>
       </details>`;
   }
+  const importCard = () => `<div class="lv-or"><span>or bring your own</span></div>
+    <div class="lv-imp" data-act="lvPickFile" tabindex="0" role="button" aria-label="Import an image, SVG or HTML design">
+      <span class="ico">${ic('upload', 20)}</span>
+      <span class="grow"><b>Import an image</b><small>A screenshot or exported design (PNG, JPG). SVG and HTML work too. Everything becomes editable layers.</small></span>
+      <input type="file" id="lvFile" accept="image/png,image/jpeg,image/webp,image/svg+xml,.svg,text/html,.html,.htm" hidden>
+    </div>
+    <p class="lv-hint">Designing in Figma? Import it from the <button class="btn link sm lv-inl" data-act="edTab" data-k="figma">Figma tab</button>, then come back. You can also drop a file on this panel.</p>`;
   function unboundSlide(d, i) {
     const r = peek.get(pageSig(d.pages[i])), found = r && !(r instanceof Promise) ? r : null; if (!found) peekPage(d, i);
-    const card = !found ? '<div class="lv-card"><div class="skel" style="height:14px;width:60%"></div><div class="skel" style="height:12px;width:85%;margin-top:8px"></div></div>'
-      : found.isCalendar ? `<div class="lv-card"><b>Calendar design found</b><p>${found.rows.length} rows found. We keep your design and make its text live.</p></div>`
-        : '<div class="lv-card"><b>No calendar found yet</b><p>Claude can still look for one, or build a template from your Brand Kit.</p></div>';
-    return `${card}<button class="btn primary lv-go" data-act="lvAnalyze">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="xs-t muted" style="text-align:center">Nothing is replaced. Only the text becomes live.</p>`;
+    const card = !found ? '<div class="lv-card"><div class="skel" style="height:14px;width:55%"></div><div class="skel" style="height:12px;width:85%;margin-top:10px"></div></div>'
+      : found.isCalendar ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>Calendar design found</b><p>${found.rows.length} rows. We keep your design and make its text live.</p></div></div>`
+        : `<div class="lv-card"><span class="lv-ic muted">${ic('chart', 16)}</span><div><b>No calendar found yet</b><p>Claude can still look for one, or build a template from your Brand Kit.</p></div></div>`;
+    return `${card}<div class="lv-cta"><button class="btn primary lv-go" data-act="lvAnalyze">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Nothing is replaced. Only the text becomes live.</p></div>${importCard()}`;
   }
   function unboundBrand(d) {
     const b = brand(), [w, h] = RATIOS[d.ratio], st = ED.liveStyle || 'dark', rows = ED.liveRows || 5;
-    return `<div class="lv-card row" style="gap:14px"><span class="lv-dots">${b.colors.slice(0, 5).map((c) => `<i style="background:${esc(c.hex)}"></i>`).join('')}</span><div class="grow"><b>${esc(b.name)} Brand Kit</b><p>${esc(b.fonts.heading)} · ${esc(b.fonts.body)}<br>${w}×${h} · up to 5 rows</p></div></div>
-      <span class="label" style="margin-top:6px">Style</span><div class="seg">${[['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']].map(([v, l]) => `<button class="${st === v ? 'on' : ''}" data-act="lvStyle" data-v="${v}">${l}</button>`).join('')}</div>
-      <span class="label" style="margin-top:6px">Rows</span><div class="seg">${[3, 4, 5].map((n) => `<button class="${rows === n ? 'on' : ''}" data-act="lvRows" data-v="${n}">${n}</button>`).join('')}</div>
-      <button class="btn primary lv-go" data-act="lvBuild">${ic('wand', 18)}Build template from Brand Kit</button><p class="xs-t muted" style="text-align:center">Replaces this slide with a new template. You can undo it.</p>`;
+    return `<div class="lv-card"><span class="lv-dots">${b.colors.slice(0, 5).map((c) => `<i style="background:${esc(c.hex)}"></i>`).join('')}</span><div><b>${esc(b.name)} Brand Kit</b><p>${esc(b.fonts.heading)} · ${esc(b.fonts.body)}<br>${w}×${h} · up to 5 rows</p></div></div>
+      ${field('Style', seg('lvStyle', st, [['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']]))}
+      ${field('Rows', seg('lvRows', String(rows), [['3', '3'], ['4', '4'], ['5', '5']]))}
+      <div class="lv-cta"><button class="btn primary lv-go" data-act="lvBuild">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Replaces this slide with a new template. You can undo it.</p></div>${importCard()}`;
   }
   function livePanel(p) {
     const d = ED.d, pg = curP(), cfg = pg.live && pg.live.map ? pg.live : null;
-    let h = `<div class="row sp"><h3>Live data</h3>${stamp(cfg)}</div><p class="sm-t muted">${cfg ? 'This slide is a live template: its texts follow the economic calendar.' : 'Make this slide live without changing its design, or build a new template from your Brand Kit.'}</p>`;
-    if (cfg) h += bound(pg, d);
-    else {
-      h += `<div class="seg lv-tabs"><button class="${tab() === 'slide' ? 'on' : ''}" data-act="lvTab" data-v="slide">${ic('layers', 15)}This slide</button><button class="${tab() === 'brand' ? 'on' : ''}" data-act="lvTab" data-v="brand">${ic('palette', 15)}Brand Kit</button></div>`;
-      h += tab() === 'slide' ? unboundSlide(d, ED.pi) : unboundBrand(d);
-      h += `<p class="xs-t muted">Designing in Figma? Import it from the <button class="btn link sm" data-act="edTab" data-k="figma" style="padding:0;height:auto">Figma tab</button>, then come back: we find the calendar on the slide.</p>`;
-    }
-    p.innerHTML = h;
+    let h = `<header class="lv-head"><div class="row sp"><h3>Live data</h3>${stamp(cfg)}</div><p>${cfg ? 'This slide is a live template: its texts follow the economic calendar.' : 'Make this slide live without changing it, or build a new template from your Brand Kit.'}</p></header>`;
+    if (cfg) h += bound(pg);
+    else h += `<div class="seg lv-tabs">${[['slide', 'layers', 'This slide'], ['brand', 'palette', 'Brand Kit']].map(([v, i, l]) => `<button class="${tab() === v ? 'on' : ''}" data-act="lvTab" data-v="${v}">${ic(i, 15)}${l}</button>`).join('')}</div>` + (tab() === 'slide' ? unboundSlide(d, ED.pi) : unboundBrand(d));
+    const y = p.scrollTop; p.innerHTML = h; p.scrollTop = y; p.classList.add('lv-panel');
+    const how = $('.lv-how', p); how && how.addEventListener('toggle', () => { ED.liveHow = how.open; });
     if (cfg && !cfg.events) refresh(d, { force: true });
   }
   const _pn23 = edPanel;
   edPanel = function () {
     const p = $('#edPanel');
+    if (p) p.classList.remove('lv-panel');
     if (ED.tab === 'data' && p && ED.d) { p.classList.remove('agent'); return livePanel(p); }
     return _pn23();
   };
+
+  /* ---------- importing a design (image → Claude, SVG / HTML → read in the browser) ---------- */
+  const STUDIO_FONTS = ['Inter', 'Plus Jakarta Sans', 'Poppins', 'Montserrat', 'DM Sans', 'Space Grotesk', 'Playfair Display', 'Cairo', 'Tajawal'];
+  const readAs = (file, how) => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = () => no(new Error('Could not read the file')); r[how](file); });
+  const loadImg = (src) => new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(new Error('This file is not a picture the browser can open')); i.src = src; });
+  /** The canvas to rebuild on: the slide's size, or the picture's own proportions for a single-slide design */
+  function targetSize(d, iw, ih) {
+    const [w, h] = RATIOS[d.ratio];
+    if (d.pages.length > 1 || Math.abs(w / h - iw / ih) < 0.02) return { W: w, H: h, ratio: d.ratio };
+    const std = Object.keys(RATIOS).find((r) => !isCustom(r) && Math.abs(RATIOS[r][0] / RATIOS[r][1] - iw / ih) < 0.02);
+    if (std) return { W: RATIOS[std][0], H: RATIOS[std][1], ratio: std };
+    const W = 1080, H = Math.round(1080 * ih / iw), r = ensureRatio(`${W}x${H}`); return { W, H, ratio: r };
+  }
+  function crop(img, x, y, w, h) {
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h));
+    c.getContext('2d').drawImage(img, x, y, w, h, 0, 0, c.width, c.height);
+    return c.toDataURL('image/png');
+  }
+  /** Claude's layer list (picture pixels) → studio layers on a W×H canvas */
+  function toLayers(design, img, iw, ih, W, H) {
+    const k = Math.min(W / iw, H / ih), ox = (W - iw * k) / 2, oy = (H - ih * k) / 2, R1 = (n) => Math.round(n * 10) / 10;
+    const nx = img.naturalWidth / iw, ny = img.naturalHeight / ih; // the picture sent was downscaled; crop from the original
+    const L = [BG(W, H, design.background || '#ffffff')];
+    design.layers.forEach((l) => {
+      const x = R1(l.x * k + ox), y = R1(l.y * k + oy), w = R1(l.w * k), h = R1(l.h * k);
+      if (l.kind === 'text') {
+        const size = Math.max(6, Math.round((l.size || l.h * 0.8) * k)), lines = String(l.text).split('\n').length;
+        const room = Math.max(6, size * 0.25), tw = Math.max(w, size) + room, tx = l.align === 'center' ? x - room / 2 : l.align === 'right' ? x - room : x;
+        const rating = /^[★☆●○•◆◇■□]+$/.test(String(l.text).trim()); // filled and empty ratings must line up
+        L.push(Tx(rating ? x : tx, y, tw, String(l.text), { name: l.name || 'Text', size, weight: l.weight || 400, color: l.color || '#111111', align: rating ? 'left' : l.align || 'left', font: STUDIO_FONTS.includes(l.font) ? l.font : 'Inter', ls: R1((l.letterSpacing || 0) * k), lh: Math.min(2, Math.max(0.9, Math.round((h / lines / size) * 100) / 100)), dir: /[؀-ۿ]/.test(l.text) ? 'rtl' : 'ltr' }));
+        L[L.length - 1].h = h;
+      } else if (l.kind === 'image' && design.layers.filter((t) => t.kind === 'text' && t.x >= l.x && t.y >= l.y && t.x + t.w <= l.x + l.w && t.y + t.h <= l.y + l.h).length >= 2) {
+        return; // a crop over several texts would copy them as pixels behind the new layers
+      } else if (l.kind === 'image') {
+        L.push(Im(x, y, w, h, `url(${crop(img, l.x * nx, l.y * ny, l.w * nx, l.h * ny)}) center/100% 100% no-repeat`, { name: l.name || 'Image', r: R1((l.radius || 0) * k) }));
+      } else {
+        const o = { name: l.name || 'Shape', r: l.kind === 'ellipse' ? 0 : R1((l.radius || 0) * k), ...(l.stroke ? { stroke: l.stroke, sw: 2 } : {}) };
+        L.push((l.kind === 'ellipse' ? El : Rc)(x, y, w, h, l.fill || 'rgba(0,0,0,.08)', o));
+      }
+    });
+    return L;
+  }
+  /* SVG: texts become text layers, everything else stays a sharp vector picture underneath */
+  async function svgLayers(src, W0, H0) {
+    const doc = new DOMParser().parseFromString(src, 'image/svg+xml'), svg = doc.documentElement;
+    if (svg.nodeName.toLowerCase() !== 'svg') throw new Error('This SVG file could not be read');
+    svg.querySelectorAll('script,foreignObject').forEach((n) => n.remove());
+    [...svg.querySelectorAll('*')].forEach((n) => [...n.attributes].forEach((a) => /^on/i.test(a.name) && n.removeAttribute(a.name)));
+    const vb = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number), iw = vb.length === 4 ? vb[2] : parseFloat(svg.getAttribute('width')) || W0, ih = vb.length === 4 ? vb[3] : parseFloat(svg.getAttribute('height')) || H0;
+    const host = document.createElement('div'); host.style.cssText = `position:fixed;left:-99999px;top:0;width:${iw}px;height:${ih}px;visibility:hidden`;
+    svg.setAttribute('width', iw); svg.setAttribute('height', ih); host.innerHTML = new XMLSerializer().serializeToString(svg); document.body.append(host);
+    try {
+      const live = host.querySelector('svg'), base = live.getBoundingClientRect(), texts = [];
+      live.querySelectorAll('text').forEach((t) => {
+        const r = t.getBoundingClientRect(), cs = getComputedStyle(t), txt = (t.textContent || '').trim(); if (!txt || !r.width) return;
+        const anchor = t.getAttribute('text-anchor') || cs.textAnchor;
+        texts.push({ kind: 'text', name: txt.slice(0, 20), x: r.left - base.left, y: r.top - base.top, w: r.width + 4, h: r.height, text: txt, size: parseFloat(cs.fontSize) || 16, weight: parseInt(cs.fontWeight, 10) || 400, color: cs.fill && cs.fill !== 'none' ? cs.fill : cs.color, align: anchor === 'middle' ? 'center' : anchor === 'end' ? 'right' : 'left', font: STUDIO_FONTS.find((f) => cs.fontFamily.includes(f)) || 'Inter', letterSpacing: parseFloat(cs.letterSpacing) || 0 });
+        t.remove();
+      });
+      const rest = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(live)).replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29');
+      return { iw, ih, texts, rest };
+    } finally { host.remove(); }
+  }
+  /* HTML: laid out in a sandboxed frame (no scripts), then every box and text is read back */
+  async function htmlLayers(src, W, H) {
+    const f = document.createElement('iframe'); f.setAttribute('sandbox', 'allow-same-origin'); f.style.cssText = `position:fixed;left:-99999px;top:0;width:${W}px;height:${H}px;border:0;visibility:hidden`;
+    document.body.append(f);
+    try {
+      // measure with the same web fonts the studio draws with
+      const fonts = $$('link[href*="fonts.googleapis.com/css"]').map((l) => `<link rel="stylesheet" href="${esc(l.href)}">`).join('');
+      const page = /<head[^>]*>/i.test(src) ? src.replace(/<head[^>]*>/i, (m) => m + fonts) : fonts + src;
+      await new Promise((ok) => { f.onload = ok; f.srcdoc = page; setTimeout(ok, 4000); });
+      const doc = f.contentDocument, win = f.contentWindow; if (!doc || !doc.body) throw new Error('This HTML file could not be read');
+      // load every face the document uses before reading sizes
+      const fams = new Set([...doc.querySelectorAll('*')].map((el) => win.getComputedStyle(el).fontFamily.split(',')[0].replace(/["']/g, '').trim()));
+      await Promise.all([...fams].flatMap((fam) => [400, 500, 600, 700, 800].map((w) => doc.fonts.load(`${w} 16px "${fam}"`).catch(() => null))));
+      await Promise.race([doc.fonts.ready, new Promise((r) => setTimeout(r, 3000))]);
+      const L = [], body = win.getComputedStyle(doc.body), root = win.getComputedStyle(doc.documentElement);
+      const bg = body.backgroundImage !== 'none' ? body.backgroundImage : body.backgroundColor !== 'rgba(0, 0, 0, 0)' ? body.backgroundColor : root.backgroundColor !== 'rgba(0, 0, 0, 0)' ? root.backgroundColor : '#ffffff';
+      L.push(BG(W, H, bg));
+      const walk = (el) => {
+        if (el.nodeType !== 1 || ['SCRIPT', 'STYLE', 'HEAD', 'META', 'LINK', 'TITLE'].includes(el.tagName)) return;
+        const cs = win.getComputedStyle(el), r = el.getBoundingClientRect();
+        if (cs.display === 'none' || cs.visibility === 'hidden' || r.width < 1 || r.height < 1) return;
+        const rad = parseFloat(cs.borderTopLeftRadius) || 0, op = parseFloat(cs.opacity);
+        if (el.tagName === 'IMG' && el.currentSrc) L.push(Im(r.left, r.top, r.width, r.height, `url(${el.currentSrc}) center/${cs.objectFit === 'contain' ? 'contain' : 'cover'} no-repeat`, { name: el.alt || 'Image', r: rad }));
+        else if (el !== doc.body && el !== doc.documentElement) {
+          const hasBg = cs.backgroundImage !== 'none' || cs.backgroundColor !== 'rgba(0, 0, 0, 0)', bw = parseFloat(cs.borderTopWidth) || 0;
+          if (hasBg || bw) L.push(Rc(r.left, r.top, r.width, r.height, cs.backgroundImage !== 'none' ? `${cs.backgroundImage}, ${cs.backgroundColor}` : hasBg ? cs.backgroundColor : 'transparent', { name: el.className ? String(el.className).split(' ')[0] : el.tagName.toLowerCase(), r: Math.min(rad, r.height / 2), op: Number.isFinite(op) ? op : 1, ...(bw ? { stroke: cs.borderTopColor, sw: bw } : {}) }));
+        }
+        // text written directly in this element becomes one text layer
+        const own = [...el.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim());
+        if (own.length && ![...el.children].some((c) => win.getComputedStyle(c).display !== 'inline')) {
+          const range = doc.createRange(); range.selectNodeContents(el); const tr = range.getBoundingClientRect(), txt = el.innerText.trim();
+          if (txt && tr.width) {
+            const size = parseFloat(cs.fontSize) || 16, lh = cs.lineHeight === 'normal' ? 1.2 : parseFloat(cs.lineHeight) / size;
+            const room = Math.max(6, size * 0.25), lw = tr.width + room, lx = cs.textAlign === 'center' ? tr.left - room / 2 : ['right', 'end'].includes(cs.textAlign) ? tr.left - room : tr.left;
+            L.push(Tx(lx, tr.top, lw, txt, { name: txt.slice(0, 20), size, weight: parseInt(cs.fontWeight, 10) || 400, color: cs.color, align: ['center', 'right'].includes(cs.textAlign) ? cs.textAlign : cs.textAlign === 'end' ? 'right' : 'left', font: (cs.fontFamily.split(',')[0] || 'Inter').replace(/["']/g, '').trim(), ls: parseFloat(cs.letterSpacing) || 0, lh: Math.round(lh * 100) / 100, dir: cs.direction === 'rtl' ? 'rtl' : 'ltr', ...(cs.textTransform === 'uppercase' ? { up: true } : {}), ...(cs.fontStyle === 'italic' ? { it: true } : {}) }));
+            L[L.length - 1].h = tr.height;
+          }
+          return;
+        }
+        [...el.children].forEach(walk);
+      };
+      walk(doc.body);
+      return L;
+    } finally { f.remove(); }
+  }
+  async function importDesign(file) {
+    if (!canEdit()) return; const d = ED.d, i = ED.pi, pg = d.pages[i];
+    const kind = /svg/.test(file.type) || /\.svg$/i.test(file.name) ? 'svg' : /html/.test(file.type) || /\.html?$/i.test(file.name) ? 'html' : /^image\//.test(file.type) ? 'image' : null;
+    if (!kind) return toast('Choose a PNG, JPG, SVG or HTML file');
+    if (file.size > 15e6) return toast('That file is over 15 MB');
+    let closeWait = () => {};
+    const wait = (t) => { closeWait(); closeWait = modal(`<div class="mh"><h2>Importing ${esc(file.name)}</h2></div><div class="mb"><div class="lv-progress"><i class="spin"></i><span>${t}</span></div></div>`); };
+    try {
+      let layers, size, note = '';
+      if (kind === 'html') {
+        const [w, h] = RATIOS[d.ratio]; size = { W: w, H: h, ratio: d.ratio }; wait('Reading the layout…');
+        layers = await htmlLayers(await readAs(file, 'readAsText'), w, h);
+      } else if (kind === 'svg') {
+        wait('Reading the SVG…'); const s = await svgLayers(await readAs(file, 'readAsText'), 1080, 1080);
+        size = targetSize(d, s.iw, s.ih); const k = Math.min(size.W / s.iw, size.H / s.ih), ox = (size.W - s.iw * k) / 2, oy = (size.H - s.ih * k) / 2;
+        layers = [BG(size.W, size.H, '#ffffff'), Im(ox, oy, s.iw * k, s.ih * k, `url('${s.rest}') center/100% 100% no-repeat`, { name: 'Artwork' })];
+        s.texts.forEach((t) => { const sz = Math.round(t.size * k), room = Math.max(6, sz * 0.25), x0 = t.x * k + ox - (t.align === 'center' ? room / 2 : t.align === 'right' ? room : 0); const l = Tx(x0, t.y * k + oy, t.w * k + room, t.text, { name: t.name, size: sz, weight: t.weight, color: t.color, align: t.align, font: t.font, ls: t.letterSpacing * k }); l.h = t.h * k; layers.push(l); });
+      } else {
+        const src = await readAs(file, 'readAsDataURL'), img = await loadImg(src);
+        // send a picture Claude reads well (long side ≤ 1568 px), crop images from the original
+        const s0 = Math.min(1, 1568 / Math.max(img.naturalWidth, img.naturalHeight)), iw = Math.round(img.naturalWidth * s0), ih = Math.round(img.naturalHeight * s0);
+        const c = document.createElement('canvas'); c.width = iw; c.height = ih; c.getContext('2d').drawImage(img, 0, 0, iw, ih);
+        size = targetSize(d, iw, ih); wait('Claude is rebuilding your design as layers. This takes about a minute…');
+        try {
+          const r = await api('/social/calendar/import', { method: 'POST', body: { image: c.toDataURL('image/jpeg', 0.9), imgW: iw, imgH: ih } });
+          layers = toLayers(r.design, img, iw, ih, size.W, size.H);
+        } catch (e) {
+          if (!/claude key/i.test(e.message)) throw e;
+          // no key: keep the picture so the slide can still be used, and say what's missing
+          layers = [BG(size.W, size.H, '#ffffff'), Im(0, 0, size.W, size.H, `url(${src}) center/contain no-repeat`, { name: file.name.slice(0, 20), locked: true })];
+          note = 'Added as a picture. Add a Claude key in Settings → AI assistant to turn it into editable layers.';
+        }
+      }
+      closeWait();
+      mutate(() => { if (pg.live) unbind(pg); if (size.ratio !== d.ratio) d.ratio = size.ratio; pg.layers = layers; pg.bg = layers[0].fill; ED.sel = null; }, () => { edAll(); fitZoom && fitZoom(); });
+      toast(note || `Imported ${layers.length - 1} layers. Checking it for a calendar…`);
+      if (!note) { peek.clear(); const r = await peekPage(d, i); if (r && r.isCalendar) ACT.lvAnalyze(); else edPanel(); }
+    } catch (e) { closeWait(); toast('Import failed: ' + e.message); }
+  }
+  document.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('lv-imp')) { e.preventDefault(); ACT.lvPickFile(e.target, e); } });
+  document.addEventListener('change', (e) => { const t = e.target; if (t.id === 'lvFile' && t.files && t.files[0]) { const f = t.files[0]; t.value = ''; importDesign(f); } });
+  // drop a file on the Live data panel
+  document.addEventListener('dragover', (e) => { const p = e.target.closest && e.target.closest('#edPanel.lv-panel'); if (p && e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); p.classList.add('drop'); } }, true);
+  document.addEventListener('dragleave', (e) => { const p = e.target.closest && e.target.closest('#edPanel.lv-panel'); if (p && !p.contains(e.relatedTarget)) p.classList.remove('drop'); }, true);
+  document.addEventListener('drop', (e) => {
+    const p = e.target.closest && e.target.closest('#edPanel.lv-panel'); if (!p) return; p.classList.remove('drop');
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]; if (!f) return;
+    e.preventDefault(); e.stopImmediatePropagation(); importDesign(f);
+  }, true);
 
   /* ---------- actions ---------- */
   const cfgNow = () => curP().live;
@@ -4907,6 +5195,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     lvTab: (a) => { ED.liveTab = a.dataset.v; edPanel(); },
     lvStyle: (a) => { ED.liveStyle = a.dataset.v; edPanel(); },
     lvRows: (a) => { ED.liveRows = +a.dataset.v; edPanel(); },
+    lvPickFile: (a, e) => { if (e && e.target && e.target.id === 'lvFile') return; e && e.preventDefault(); const i = $('#lvFile'); i && i.click(); },
     lvAnalyze: async () => {
       if (!canEdit()) return; const d = ED.d, i = ED.pi, pg = d.pages[i], done = busyWith('[data-act=lvAnalyze]', 'Analyzing…');
       try {

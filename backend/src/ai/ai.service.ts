@@ -9,7 +9,7 @@ import { GscService } from "../gsc/gsc.service";
 import { Actor, ActivityService } from "../share/activity.service";
 import { AiSettings, AiSettingsDocument } from "./ai-settings.schema";
 import { Idea, IdeaDocument } from "./idea.schema";
-import { GenerateIdeasDto, UpdateAiSettingsDto } from "./dto/ai.dto";
+import { GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto } from "./dto/ai.dto";
 import { cleanHtml, words } from "./html";
 import { fetchImage, Img } from "./image";
 import { coverProfile } from "./cover-profile";
@@ -168,6 +168,22 @@ export class AiService {
     const j: any = await res.json();
     if (j.choices?.[0]?.finish_reason === "length") throw new BadGatewayException("The answer was cut off — try again or pick a model with a larger output limit");
     return { text: String(j.choices?.[0]?.message?.content ?? ""), model };
+  }
+
+  /** Caption for a social post, in the brand's voice, with the provider chosen in Settings → AI */
+  async socialCaption(d: SocialCaptionDto, actor: Actor) {
+    this.throttle(actor.id ?? "anon");
+    const NET: Record<string, string> = { ig: "Instagram", li: "LinkedIn", x: "X (280 characters max)", fb: "Facebook", tt: "TikTok", tg: "Telegram" };
+    const lang = d.language || "English";
+    const system = `You write social media captions for the brand "${clip(d.brand, 120)}". Write in ${lang}. ${d.tone && d.tone !== "Auto" ? `Tone: ${d.tone}.` : ""}
+Brand voice: ${clip(d.voice, 2000) || "clear, friendly and expert"}.
+${d.dos ? `Always: ${clip(d.dos, 1000)}.` : ""} ${d.donts ? `Never: ${clip(d.donts, 1000)}.` : ""}
+Write one caption that works on ${(d.networks ?? []).map((n) => NET[n] || n).join(", ") || "Instagram and LinkedIn"}: a strong first line, one or two short paragraphs about what the post shows, ${d.cta ? `this call to action: "${clip(d.cta, 200)}", ` : ""}then 3 to 5 relevant hashtags${d.hashtags ? ` (prefer: ${clip(d.hashtags, 400)})` : ""}.
+Only state facts that appear on the slides; never invent figures, dates or promises. Answer with the caption only: no title, no quotes, no explanation.`;
+    const user = `Post: ${clip(d.design, 120)}\nText on the slides:\n${(d.texts ?? []).map((t) => "- " + clip(t, 400)).join("\n") || "(no text)"}`;
+    const m = d.image && /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(d.image);
+    const { text, model } = await this.complete(system, user, { maxTokens: 1500, images: m ? [{ media: m[1], data: m[2] }] : [] });
+    return { caption: text.trim().replace(/^["“]|["”]$/g, ""), model };
   }
 
   private throttle(user: string) {
