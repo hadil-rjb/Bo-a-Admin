@@ -1,16 +1,21 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { LiveRenderService } from "./live-render.service";
 import { PublisherService } from "./publisher.service";
 
 const TICK_MS = Number(process.env.SOCIAL_PUBLISH_TICK_MS) || 30_000;
 
-/** Every 30 s: scheduled social posts whose time has come are published to their networks. */
+/**
+ * Every 30 s: scheduled social posts whose time has come are published to their networks.
+ * Live calendar posts are re-rendered with their day's events first (LiveRenderService); if that
+ * fails, the slides the studio uploaded go out.
+ */
 @Injectable()
 export class PublishScheduler implements OnModuleInit, OnModuleDestroy {
   private log = new Logger("SocialScheduler");
   private timer?: NodeJS.Timeout;
   private busy = false;
 
-  constructor(private publisher: PublisherService) {}
+  constructor(private publisher: PublisherService, private live: LiveRenderService) {}
 
   onModuleInit() { this.timer = setInterval(() => void this.tick(), TICK_MS); setTimeout(() => void this.tick(), 5_000); }
   onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
@@ -20,6 +25,7 @@ export class PublishScheduler implements OnModuleInit, OnModuleDestroy {
     this.busy = true;
     try {
       for (const p of await this.publisher.due()) {
+        await this.live.refresh(p.brandId, p.id).catch((e) => this.log.warn(`Live data refresh of ${p.brandId}/${p.id} failed, publishing the last rendered slides: ${e?.message || e}`));
         await this.publisher.publish(p.brandId, p.id).catch((e) => this.log.warn(`${p.brandId}/${p.id}: ${e.message}`));
       }
     } catch (e: any) {

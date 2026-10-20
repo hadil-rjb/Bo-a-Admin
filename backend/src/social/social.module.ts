@@ -15,6 +15,7 @@ import {
 import { ConnectionsService } from "./publishing/connections.service";
 import { PublisherService } from "./publishing/publisher.service";
 import { PublishScheduler } from "./publishing/publish.scheduler";
+import { LiveRenderService } from "./publishing/live-render.service";
 import { PublishingController } from "./publishing/publishing.controller";
 import { FigmaController } from "./figma/figma.controller";
 import { FigmaService } from "./figma/figma.service";
@@ -39,6 +40,6 @@ import { CalendarService } from "./calendar/calendar.service";
     ]),
   ],
   controllers: [SocialWorkspaceController, SocialBrandsController, PublishingController, FigmaController, CalendarController],
-  providers: [WorkspaceService, BrandsService, ConnectionsService, PublisherService, PublishScheduler, FigmaService, CalendarService],
+  providers: [WorkspaceService, BrandsService, ConnectionsService, PublisherService, PublishScheduler, LiveRenderService, FigmaService, CalendarService],
 })
 export class SocialModule {}

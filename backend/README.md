@@ -82,3 +82,31 @@ Lecture : tout utilisateur connecté · écriture : `admin` / `editor` · réini
 | PATCH / DELETE | /social/brands/:brandId/posts/:id | |
 
 `BODY_LIMIT` (défaut `50mb`) : taille max. des requêtes JSON (images en data URL dans les articles et les designs).
+
+#### Posts « calendrier live » rendus par le serveur
+Un design dont une page est un template live (`pages[].live.map`) est re-rendu par l'API juste avant la publication
+d'un post planifié, avec les événements du jour du post (TradingView / Forex Factory), même sans onglet studio ouvert.
+
+- Le `PublishScheduler` appelle `LiveRenderService.refresh()` avant `publish()`. Le moteur du studio lui-même tourne dans
+  Chromium headless (`FRONTEND_URL/social-media/render`) : même mapping des données, même rendu que l'export du studio.
+  Les images remplacent les médias du post (`media.live` indique la date, la source et les événements affichés) ; en cas
+  d'échec, les dernières images envoyées par le studio sont publiées.
+- `POST /social/brands/:brandId/posts/:id/live-refresh` (admin / editor) : même rendu, à la demande (vérification).
+- Réglage : Settings → Export & publishing → *Refresh live calendar posts on the server* (`set.liveServer`, activé par défaut).
+- Logs : `[LiveRender] Post <id> (<brand>) slide 1: 2026-10-21 · tradingview · 3/35 events: 07:00 GBP UK Inflation Rate (YoY) | …`
+
+Variables :
+
+| Variable | Rôle |
+|---|---|
+| `FRONTEND_URL` | studio chargé par Chromium (`/social-media/render` doit être déployé) |
+| `STUDIO_RENDER_URL` | optionnel, remplace `FRONTEND_URL` pour le rendu uniquement |
+| `SOCIAL_LIVE_RENDER=off` | désactive le rendu serveur sur cette instance |
+| `SOCIAL_LIVE_RENDER_TIMEOUT_MS` | délai max. d'un rendu (défaut 120000) |
+| `CHROME_PATH` | Chrome local à utiliser (dev macOS : détecté automatiquement) |
+
+Render.com (runtime Node natif) : rien à installer. `@sparticuz/chromium` (≈ 67 Mo dans `node_modules`) se décompresse
+dans `/tmp` au premier rendu (≈ 180 Mo disque) ; les bibliothèques NSS et une police de secours (DejaVu Sans, pour les
+caractères absents des polices du design comme ★) sont mises en place automatiquement. Le navigateur est fermé après
+60 s sans rendu. Mémoire : prévoir ≈ 300–400 Mo de plus pendant un rendu (instance Standard 2 Go recommandée ; sur
+Starter 512 Mo, surveiller les redémarrages OOM ou désactiver avec `SOCIAL_LIVE_RENDER=off`).
