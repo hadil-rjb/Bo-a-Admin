@@ -4799,7 +4799,13 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       row.layerIds.forEach((id) => set(id, 'hidden', shown(id)));
       const vals = values(e, cfg), empty = e.actual == null && e.forecast == null && e.previous == null;
       row.fields.forEach((f) => {
-        if (f.role === 'flag') { const fl = flagOf(e); if (fl) set(f.layerId, 'fill', fl); return; }
+        if (f.role === 'flag') {
+          const fl = flagOf(e), l = byId.get(f.layerId); if (!fl || !l) return;
+          set(f.layerId, 'fill', fl);
+          // a square flag picture is a round flag cropped with its corners: keep the new one round
+          if (Math.abs(l.w - l.h) <= Math.max(l.w, l.h) * 0.12) set(f.layerId, 'r', Math.round(Math.min(l.w, l.h) / 2));
+          return;
+        }
         // speeches and auctions have no figures: hide their value line instead of printing dashes
         if (VAL_ONLY.test(f.template) && (!cfg.values || empty)) return set(f.layerId, 'hidden', true);
         const text = fill(f.template, vals), l = byId.get(f.layerId), o = cfg.orig[f.layerId] || {};
@@ -4863,7 +4869,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     // "★ ★ ★" keeps its spaces, so filled stars still line up with an empty track behind them
     const i0 = map.rows[0] && map.rows[0].fields.find((f) => f.role === 'impact'), il = i0 && pg.layers.find((l) => l.id === i0.layerId);
     if (il && map.impactSymbol && map.impactSep == null) { const t = String((keep && keep.orig && keep.orig[il.id] && keep.orig[il.id].text) || il.text || ''), a = t.indexOf(map.impactSymbol), b = t.indexOf(map.impactSymbol, a + map.impactSymbol.length); map.impactSep = a >= 0 && b > a ? t.slice(a + map.impactSymbol.length, b) : ''; }
-    pg.layers.forEach((l) => { if (ids.has(l.id)) cfg.orig[l.id] = { hidden: !!l.hidden, text: l.text, dir: l.dir, size: l.size, fill: l.fill, font: l.font, w: l.w }; });
+    pg.layers.forEach((l) => { if (ids.has(l.id)) cfg.orig[l.id] = { hidden: !!l.hidden, text: l.text, dir: l.dir, size: l.size, fill: l.fill, font: l.font, w: l.w, r: l.r }; });
     roomFor(pg, cfg);
     if (keep && keep.orig) Object.entries(keep.orig).forEach(([id, o]) => { cfg.orig[id] = { ...(cfg.orig[id] || {}), ...o }; }); // re-analysis keeps the first originals
     // a design written in Arabic stays Arabic
@@ -4886,7 +4892,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   function unbind(pg) {
     const cfg = pg.live; if (!cfg) return;
-    pg.layers.forEach((l) => { const o = cfg.orig[l.id]; if (!o) return; if (o.hidden) l.hidden = true; else delete l.hidden; if (o.text != null && l.type === 'text') l.text = o.text; if (o.dir) l.dir = o.dir; else delete l.dir; if (o.size) l.size = o.size; if (o.w) l.w = o.w; if (o.font) l.font = o.font; if (o.fill !== undefined && l.type !== 'text') l.fill = o.fill; });
+    pg.layers.forEach((l) => { const o = cfg.orig[l.id]; if (!o) return; if (o.hidden) l.hidden = true; else delete l.hidden; if (o.text != null && l.type === 'text') l.text = o.text; if (o.dir) l.dir = o.dir; else delete l.dir; if (o.size) l.size = o.size; if (o.w) l.w = o.w; if (o.r !== undefined && l.type !== 'text') l.r = o.r; if (o.font) l.font = o.font; if (o.fill !== undefined && l.type !== 'text') l.fill = o.fill; });
     delete pg.live;
   }
 
@@ -4934,13 +4940,23 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   function evRow(e, on, cfg) {
     return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" aria-pressed="${on}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b><span class="grow" title="${esc(cfg.lang === 'ar' ? e.ar : e.en)}"><span class="n">${esc(cfg.lang === 'ar' ? e.ar : e.en)}</span><small>${esc(e.currency || e.country)} · <span class="st">${'★'.repeat(IMP[e.impact])}</span></small></span>${e.actual != null ? `<span class="v">${esc(e.actual)}</span>` : ''}</button>`;
   }
+  /** What a mapped layer shows: its original text, or a preview of a picture (flags) */
+  function mapChip(f, cfg, byId) {
+    const l = byId.get(f.layerId) || {}, o = cfg.orig[f.layerId] || {};
+    if (l.type !== 'text') {
+      const fill = typeof l.fill === 'string' ? l.fill : '';
+      return `<span class="tx pic" title="${f.role === 'flag' ? 'Country flag: changes with each event' : esc(l.name || 'Picture')}"><i style="background:${esc(fill)};border-radius:${f.role === 'flag' ? '50%' : '4px'}"></i>${f.role === 'flag' ? 'Country flag' : esc(l.name || 'Picture')}</span>`;
+    }
+    const t = o.text || l.text || '';
+    return `<span class="tx" title="${esc(t)}">${esc(t.slice(0, 28))}</span>`;
+  }
   function bound(pg) {
     const cfg = pg.live, map = cfg.map, events = cfg.events || [], tz = schedTz();
     const list = choose(events, cfg, map.rows.length), chosen = new Set(list.map((e) => e.id));
     const visible = events.filter((e) => cfg.impact.includes(e.impact) || chosen.has(e.id));
     const r1 = map.rows[0], byId = new Map(pg.layers.map((l) => [l.id, l]));
     const dayHint = cfg.day === 'publish' ? 'Each scheduled post shows the events of the day it goes out.' : cfg.day === 'today' ? 'Always today’s events.' : cfg.day === 'tomorrow' ? 'Always tomorrow’s events: post the evening before.' : '';
-    const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}${esc(cfg.err)}</p>` : cfg.feed ? `<p class="lv-note">${cfg.feed.count} events on ${esc(fmt(new Date(cfg.feed.date + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
+    const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>` : cfg.feed ? `<p class="lv-note">${cfg.feed.count} events on ${esc(fmt(new Date(cfg.feed.date + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
     const ctry = cfg.countries.length;
     return sec('Data', field('Source', `<select class="field sm" id="lvSrc">${SOURCES.map(([v, l]) => `<option value="${v}" ${cfg.src === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
         + field('Day', seg('lvDay', cfg.day, [['publish', 'Post day'], ['today', 'Today'], ['tomorrow', 'Tomorrow'], ['fixed', 'Date']]) + (cfg.day === 'fixed' ? `<input class="field sm" type="date" id="lvDate" value="${esc(cfg.date || nowIn(tz).date)}">` : `<p class="lv-hint">${dayHint}</p>`))
@@ -4956,8 +4972,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         + `<button class="btn secondary lv-wide" data-act="lvRefresh">${ic('refresh', 16)}Refresh now</button>`)
       + `<details class="lv-sec lv-how"${ED.liveHow ? ' open' : ''}><summary><b>How we read this slide</b><span class="lv-tag ${map.engine === 'claude' ? 'ai' : ''}">${map.engine === 'claude' ? 'Claude' : 'Layout'}</span></summary>
         <p class="lv-hint">${esc(map.reason || '')}${map.note ? ' ' + esc(map.note) : ''}</p>
-        <div class="lv-maps">${r1 ? r1.fields.map((f, n) => `<div class="lv-map"><span class="tx" title="${esc((cfg.orig[f.layerId] || {}).text || '')}">${esc(((cfg.orig[f.layerId] || {}).text || (byId.get(f.layerId) || {}).text || '').slice(0, 28))}</span><select class="field sm" data-lvrole="${n}" aria-label="Field type">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
+        <div class="lv-maps">${r1 ? r1.fields.map((f, n) => `<div class="lv-map">${mapChip(f, cfg, byId)}<select class="field sm" data-lvrole="${n}" aria-label="Field type">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
         ${map.date ? `<div class="lv-map"><span class="tx">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 28))}</span><span class="lv-fixed">Date</span></div>` : ''}</div>
+        ${r1 && !r1.fields.some((f) => f.role === 'impact') ? `<p class="lv-note warn">${ic('alert', 14)}<span>Impact isn't live on this slide${/image|picture/i.test(map.reason || '') ? ': its stars are pictures' : ''}. Import the design again (Import an image) to get editable stars.</span></p>` : ''}
         <p class="lv-hint">Based on row 1; the other ${map.rows.length - 1} rows follow it. Change colours, fonts and layout freely. After moving or adding text, re-analyze.</p>
         <div class="lv-row"><button class="btn secondary sm" data-act="lvAnalyze">${ic('refresh', 14)}Re-analyze</button><button class="btn ghost sm lv-danger" data-act="lvRemove">Remove live data</button></div>
       </details>`;
