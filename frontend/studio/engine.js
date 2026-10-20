@@ -5369,7 +5369,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           + (cfg.lang === (cfg.srcLang || 'en') ? '' : `<p class="lv-hint lv-langnote">${!map.texts ? 'Re-analyze the slide to translate its titles too.' : cfg.i18nEngine === 'claude' ? 'Whole slide translated by Claude.' : 'Translated with the built-in dictionary.'}</p>`)
           + (cfg.lang === 'ar' && (cfg.srcLang || 'en') !== 'ar' ? `<div class="lv-swr lv-rtl"><div class="grow"><b>Right-to-left</b><p>Mirror the layout for Arabic.</p></div>${sw(cfg.mirror !== false, 'lvMirror', '', 'Right-to-left layout')}</div>` : '')))
       + sec('Filters', field('Impact', `<div class="lv-imps">${['high', 'medium', 'low'].map((k) => `<button class="lv-impb i${IMP[k]} ${cfg.impact.includes(k) ? 'on' : ''}" data-act="lvImp" data-k="${k}" aria-pressed="${cfg.impact.includes(k)}"><span class="st">${'★'.repeat(IMP[k])}</span>${IMP_WORD.en[k]}</button>`).join('')}</div>`)
-        + field(`Countries <em>${ctry}/${CTRY.length}</em>${ctry < CTRY.length ? '<button class="btn link sm lv-all" data-act="lvCtyAll">All</button>' : ''}`, `<div class="lv-ctys">${CTRY.map(([k, l]) => `<button class="lv-cty ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}" aria-pressed="${cfg.countries.includes(k)}" title="${esc(countryName(k, 'en'))} · ${l}">${flagImg(k)}<span>${k === 'GB' ? 'UK' : k}</span></button>`).join('')}</div>`))
+        + field(`Countries <em>${ctry}/${CTRY.length}</em>${ctry < CTRY.length ? '<button class="btn link sm lv-all" data-act="lvCtyAll">All</button>' : ''}`, `<div class="lv-ctys">${CTRY.map(([k, l]) => `<button class="lv-cty ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}" aria-pressed="${cfg.countries.includes(k)}" title="${esc(countryName(k, 'en'))} · ${l}">${k === 'GB' ? 'UK' : k}</button>`).join('')}</div>`))
       + sec('Events', feedNote + (wk && cfg.room != null && cfg.room < 1 && visible.length > onSlide.size ? `<p class="lv-full">${ic('alert', 14)}<span>The slide is full. Untick an event to add another.</span></p>` : '') + `<div class="lv-evs ${wk && cfg.room != null && cfg.room < 1 ? 'full' : ''}">${evHtml}</div>`,
         `<span class="lv-count" title="Events on the slide">${onSlide.size} on the slide</span>${cfg.pick ? '<button class="btn link sm lv-auto" data-act="lvAuto">Auto-pick</button>' : '<span class="lv-tag">Auto</span>'}`)
       + sec('Updates', `<div class="lv-sw">
@@ -5423,9 +5423,15 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     let h = `<header class="lv-head"><div class="row sp"><h3>Live data</h3>${stamp(cfg)}</div><p>${cfg ? 'This slide is a live template: its texts follow the economic calendar.' : 'Make this slide live without changing it, or build a new template from your Brand Kit.'}</p></header>`;
     if (cfg) h += bound(pg);
     else h += `<div class="seg lv-tabs">${[['slide', 'layers', 'This slide'], ['brand', 'palette', 'Brand Kit']].map(([v, i, l]) => `<button class="${tab() === v ? 'on' : ''}" data-act="lvTab" data-v="${v}">${ic(i, 15)}${l}</button>`).join('')}</div>` + (tab() === 'slide' ? unboundSlide(d, ED.pi) : unboundBrand(d));
-    const y = p.scrollTop; p.innerHTML = h; p.scrollTop = y; p.classList.add('lv-panel');
-    // a tick re-renders the panel: the clicked card stays exactly where it was on screen
-    if (ED.lvAnchor) { const c = p.querySelector(`.lv-ev[data-ev="${CSS.escape(ED.lvAnchor.id)}"]`); if (c) p.scrollTop += c.getBoundingClientRect().top - ED.lvAnchor.top; }
+    const y = p.scrollTop, old = $('.lv-evs', p), ey = old ? old.scrollTop : ED.lvEvsTop || 0;
+    p.innerHTML = h; p.scrollTop = y; p.classList.add('lv-panel');
+    // the events box keeps its own scroll; after a tick the clicked card stays exactly where it was
+    const box = $('.lv-evs', p);
+    if (box) {
+      box.scrollTop = ey;
+      if (ED.lvAnchor) { const c = box.querySelector(`.lv-ev[data-ev="${CSS.escape(ED.lvAnchor.id)}"]`); if (c) box.scrollTop += c.getBoundingClientRect().top - ED.lvAnchor.top; }
+      box.addEventListener('scroll', () => { ED.lvEvsTop = box.scrollTop; }, { passive: true });
+    }
     const how = $('.lv-how', p); how && how.addEventListener('toggle', () => { ED.liveHow = how.open; });
     if (cfg && !cfg.events) refresh(d, { force: true });
   }
