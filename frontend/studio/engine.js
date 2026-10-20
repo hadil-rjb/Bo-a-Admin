@@ -4726,15 +4726,21 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const addDay = (date, n) => { const [y, m, d] = date.split('-').map(Number), x = new Date(Date.UTC(y, m - 1, d + n)); return x.toISOString().slice(0, 10); };
   /** Which day a page shows: the post's day when rendering a post, otherwise its setting */
   function dayFor(cfg, d, post) {
-    const today = nowIn(schedTz()).date;
+    const day = dayOf(cfg, d, post);
+    return isWeek(cfg) ? weekOf(day) : day;
+  }
+  function dayOf(cfg, d, post) {
+    const today = nowIn(schedTz()).date, wk = isWeek(cfg);
     if (cfg.day === 'today') return today;
-    if (cfg.day === 'tomorrow') return addDay(today, 1);
+    if (cfg.day === 'tomorrow') return addDay(today, wk ? 7 : 1); // weekly slides: next week
     if (cfg.day === 'fixed' && /^\d{4}-\d{2}-\d{2}$/.test(cfg.date)) return cfg.date;
     if (post && post.date) return post.date;
     // "the day it's published": the next scheduled post of this design, else today
     const next = S.posts.filter((p) => p.d === d.id && p.status === 'Scheduled' && p.date >= today).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0];
     return next ? next.date : today;
   }
+  /** Weekly slides show Monday to Friday: on a Saturday or Sunday that's the coming week */
+  const weekOf = (date) => { const wd = new Date(date + 'T12:00:00Z').getUTCDay(); return wd === 6 ? addDay(date, 2) : wd === 0 ? addDay(date, 1) : date; };
   const isWeek = (cfg) => cfg.map && cfg.map.layout === 'week' && cfg.map.week;
   const weekDays = (date) => { const [y, m, d] = date.split('-').map(Number), at = new Date(Date.UTC(y, m - 1, d, 12)), mon = new Date(at.getTime() - ((at.getUTCDay() + 6) % 7) * 864e5); return [0, 1, 2, 3, 4].map((i) => new Date(mon.getTime() + i * 864e5).toISOString().slice(0, 10)); };
   /** What a page needs: the events of its day, or of the whole week for a weekly layout */
@@ -5281,11 +5287,15 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const list = choose(events, cfg, isWeek(cfg) ? 999 : map.rows.length), chosen = new Set(list.map((e) => e.id));
     const visible = events.filter((e) => cfg.impact.includes(e.impact) || chosen.has(e.id));
     const r1 = map.rows[0], byId = new Map(pg.layers.map((l) => [l.id, l]));
-    const dayHint = cfg.day === 'publish' ? 'Each scheduled post shows the events of the day it goes out.' : cfg.day === 'today' ? 'Always today’s events.' : cfg.day === 'tomorrow' ? 'Always tomorrow’s events: post the evening before.' : '';
+    const wk = isWeek(cfg), range = (() => { if (!wk || !cfg.feed) return ''; const w = weekDays(cfg.feed.date), o = { day: 'numeric', month: 'short' }; return ` Now: ${fmt(new Date(w[0] + 'T12:00'), o)} – ${fmt(new Date(w[4] + 'T12:00'), o)}.`; })();
+    const dayHint = wk
+      ? (cfg.day === 'publish' ? 'Each scheduled post shows the week it goes out, Monday to Friday. Posts on a weekend show the coming week.' : cfg.day === 'today' ? 'Always the current week (the coming one on weekends).' : cfg.day === 'tomorrow' ? 'Always next week: post it the week before.' : '') + range
+      : cfg.day === 'publish' ? 'Each scheduled post shows the events of the day it goes out.' : cfg.day === 'today' ? 'Always today’s events.' : cfg.day === 'tomorrow' ? 'Always tomorrow’s events: post the evening before.' : '';
     const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>` : cfg.feed ? `<p class="lv-note">${cfg.feed.count} events ${cfg.feed.week ? `in the week of ${esc(fmt(new Date(weekDays(cfg.feed.date)[0] + 'T12:00'), { day: 'numeric', month: 'long' }))}` : `on ${esc(fmt(new Date(cfg.feed.date + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))}`} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
     const ctry = cfg.countries.length;
     return sec('Data', field('Source', `<select class="field sm" id="lvSrc">${SOURCES.map(([v, l]) => `<option value="${v}" ${cfg.src === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
-        + field('Day', seg('lvDay', cfg.day, [['publish', 'Post day'], ['today', 'Today'], ['tomorrow', 'Tomorrow'], ['fixed', 'Date']]) + (cfg.day === 'fixed' ? `<input class="field sm" type="date" id="lvDate" value="${esc(cfg.date || nowIn(tz).date)}">` : `<p class="lv-hint">${dayHint}</p>`))
+        + field(wk ? 'Week' : 'Day', seg('lvDay', cfg.day, wk ? [['publish', 'Post week'], ['today', 'This week'], ['tomorrow', 'Next week'], ['fixed', 'Pick']] : [['publish', 'Post day'], ['today', 'Today'], ['tomorrow', 'Tomorrow'], ['fixed', 'Date']])
+          + (cfg.day === 'fixed' ? `<input class="field sm" type="date" id="lvDate" value="${esc(cfg.date || nowIn(tz).date)}">${wk ? `<p class="lv-hint">Any day of the week to show.${range}</p>` : ''}` : `<p class="lv-hint">${dayHint}</p>`))
         + field('Language', seg('lvLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']])
           + `<p class="lv-hint lv-langnote">${cfg.lang === (cfg.srcLang || 'en') ? 'The whole slide follows the language: titles, labels, dates and events.' : !map.texts ? 'Re-analyze the slide to translate its titles and labels too.' : cfg.i18nEngine === 'claude' ? 'Titles and labels translated by Claude. Brand names and websites stay as they are.' : 'Titles and labels translated with the built-in dictionary. Add a Claude key in Settings → AI assistant for a full translation.'}</p>`
           + (cfg.lang === 'ar' && (cfg.srcLang || 'en') !== 'ar' ? `<div class="lv-swr lv-rtl"><div class="grow"><b>Right-to-left layout</b><p>Mirror the design for Arabic: times on the right, text aligned right.</p></div>${sw(cfg.mirror !== false, 'lvMirror', '', 'Right-to-left layout')}</div>` : '')))
