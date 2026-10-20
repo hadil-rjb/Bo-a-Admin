@@ -374,7 +374,8 @@ const pfDots = (a) => `<span class="pfs">${a.map((k) => `<span class="pf" title=
 const badge = (s) => `<span class="badge b-${s}">${s}</span>`;
 const ACT = {};
 
-function toast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.innerHTML = ic('check', 16) + esc(msg); document.body.append(t); setTimeout(() => t.remove(), 2600); }
+/** Short notice; longer messages stay longer, a click dismisses it, and a new one replaces the previous */
+function toast(msg) { document.querySelectorAll('.toast:not(.tu)').forEach((x) => x.remove()); const t = document.createElement('div'); t.className = 'toast'; t.innerHTML = ic('check', 16) + '<span>' + esc(msg) + '</span>'; t.onclick = () => t.remove(); document.body.append(t); setTimeout(() => t.remove(), Math.min(7000, Math.max(2600, String(msg).length * 50))); }
 function modal(html, { wide = false, onMount, onClose } = {}) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true">${html}</div>`;
@@ -4725,14 +4726,28 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const addDay = (date, n) => { const [y, m, d] = date.split('-').map(Number), x = new Date(Date.UTC(y, m - 1, d + n)); return x.toISOString().slice(0, 10); };
   /** Which day a page shows: the post's day when rendering a post, otherwise its setting */
   function dayFor(cfg, d, post) {
-    const today = nowIn(schedTz()).date;
+    const day = dayOf(cfg, d, post);
+    return isWeek(cfg) ? weekOf(day) : day;
+  }
+  function dayOf(cfg, d, post) {
+    const today = nowIn(schedTz()).date, wk = isWeek(cfg);
     if (cfg.day === 'today') return today;
-    if (cfg.day === 'tomorrow') return addDay(today, 1);
+    if (cfg.day === 'tomorrow') return addDay(today, wk ? 7 : 1); // weekly slides: next week
     if (cfg.day === 'fixed' && /^\d{4}-\d{2}-\d{2}$/.test(cfg.date)) return cfg.date;
     if (post && post.date) return post.date;
     // "the day it's published": the next scheduled post of this design, else today
     const next = S.posts.filter((p) => p.d === d.id && p.status === 'Scheduled' && p.date >= today).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0];
     return next ? next.date : today;
+  }
+  /** Weekly slides show Monday to Friday: on a Saturday or Sunday that's the coming week */
+  const weekOf = (date) => { const wd = new Date(date + 'T12:00:00Z').getUTCDay(); return wd === 6 ? addDay(date, 2) : wd === 0 ? addDay(date, 1) : date; };
+  const isWeek = (cfg) => cfg.map && cfg.map.layout === 'week' && cfg.map.week;
+  const weekDays = (date) => { const [y, m, d] = date.split('-').map(Number), at = new Date(Date.UTC(y, m - 1, d, 12)), mon = new Date(at.getTime() - ((at.getUTCDay() + 6) % 7) * 864e5); return [0, 1, 2, 3, 4].map((i) => new Date(mon.getTime() + i * 864e5).toISOString().slice(0, 10)); };
+  /** What a page needs: the events of its day, or of the whole week for a weekly layout */
+  async function dataFor(cfg, date) {
+    if (!isWeek(cfg)) { const r = await fetchDay(cfg, date); return { ...r, byDay: null }; }
+    const days = weekDays(date), rs = await Promise.all(days.map((x) => fetchDay(cfg, x)));
+    return { source: rs[0].source, errors: rs.flatMap((r) => r.errors || []), events: rs.flatMap((r) => r.events), byDay: Object.fromEntries(days.map((x, i) => [x, rs[i].events])) };
   }
   /** Events for the rows: the hand-picked ones of that day, else the most important (then in time order) */
   function choose(events, cfg, n) {
@@ -4755,19 +4770,79 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   /** Country flag (vector, so it stays sharp at any size) */
   const flagOf = (e) => { const cc = String(e.country || '').toLowerCase(); return /^[a-z]{2}$/.test(cc) ? `url('https://flagcdn.com/${cc}.svg') center/cover no-repeat` : null; }; // single quotes: layer styles sit in a double-quoted attribute
+  /** "United States" / "الولايات المتحدة"; the euro area has no region code of its own */
+  const countryName = (cc, lang) => {
+    if (cc === 'EU') return lang === 'ar' ? 'منطقة اليورو' : 'Euro Area';
+    try { return new Intl.DisplayNames([lang === 'ar' ? 'ar' : 'en'], { type: 'region' }).of(cc) || cc; } catch (x) { return cc || ''; }
+  };
   function values(e, cfg) {
     const v = (x) => (x == null || x === '' ? '—' : x), sym = cfg.map.impactSymbol;
     return {
-      time: timeIn(e.at, cfg.map.timeFmt), currency: e.currency || e.country, country: e.country, event: cfg.lang === 'ar' ? e.ar : e.en,
+      time: timeIn(e.at, cfg.map.timeFmt), currency: e.currency || e.country, country: e.country, countryName: countryName(e.country, cfg.lang), event: cfg.lang === 'ar' ? (e.translated ? e.ar : (cfg.evAr && cfg.evAr[e.en]) || e.ar) : e.en,
       actual: v(e.actual), forecast: v(e.forecast), previous: v(e.previous), value: v(e.actual ?? e.forecast ?? e.previous),
       impact: sym ? Array(IMP[e.impact]).fill(sym).join(cfg.map.impactSep || '') : IMP_WORD[cfg.lang === 'ar' ? 'ar' : 'en'][e.impact],
     };
   }
+  /** Values for day / week / time zone placeholders; the week is Monday to Friday of the post's day */
   function dateValues(date, lang) {
     const [y, m, d] = date.split('-').map(Number), at = new Date(Date.UTC(y, m - 1, d, 12)), loc = lang === 'ar' ? 'ar' : 'en-GB';
-    const f = (o) => new Intl.DateTimeFormat(loc, { timeZone: 'UTC', ...o }).format(at);
-    return { weekday: f({ weekday: 'long' }), day: f({ day: 'numeric' }), month: f({ month: 'long' }), year: f({ year: 'numeric' }) };
+    const f = (o, t = at) => new Intl.DateTimeFormat(loc === 'en-GB' && o.month === 'short' ? 'en-US' : loc, { timeZone: 'UTC', ...o }).format(t);
+    const ws = new Date(at.getTime() - ((at.getUTCDay() + 6) % 7) * 864e5), we = new Date(ws.getTime() + 4 * 864e5);
+    return {
+      weekday: f({ weekday: 'long' }), wd: f({ weekday: 'short' }), day: f({ day: 'numeric' }), month: f({ month: 'long' }), mon: f({ month: 'short' }), year: f({ year: 'numeric' }),
+      weekStartDay: f({ day: 'numeric' }, ws), weekStartMon: f({ month: 'short' }, ws), weekStartMonth: f({ month: 'long' }, ws),
+      weekEndDay: f({ day: 'numeric' }, we), weekEndMon: f({ month: 'short' }, we), weekEndMonth: f({ month: 'long' }, we),
+      tz: tzShort() || schedTz(),
+    };
   }
+  /* ---------- whole-slide language ---------- */
+  const AR_RE = /[\u0600-\u06FF]/;
+  /** Offline fallback when no Claude key is set: the words calendar posts use most */
+  const DICT_AR = [['economic calendar', 'المفكرة الاقتصادية'], ['high impact', 'عالية التأثير'], ['key events', 'أهم الأحداث'], ['this week', 'هذا الأسبوع'], ['times in', 'التوقيت'], ['actual', 'الفعلي'], ['forecast', 'المتوقع'], ['previous', 'السابق'], ['news', 'الأخبار'], ['today', 'اليوم'], ['tomorrow', 'غداً'], ['impact', 'التأثير'], ['event', 'الحدث'], ['events', 'الأحداث'], ['time', 'الوقت'], ['currency', 'العملة'], ['week', 'الأسبوع'], ['weekly', 'أسبوعي'], ['outlook', 'نظرة عامة'], ['calendar', 'المفكرة'], ['market', 'السوق'], ['markets', 'الأسواق']];
+  function dictAr(t) {
+    let out = t, hit = false;
+    [...DICT_AR].sort((a, b) => b[0].length - a[0].length).forEach(([en, ar]) => { out = out.replace(new RegExp(`(^|[^\\p{L}{])${en}(?=$|[^\\p{L}}])`, 'giu'), (m, pre) => { hit = true; return pre + ar; }); });
+    return hit ? out : null;
+  }
+  /** Texts of a page that follow the language: fixed texts, text templates and row templates with words in them */
+  function i18nItems(pg) {
+    const cfg = pg.live, map = cfg.map, items = [];
+    const words = (t) => /\p{L}{2,}/u.test(String(t || '').replace(/\{\w+\}/g, ''));
+    (map.texts || []).forEach((t) => { const src = t.template || (cfg.orig[t.layerId] || {}).text; if (src && (t.translate || t.template) && words(src)) items.push({ id: 't:' + t.layerId, text: src }); });
+    const seen = new Set();
+    map.rows.forEach((r) => r.fields.forEach((f) => { if (words(f.template) && !['event', 'currency', 'country', 'flag', 'time', 'impact'].includes(f.role) && !seen.has(f.template)) { seen.add(f.template); items.push({ id: 'f:' + f.template, text: f.template }); } }));
+    if (map.date && words(map.date.template.replace(/\{\w+\}/g, ''))) items.push({ id: 'd:' + map.date.layerId, text: map.date.template });
+    if (map.week) { [['w:line', map.week.list.lineTemplate], ['w:group', map.week.groupHeader && map.week.groupHeader.template], ['w:day', map.week.dayHeader.template]].forEach(([id, t]) => { if (t && words(t)) items.push({ id, text: t }); }); }
+    return items;
+  }
+  /** Arabic names the built-in rules don't know (new indicators): Claude translates them once per page */
+  const arPending = new Map(); // English name → request in flight (refreshes running at once share it)
+  async function arabicNames(cfg, events) {
+    cfg.evAr = cfg.evAr || {};
+    const waiting = events.filter((e) => !e.translated && !(e.en in cfg.evAr) && arPending.has(e.en));
+    if (waiting.length) { await Promise.all([...new Set(waiting.map((e) => arPending.get(e.en)))]); waiting.forEach((e) => { const v = arPending.get(e.en + '\u0000v'); if (v) cfg.evAr[e.en] = v; }); }
+    const todo = [...new Set(events.filter((e) => !e.translated && !(e.en in cfg.evAr)).map((e) => e.en))].slice(0, 100);
+    if (!todo.length) return;
+    let done; const p = new Promise((ok) => (done = ok)); todo.forEach((t) => arPending.set(t, p));
+    try {
+      const r = await api('/social/calendar/translate', { method: 'POST', body: { items: todo.map((t, i) => ({ id: 'e' + i, text: t })), to: 'ar' } });
+      const got = new Map((r.items || []).filter((x) => x.translated).map((x) => [x.id, x.text]));
+      todo.forEach((t, i) => { if (got.has('e' + i)) { cfg.evAr[t] = got.get('e' + i); arPending.set(t + '\u0000v', cfg.evAr[t]); } });
+    } catch (e) { /* keep the English name */ } finally { todo.forEach((t) => arPending.delete(t)); done(); }
+  }
+  /** Makes sure the page has its texts in `lang`; Claude when a key is set, the small dictionary otherwise */
+  async function ensureI18n(pg, lang) {
+    const cfg = pg.live; if (!cfg || lang === (cfg.srcLang || 'en')) return true;
+    cfg.i18n = cfg.i18n || {}; const have = cfg.i18n[lang] = cfg.i18n[lang] || {};
+    const todo = i18nItems(pg).filter((i) => !(i.id in have)); if (!todo.length) return true;
+    let r = { engine: 'none', items: [] };
+    try { r = await api('/social/calendar/translate', { method: 'POST', body: { items: todo, to: lang, brand: brand().name } }); } catch (e) { /* offline: dictionary */ }
+    const got = new Map((r.items || []).filter((i) => i.translated).map((i) => [i.id, i.text]));
+    todo.forEach((i) => { have[i.id] = got.get(i.id) ?? (lang === 'ar' ? dictAr(i.text) : null) ?? i.text; });
+    cfg.i18nEngine = r.engine === 'claude' ? 'claude' : 'dictionary';
+    return true;
+  }
+  const tr = (cfg, id, src) => (cfg.lang !== (cfg.srcLang || 'en') && cfg.i18n && cfg.i18n[cfg.lang] && cfg.i18n[cfg.lang][id]) || src;
   /** Latin-only fonts can't draw Arabic: use the brand's Arabic font for Arabic texts */
   const AR_OK = /cairo|tajawal|noto (sans|kufi|naskh) arabic|ibm plex sans arabic|almarai|amiri|changa|readex|vazir|rubik/i;
   const arFont = (f) => (AR_OK.test(f || '') ? f : brand().fonts.arabic || 'Cairo');
@@ -4794,10 +4869,102 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
 
   /** Writes the events into a page's mapped layers. Returns true when something changed. */
-  function applyPage(pg, events, date) {
-    const cfg = pg.live, map = cfg.map, byId = new Map(pg.layers.map((l) => [l.id, l])); let changed = false;
+  /** Logo lockups (an icon right next to a short brand text, or texts the analysis calls brand): id → designed box of the group */
+  function lockups(pg, cfg) {
+    const out = new Map(), G = cfg.geo || {}, box = (l) => ({ x: (G[l.id] || l).x, y: l.y, w: l.w, h: l.h });
+    const brandIds = new Set((cfg.map.texts || []).filter((t) => t.kind === 'brand').map((t) => t.layerId));
+    pg.layers.filter((t) => t.type === 'text' && !t.lvw && (brandIds.has(t.id) || /logo|brand/i.test(t.name || ''))).forEach((t) => {
+      const b = box(t), icons = pg.layers.filter((o) => o !== t && o.type !== 'text' && !o.locked && o.w < 160 && o.h < 160 && o.y < b.y + b.h && o.y + o.h > b.y && (Math.abs(box(o).x + o.w - b.x) < 40 || Math.abs(b.x + b.w - box(o).x) < 40));
+      if (!icons.length && !brandIds.has(t.id)) return;
+      const all = [t, ...icons], x0 = Math.min(...all.map((o) => box(o).x)), x1 = Math.max(...all.map((o) => box(o).x + o.w));
+      all.forEach((o) => out.set(o.id, { x0, x1 }));
+    });
+    return out;
+  }
+  /* ---------- weekly layouts: day blocks rebuilt from the first day and group ---------- */
+  const flagEmoji = (cc) => (/^[A-Z]{2}$/.test(cc || '') ? String.fromCodePoint(...[...cc].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)) : '');
+  /** Spacing of the designed day blocks, measured once when the slide is bound */
+  function weekMetrics(pg, wk) {
+    const byId = new Map(pg.layers.map((l) => [l.id, l])), dh = byId.get(wk.dayHeader.layerId), list = byId.get(wk.list.layerId), gh = wk.groupHeader && byId.get(wk.groupHeader.layerId), bar = wk.dayBar && byId.get(wk.dayBar), box = wk.container && byId.get(wk.container);
+    const slots = wk.slotLayerIds.map((id) => byId.get(id)).filter(Boolean), top = bar ? bar.y : dh.y, headEnd = bar ? bar.y + bar.h : dh.y + dh.h;
+    const days = slots.filter((l) => l.type === 'text' && l.y > dh.y + 4 && Math.abs(l.x - dh.x) < 30 && Math.abs((l.size || 0) - (dh.size || 0)) < 2).sort((a, b) => a.y - b.y);
+    const nextDayTop = days[0] ? (slots.find((s) => s.type !== 'text' && s.y <= days[0].y && s.y + s.h >= days[0].y + days[0].h) || days[0]).y : null;
+    const lists = slots.filter((l) => l.type === 'text' && Math.abs(l.x - list.x) < 30 && Math.abs((l.size || 0) - (list.size || 0)) < 2).sort((a, b) => a.y - b.y);
+    const heads = gh ? slots.filter((l) => l.type === 'text' && Math.abs(l.x - gh.x) < 30 && Math.abs((l.size || 0) - (gh.size || 0)) < 2).sort((a, b) => a.y - b.y) : [];
+    const gh2 = heads.find((h) => h.y > list.y && (nextDayTop == null || h.y < nextDayTop));
+    const lastBefore = lists.filter((l) => nextDayTop == null || l.y < nextDayTop).pop() || list;
+    const bottom = Math.max(...slots.map((l) => l.y + l.h)), lineH = (list.size || 18) * (list.lh || 1.2);
+    return {
+      top, headEnd: headEnd - top, dhOff: dh.y - top, firstGap: (gh ? gh.y : list.y) - headEnd, ghToList: gh ? list.y - (gh.y + gh.h) : 0, ghH: gh ? gh.h : 0, lineH,
+      groupGap: gh2 ? gh2.y - (list.y + list.h) : Math.round(lineH), dayGap: nextDayTop != null ? nextDayTop - (lastBefore.y + lastBefore.h) : Math.round(lineH * 1.6),
+      limit: box ? box.y + box.h - Math.max(16, box.y + box.h - bottom) : (pg.layers[0] ? pg.layers[0].h - 40 : 1300),
+      listW: box ? Math.round(box.x + box.w - list.x - 20) : list.w,
+      proto: { dh: JSON.parse(JSON.stringify(dh)), list: JSON.parse(JSON.stringify(list)), ...(gh ? { gh: JSON.parse(JSON.stringify(gh)) } : {}), ...(bar ? { bar: JSON.parse(JSON.stringify(bar)) } : {}) },
+      anchor: box ? box.id : wk.slotLayerIds[0],
+    };
+  }
+  /** Rebuilds the day blocks with the week's events; returns true when the slide changed */
+  function applyWeek(pg, byDay, cfg) {
+    const wk = cfg.map.week, m = cfg.wkm || (cfg.wkm = weekMetrics(pg, wk)), before = JSON.stringify(pg.layers.filter((l) => l.lvw));
+    const keep = new Set(pg.live ? choose(Object.values(byDay || {}).flat(), cfg, 999).map((e) => e.id) : []);
+    pg.layers = pg.layers.filter((l) => !l.lvw);
+    wk.slotLayerIds.forEach((id) => { const l = pg.layers.find((x) => x.id === id); if (l) l.hidden = true; });
+    const out = [], P = m.proto, lineTpl = tr(cfg, 'w:line', wk.list.lineTemplate), ghTpl = wk.groupHeader ? tr(cfg, 'w:group', wk.groupHeader.template) : '', dayTpl = tr(cfg, 'w:day', wk.dayHeader.template);
+    const add = (proto, id, o) => { const l = { ...JSON.parse(JSON.stringify(proto)), ...o, id, lvw: 1 }; delete l.hidden; out.push(l); cfg.geo[id] = cfg.geo[id] || { x: proto.x, align: proto.align, dir: proto.dir, font: proto.font }; cfg.geo[id].x = proto.x; return l; };
+    const days = Object.keys(byDay || {}).sort();
+    // fit the whole week: the same number of events per day at most, keeping each day's most important ones
+    const byImp = (list) => list.map((e, i) => ({ e, i })).sort((a, b) => IMP[b.e.impact] - IMP[a.e.impact] || a.i - b.i);
+    const ranked = Object.fromEntries(days.map((day) => [day, byImp((byDay[day] || []).filter((e) => keep.has(e.id)))]));
+    const caps = Object.fromEntries(days.map((day) => [day, ranked[day].length ? 1 : 0]));
+    const pickDay = (day) => ranked[day].slice(0, caps[day]).sort((a, b) => a.i - b.i).map((x) => x.e);
+    const height = () => {
+      let h = 0, last = 0;
+      days.forEach((day) => { const evs = pickDay(day); if (!evs.length) return; const groups = new Set(evs.map((e) => e.country || e.currency)).size; h += m.headEnd + m.firstGap + groups * (m.ghH + m.ghToList) + (groups - 1) * m.groupGap + evs.length * m.lineH + m.dayGap; last = m.dayGap; });
+      return h - last;
+    };
+    // fewer days if even one event each doesn't fit
+    for (let k = days.length - 1; k >= 0 && m.top + height() > m.limit; k--) caps[days[k]] = 0;
+    // then add the most important remaining event, whichever day it is on, while the week still fits
+    for (let more = true; more;) {
+      more = false;
+      const next = days.filter((day) => caps[day] && caps[day] < ranked[day].length).map((day) => ({ day, e: ranked[day][caps[day]].e })).sort((a, b) => IMP[b.e.impact] - IMP[a.e.impact] || a.e.at.localeCompare(b.e.at));
+      for (const c of next) { caps[c.day]++; if (m.top + height() <= m.limit) { more = true; break; } caps[c.day]--; }
+    }
+    let y = m.top, n = 0;
+    for (const day of days) {
+      const evs = pickDay(day); if (!evs.length) continue;
+      if (y + m.headEnd + m.firstGap + m.ghH + m.ghToList + m.lineH > m.limit) break;
+      if (P.bar) add(P.bar, `lvw-${n}-bar`, { y });
+      add(P.dh, `lvw-${n}-day`, { y: y + m.dhOff, w: P.bar ? Math.round(P.bar.w - (P.dh.x - P.bar.x) * 2) : P.dh.w, text: fill(dayTpl, dateValues(day, cfg.lang)) });
+      y += m.headEnd + m.firstGap;
+      const groups = []; evs.forEach((e) => { const k = e.country || e.currency; let g = groups.find((x) => x.k === k); if (!g) groups.push(g = { k, e, list: [] }); g.list.push(e); });
+      groups.forEach((g, j) => {
+        if (y + m.ghH + m.ghToList + m.lineH > m.limit) return;
+        if (P.gh) { add(P.gh, `lvw-${n}-g${j}`, { y, w: Math.max(P.gh.w, m.listW - (P.gh.x - P.list.x)), text: fill(ghTpl, { flag: flagEmoji(g.e.country), country: g.e.country || '', countryName: countryName(g.e.country, cfg.lang), currency: g.e.currency || '' }) }); y += m.ghH + m.ghToList; }
+        const room = Math.max(1, Math.floor((m.limit - y) / m.lineH)), lines = g.list.slice(0, room).map((e) => {
+          let v = values(e, cfg), t = fill(lineTpl, { ...v, tz: tzShort() || schedTz(), flag: flagEmoji(e.country) });
+          // a line never wraps: long names are shortened, the time stays
+          while (textW(P.list, t, P.list.size) > m.listW && v.event.length > 14) { v = { ...v, event: v.event.replace(/\s*\S+…?$/, '') + '…' }; t = fill(lineTpl, { ...v, tz: tzShort() || schedTz(), flag: flagEmoji(e.country) }); }
+          return t;
+        });
+        const h = Math.round(lines.length * m.lineH);
+        add(P.list, `lvw-${n}-l${j}`, { y, h, w: m.listW, text: lines.join('\n') });
+        y += h + m.groupGap;
+      });
+      y += m.dayGap - m.groupGap; n++;
+    }
+    if (!out.length) { add(P.dh, 'lvw-0-day', { y: m.top + m.dhOff, text: cfg.lang === 'ar' ? 'لا توجد أحداث هذا الأسبوع' : 'No events this week' }); }
+    const at = pg.layers.findIndex((l) => l.id === m.anchor); pg.layers.splice(at >= 0 ? at + 1 : pg.layers.length, 0, ...out);
+    return JSON.stringify(out) !== before;
+  }
+  function applyPage(pg, events, date, byDay) {
+    const cfg = pg.live, map = cfg.map; let byId = new Map(pg.layers.map((l) => [l.id, l])), changed = false;
+    // pages bound before whole-slide language: their current layout is the designed one
+    if (!cfg.geo) { cfg.geo = {}; pg.layers.forEach((l) => { cfg.geo[l.id] = { x: l.x, align: l.align, dir: l.type === 'text' && !AR_RE.test(String(l.text || '')) ? (l.dir === 'rtl' ? 'ltr' : l.dir) : l.dir, font: (cfg.orig[l.id] && cfg.orig[l.id].font) || l.font }; }); }
+    if (!cfg.srcLang) cfg.srcLang = map.rows.some((r) => r.fields.some((f) => f.role === 'event' && AR_RE.test(String((cfg.orig[f.layerId] || {}).text || '')))) ? 'ar' : 'en';
     const set = (id, k, v) => { const l = byId.get(id); if (l && l[k] !== v) { l[k] = v; changed = true; } };
     const shown = (id) => !!(cfg.orig[id] && cfg.orig[id].hidden);
+    if (isWeek(cfg)) { changed = applyWeek(pg, byDay || { [date]: events }, cfg) || changed; byId = new Map(pg.layers.map((l) => [l.id, l])); }
     const list = choose(events, cfg, map.rows.length), pal = palette(pg, cfg);
     map.rows.forEach((row, i) => {
       const e = list[i];
@@ -4814,16 +4981,37 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         }
         // speeches and auctions have no figures: hide their value line instead of printing dashes
         if (VAL_ONLY.test(f.template) && (!cfg.values || empty)) return set(f.layerId, 'hidden', true);
-        const text = fill(f.template, vals), l = byId.get(f.layerId), o = cfg.orig[f.layerId] || {};
+        const text = fill(tr(cfg, 'f:' + f.template, f.template), vals), l = byId.get(f.layerId), o = cfg.orig[f.layerId] || {};
         set(f.layerId, 'text', text);
         if (l && l.type === 'text' && f.maxW && o.w) set(f.layerId, 'w', textW(l, text, o.size || l.size) > o.w ? f.maxW : o.w);
         if (l && l.type === 'text' && o.size && f.role !== 'impact') set(f.layerId, 'size', fitSize(l, o, text));
         if (pal && f.role === 'currency') { const b = badgeOf(pg, row, f.layerId), col = pal[vals.currency] || CUR_COLOR[vals.currency]; if (b && col) set(b.id, 'fill', col); }
-        if (f.role === 'event') { const o = cfg.orig[f.layerId] || {}; set(f.layerId, 'dir', cfg.lang === 'ar' ? 'rtl' : (o.dir || 'ltr')); if (o.font) set(f.layerId, 'font', cfg.lang === 'ar' ? arFont(o.font) : o.font); }
       });
     });
-    if (map.tz) set(map.tz.layerId, 'text', fill(map.tz.template, { tz: tzShort() || schedTz() }));
-    if (map.date) { const o = cfg.orig[map.date.layerId] || {}; set(map.date.layerId, 'text', fill(map.date.template, dateValues(date, cfg.lang))); if (o.font) set(map.date.layerId, 'font', cfg.lang === 'ar' ? arFont(o.font) : o.font); }
+    const dv = dateValues(date, cfg.lang);
+    if (map.tz) set(map.tz.layerId, 'text', fill(map.tz.template, dv));
+    if (map.date) set(map.date.layerId, 'text', fill(tr(cfg, 'd:' + map.date.layerId, map.date.template), dv));
+    // every other text: day / week / time zone templates, and the language of fixed texts
+    (map.texts || []).forEach((t) => {
+      const o = cfg.orig[t.layerId]; if (!o || o.text == null) return;
+      const src = t.template || o.text, txt = (t.translate || t.template) ? tr(cfg, 't:' + t.layerId, src) : src;
+      set(t.layerId, 'text', t.template || txt !== src ? fill(txt, dv) : o.text);
+    });
+    // direction, fonts and (for a slide designed left-to-right shown in Arabic) the mirrored layout
+    const W = (pg.layers[0] && pg.layers[0].w) || 1080, mirror = cfg.lang === 'ar' && (cfg.srcLang || 'en') !== 'ar' && cfg.mirror !== false;
+    const lock = mirror ? lockups(pg, cfg) : new Map();
+    pg.layers.forEach((l) => {
+      const g = cfg.geo && cfg.geo[l.id]; if (!g) return;
+      if (l.locked && l.w >= W * 0.98) return;
+      const u = lock.get(l.id); // a logo moves as one block and keeps its own order
+      set(l.id, 'x', !mirror ? g.x : u ? Math.round((W - u.x1 + (g.x - u.x0)) * 10) / 10 : Math.round((W - g.x - l.w) * 10) / 10);
+      if (u && l.type === 'text') { set(l.id, 'align', g.align); if (g.font) set(l.id, 'font', g.font); return; }
+      if (l.type !== 'text') return;
+      set(l.id, 'align', mirror ? ({ left: 'right', right: 'left' }[g.align || 'left'] || g.align) : g.align);
+      const ar = AR_RE.test(String(l.text || ''));
+      set(l.id, 'dir', ar ? 'rtl' : (g.dir || 'ltr'));
+      if (g.font) set(l.id, 'font', ar ? arFont(g.font) : g.font);
+    });
     return changed;
   }
   const sigOf = (events, cfg, n) => choose(events, cfg, n).map((e) => [e.id, e.actual, e.forecast, e.previous].join('~')).join('|');
@@ -4834,10 +5022,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     for (const pg of livePages(d)) {
       const cfg = pg.live; if (cfg.paused && !force) continue;
       try {
-        const date = dayFor(cfg, d), r = await fetchDay(cfg, date);
-        cfg.feed = { date, source: r.source, count: r.events.length, errors: r.errors || [] };
+        const date = dayFor(cfg, d), r = await dataFor(cfg, date);
+        if (cfg.lang === 'ar') await arabicNames(cfg, r.events);
+        cfg.feed = { date, source: r.source, count: r.events.length, errors: r.errors || [], week: !!r.byDay };
         cfg.events = r.events; // shown in the panel; not needed for rendering
-        changed = applyPage(pg, r.events, date) || changed; cfg.at = Date.now(); cfg.err = '';
+        changed = applyPage(pg, r.events, date, r.byDay) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; pg.live.err = e.message; }
     }
     if (changed) { d.upd = 'Just now'; save(); }
@@ -4854,7 +5043,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     for (const [i, pg] of c.pages.entries()) {
       if (!pg.live || !pg.live.map) continue;
       try {
-        const date = dayFor(pg.live, c, post), r = await fetchDay(pg.live, date); applyPage(pg, r.events, date);
+        const date = dayFor(pg.live, c, post), r = await dataFor(pg.live, date); applyPage(pg, r.events, date, r.byDay);
         c.liveUsed.push({ page: i, date, source: r.source, events: r.events.length, shown: choose(r.events, pg.live, pg.live.map.rows.length).map((e) => `${hhmm(e.at)} ${e.currency || e.country} ${e.en}`) });
       } catch (e) { c.liveUsed.push({ page: i, error: e.message }); /* keep the last data */ }
     }
@@ -4876,7 +5065,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /** Binds the mapping to the page (undoable) and fills it with live data */
   function bind(pg, map, keep) {
     const cfg = { ...defaults(), ...(keep || {}), map, orig: {} };
-    const ids = new Set([...map.rows.flatMap((r) => r.layerIds), ...(map.date ? [map.date.layerId] : []), ...(map.tz ? [map.tz.layerId] : [])]);
+    const ids = new Set([...map.rows.flatMap((r) => r.layerIds), ...(map.date ? [map.date.layerId] : []), ...(map.tz ? [map.tz.layerId] : []), ...(map.texts || []).map((t) => t.layerId), ...(map.week ? map.week.slotLayerIds : [])]);
     const t0 = map.rows[0] && map.rows[0].fields.find((f) => f.role === 'time'), tl = t0 && pg.layers.find((l) => l.id === t0.layerId);
     if (tl && !map.timeFmt) map.timeFmt = timeFmt((keep && keep.orig && keep.orig[tl.id] && keep.orig[tl.id].text) || tl.text);
     // "★ ★ ★" keeps its spaces, so filled stars still line up with an empty track behind them
@@ -4887,7 +5076,13 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (keep && keep.orig) Object.entries(keep.orig).forEach(([id, o]) => { cfg.orig[id] = { ...(cfg.orig[id] || {}), ...o }; }); // re-analysis keeps the first originals
     // a design written in Arabic stays Arabic
     const evText = map.rows.flatMap((r) => r.fields.filter((f) => f.role === 'event')).map((f) => (pg.layers.find((l) => l.id === f.layerId) || {}).text || '').join(' ');
-    cfg.lang = keep && keep.lang ? keep.lang : /[\u0600-\u06FF]/.test(evText) ? 'ar' : 'en';
+    cfg.srcLang = keep && keep.srcLang ? keep.srcLang : /[\u0600-\u06FF]/.test(evText) ? 'ar' : 'en';
+    cfg.lang = keep && keep.lang ? keep.lang : cfg.srcLang;
+    // the designed layout of every layer: mirroring for right-to-left always starts from it
+    cfg.geo = (keep && keep.geo) || {};
+    pg.layers.forEach((l) => { if (!cfg.geo[l.id]) cfg.geo[l.id] = { x: l.x, align: l.align, dir: l.dir, font: l.font }; });
+    if (keep && keep.i18n) cfg.i18n = keep.i18n;
+    if (map.layout === 'week' && map.week) { cfg.wkm = weekMetrics(pg, map.week); cfg.pick = null; const ll = pg.layers.find((l) => l.id === map.week.list.layerId); if (ll && !map.timeFmt) map.timeFmt = timeFmt(ll.text); }
     pg.live = cfg;
   }
   /** Free space to the right of each left-aligned data text (up to the next element in its row, or its card's edge):
@@ -4905,6 +5100,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   function unbind(pg) {
     const cfg = pg.live; if (!cfg) return;
+    pg.layers = pg.layers.filter((l) => !l.lvw);
+    pg.layers.forEach((l) => { const g = cfg.geo && cfg.geo[l.id]; if (!g) return; l.x = g.x; if (l.type === 'text') { if (g.align) l.align = g.align; if (g.dir) l.dir = g.dir; else delete l.dir; if (g.font) l.font = g.font; } });
     pg.layers.forEach((l) => { const o = cfg.orig[l.id]; if (!o) return; if (o.hidden) l.hidden = true; else delete l.hidden; if (o.text != null && l.type === 'text') l.text = o.text; if (o.dir) l.dir = o.dir; else delete l.dir; if (o.size) l.size = o.size; if (o.w) l.w = o.w; if (o.r !== undefined && l.type !== 'text') l.r = o.r; if (o.font) l.font = o.font; if (o.fill !== undefined && l.type !== 'text') l.fill = o.fill; });
     delete pg.live;
   }
@@ -4953,6 +5150,128 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   function evRow(e, on, cfg) {
     return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" aria-pressed="${on}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b><span class="grow" title="${esc(cfg.lang === 'ar' ? e.ar : e.en)}"><span class="n">${esc(cfg.lang === 'ar' ? e.ar : e.en)}</span><small>${esc(e.currency || e.country)} · <span class="st">${'★'.repeat(IMP[e.impact])}</span></small></span>${e.actual != null ? `<span class="v">${esc(e.actual)}</span>` : ''}</button>`;
   }
+  /* ---------- star pictures → editable stars ---------- */
+  /* A rating drawn as a picture can't follow the data. Claude reads one of them (symbol, colours);
+     each picture's own pixels give the exact size, spacing and position of its symbols; then every
+     row's picture is replaced by two aligned text layers: the empty "track" behind, the filled ones in front. */
+  /** Per row, the pictures that draw its rating: one wide picture, or one small picture per symbol (Figma exports) */
+  function ratingGroups(pg, map) {
+    const byId = new Map(pg.layers.map((l) => [l.id, l])), mapped = new Set(map.rows.flatMap((r) => r.fields.map((f) => f.layerId)));
+    const W = (pg.layers[0] && pg.layers[0].w) || 1080;
+    return map.rows.map((row) => {
+      const own = row.layerIds.map((id) => byId.get(id)).filter(Boolean), texts = own.filter((l) => l.type === 'text');
+      const card = own.find((l) => l.type !== 'text' && l.w > W * 0.5);
+      const band = card ? [card.y, card.y + card.h] : [Math.min(...texts.map((l) => l.y)) - 24, Math.max(...texts.map((l) => l.y + l.h)) + 24];
+      const ev = row.fields.find((f) => f.role === 'event'), evL = ev && byId.get(ev.layerId), minX = evL ? evL.x + 40 : W * 0.4;
+      const pics = pg.layers.filter((l) => l.type !== 'text' && l !== card && !mapped.has(l.id) && !l.hidden && /url\(/.test(String(l.fill || '')) && l.w < W * 0.5 && l.h <= band[1] - band[0] + 4 && l.y >= band[0] - 4 && l.y + l.h <= band[1] + 4 && l.x >= minX);
+      const wide = pics.filter((l) => l.w >= l.h * 1.6);
+      const sym = pics.filter((l) => Math.abs(l.w - l.h) <= Math.max(l.w, l.h) * 0.4).sort((x, y) => x.x - y.x);
+      const layers = sym.length >= 2 ? sym : wide.length ? [wide[0]] : null;
+      return layers ? { row, card, layers } : null;
+    }).filter(Boolean);
+  }
+  const ratingPictures = (pg, map) => ratingGroups(pg, map);
+  async function pictureOf(l) {
+    const m = /url\((['"]?)(.*?)\1\)/.exec(String(l.fill || '')); if (!m) throw new Error('This layer has no picture');
+    const src = m[2].startsWith('data:') ? m[2] : URL.createObjectURL(await (await fetch(new URL(m[2], location.href))).blob());
+    return loadImg(src);
+  }
+  /** Symbols found in a rating picture: boxes and colours, in layer coordinates */
+  function readPixels(img, l) {
+    const W = img.naturalWidth, H = img.naturalHeight, c = document.createElement('canvas'); c.width = W; c.height = H;
+    const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0); const d = x.getImageData(0, 0, W, H).data;
+    const px = (i, j) => { const k = (j * W + i) * 4; return [d[k], d[k + 1], d[k + 2], d[k + 3]]; };
+    const bg = [px(0, 0), px(W - 1, 0), px(0, H - 1), px(W - 1, H - 1)].reduce((a, p) => a.map((v, n) => v + p[n] / 4), [0, 0, 0, 0]);
+    const ink = bg[3] < 40 ? (p) => p[3] > 60 : (p) => p[3] > 40 && Math.abs(p[0] - bg[0]) + Math.abs(p[1] - bg[1]) + Math.abs(p[2] - bg[2]) > 70;
+    const cols = Array.from({ length: W }, (_, i) => { let n = 0; for (let j = 0; j < H; j++) if (ink(px(i, j))) n++; return n; });
+    const groups = []; let s = -1;
+    cols.forEach((n, i) => { if (n > 1 && s < 0) s = i; if ((n <= 1 || i === W - 1) && s >= 0) { if (i - s >= Math.max(3, W * 0.02)) groups.push([s, i]); s = -1; } });
+    const sx = l.w / W, sy = l.h / H;
+    return groups.map(([a, b]) => {
+      let y0 = H, y1 = 0, r = 0, g = 0, bl = 0, n = 0;
+      for (let i = a; i < b; i++) for (let j = 0; j < H; j++) { const p = px(i, j); if (!ink(p)) continue; y0 = Math.min(y0, j); y1 = Math.max(y1, j); r += p[0]; g += p[1]; bl += p[2]; n++; }
+      const col = [r / n, g / n, bl / n], hex = '#' + col.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+      const mx = Math.max(...col), mn = Math.min(...col);
+      return { x0: l.x + a * sx, x1: l.x + b * sx, y0: l.y + y0 * sy, y1: l.y + y1 * sy, color: hex, score: (mx - mn) + mx * 0.3 };
+    });
+  }
+  /** Filled vs empty by colour: the most vivid group of symbols is "filled" */
+  function splitColors(gs) {
+    const sorted = [...gs].sort((a, b) => b.score - a.score), top = sorted[0].score;
+    const filled = gs.filter((g) => g.score >= top - Math.max(40, top * 0.25));
+    const empty = gs.filter((g) => !filled.includes(g));
+    return { filled: filled.length, filledColor: filled[0].color, emptyColor: empty.length ? empty[0].color : filled[0].color + '55' };
+  }
+  /** Two text layers that draw the rating exactly over the picture's symbols */
+  function ratingLayers(l, gs, info) {
+    const n = Math.max(gs.length, 1), sym = info.symbol || '★', font = 'Inter';
+    const gh = gs.reduce((a, g) => a + (g.y1 - g.y0), 0) / n, cy = gs.reduce((a, g) => a + (g.y0 + g.y1) / 2, 0) / n;
+    const pitch = n > 1 ? (gs[n - 1].x0 + gs[n - 1].x1 - gs[0].x0 - gs[0].x1) / 2 / (n - 1) : gh * 1.3;
+    mctx.font = `400 100px '${font}', sans-serif`; const mt = mctx.measureText(sym), glyphH = (mt.actualBoundingBoxAscent + mt.actualBoundingBoxDescent) || 72, glyphW = (mt.actualBoundingBoxLeft + mt.actualBoundingBoxRight) || mt.width;
+    const size = Math.max(8, Math.round((gh / glyphH) * 100)), k = size / 100, adv = mt.width * k, ls = Math.round((pitch - adv) * 10) / 10;
+    const x = Math.round(gs[0].x0 - (adv - glyphW * k) / 2 - Math.max(0, mt.actualBoundingBoxLeft || 0) * 0), y = Math.round(cy - size / 2);
+    const w = Math.round(n * pitch + size), o = { size, weight: 400, font, align: 'left', ls, lh: 1, dir: 'ltr' };
+    const track = Tx(x, y, w, sym.repeat(info.total || n), { ...o, name: 'Rating track', color: info.emptyColor });
+    const filled = Tx(x, y, w, sym.repeat(Math.max(1, info.filled)), { ...o, name: 'Rating', color: info.filledColor });
+    track.h = filled.h = size; return [track, filled];
+  }
+  /** Symbols of one row's rating, in layer coordinates (one picture per symbol, or one picture for all) */
+  async function readGroup(layers) {
+    if (layers.length === 1) { const img = await pictureOf(layers[0]); return { gs: readPixels(img, layers[0]), imgs: [img] }; }
+    const gs = [], imgs = [];
+    for (const l of layers) {
+      const img = await pictureOf(l); imgs.push(img); const parts = readPixels(img, l); if (!parts.length) continue;
+      const big = parts.reduce((a, g) => ((g.x1 - g.x0) * (g.y1 - g.y0) > (a.x1 - a.x0) * (a.y1 - a.y0) ? g : a));
+      gs.push({ x0: Math.min(...parts.map((g) => g.x0)), x1: Math.max(...parts.map((g) => g.x1)), y0: Math.min(...parts.map((g) => g.y0)), y1: Math.max(...parts.map((g) => g.y1)), color: big.color, score: big.score });
+    }
+    return { gs, imgs };
+  }
+  /** The row's rating as one picture, for Claude */
+  function composite(layers, imgs) {
+    const x0 = Math.min(...layers.map((l) => l.x)), y0 = Math.min(...layers.map((l) => l.y)), x1 = Math.max(...layers.map((l) => l.x + l.w)), y1 = Math.max(...layers.map((l) => l.y + l.h)), k = 2;
+    const c = document.createElement('canvas'); c.width = Math.ceil((x1 - x0) * k) + 8; c.height = Math.ceil((y1 - y0) * k) + 8; const x = c.getContext('2d');
+    x.fillStyle = '#7f7f7f'; x.fillRect(0, 0, c.width, c.height); // neutral backdrop: black and white stars both show
+    layers.forEach((l, i) => x.drawImage(imgs[i], (l.x - x0) * k + 4, (l.y - y0) * k + 4, l.w * k, l.h * k));
+    return c.toDataURL('image/png');
+  }
+  async function editableStars(btn) {
+    if (!canEdit()) return; const pg = curP(), cfg = pg.live; if (!cfg || !cfg.map) return;
+    const groups = ratingGroups(pg, cfg.map); if (!groups.length) return addStars(btn);
+    btn && busy(btn, true, 'Reading the stars…');
+    try {
+      const reads = []; for (const g of groups) reads.push({ g, ...(await readGroup(g.layers)) });
+      const first = reads.find((r) => r.gs.length); if (!first) throw new Error('No symbols found in the pictures');
+      // Claude reads the symbol and colours on the first row; the pixels give every row's geometry
+      let ai = null, note = '';
+      try { const r = await api('/social/calendar/rating', { method: 'POST', body: { image: composite(first.g.layers, first.imgs) } }); ai = r.rating && r.rating.isRating ? r.rating : null; if (!r.rating) note = 'Colours read from the pictures (add a Claude key in Settings → AI assistant to let Claude read them).'; } catch (e) { note = 'Colours read from the pictures.'; }
+      const repl = reads.filter((r) => r.gs.length).map(({ g, gs }) => {
+        const px = splitColors(gs), info = { symbol: ai ? ai.symbol : '★', total: gs.length, filled: px.filled, filledColor: ai ? ai.filledColor : px.filledColor, emptyColor: ai ? ai.emptyColor : px.emptyColor };
+        return { ids: g.layers.map((l) => l.id), layers: ratingLayers(g.layers[0], gs, info) };
+      });
+      mutate(() => {
+        if (pg.live) unbind(pg);
+        repl.forEach(({ ids, layers }) => { const i = pg.layers.findIndex((x) => x.id === ids[0]); pg.layers = pg.layers.filter((x) => !ids.includes(x.id)); pg.layers.splice(Math.min(i, pg.layers.length), 0, ...layers); });
+        ED.sel = null;
+      });
+      toast(`${repl.length} star ratings are now editable${ai ? ' (read by Claude)' : ''}. ${note}`.trim());
+      peek.clear(); await ACT.lvAnalyze();
+    } catch (e) { btn && btn.isConnected && busy(btn, false); toast('Could not convert the stars: ' + e.message); }
+  }
+  /** No rating on the slide at all: add editable stars at the end of each row's card */
+  async function addStars(btn) {
+    const pg = curP(), cfg = pg.live, byId = new Map(pg.layers.map((l) => [l.id, l])), W = (pg.layers[0] && pg.layers[0].w) || 1080;
+    const accent = (brand().colors.find((c) => c.name === 'Primary') || {}).hex || '#FD0E35';
+    const adds = cfg.map.rows.map((row) => {
+      const own = row.layerIds.map((id) => byId.get(id)).filter(Boolean), card = own.find((l) => l.type !== 'text' && l.w > W * 0.5), t = own.find((l) => l.type === 'text');
+      if (!card || !t) return null; const size = Math.round(Math.min(card.h * 0.38, (t.size || 28) * 1.1)), pitch = Math.round(size * 1.35), w = pitch * 3, x = Math.round(card.x + card.w - 28 - w), y = Math.round(card.y + card.h / 2 - size / 2);
+      const gs = [0, 1, 2].map((i) => ({ x0: x + i * pitch, x1: x + i * pitch + size, y0: y, y1: y + size * 0.95 }));
+      return { after: card.id, layers: ratingLayers(card, gs, { symbol: '★', total: 3, filled: 2, filledColor: accent, emptyColor: 'rgba(127,127,127,.35)' }) };
+    }).filter(Boolean);
+    if (!adds.length) return toast('Add a ★★★ text to the first row, then re-analyze');
+    mutate(() => { if (pg.live) unbind(pg); adds.forEach(({ after, layers }) => { const i = pg.layers.findIndex((l) => l.id === after); pg.layers.splice(i + 1, 0, ...layers); }); });
+    toast(`Added live stars to ${adds.length} rows`); peek.clear(); await ACT.lvAnalyze();
+  }
+
   /** What a mapped layer shows: its original text, or a preview of a picture (flags) */
   function mapChip(f, cfg, byId) {
     const l = byId.get(f.layerId) || {}, o = cfg.orig[f.layerId] || {};
@@ -4965,31 +5284,48 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   function bound(pg) {
     const cfg = pg.live, map = cfg.map, events = cfg.events || [], tz = schedTz();
-    const list = choose(events, cfg, map.rows.length), chosen = new Set(list.map((e) => e.id));
+    const list = choose(events, cfg, isWeek(cfg) ? 999 : map.rows.length), chosen = new Set(list.map((e) => e.id));
     const visible = events.filter((e) => cfg.impact.includes(e.impact) || chosen.has(e.id));
     const r1 = map.rows[0], byId = new Map(pg.layers.map((l) => [l.id, l]));
-    const dayHint = cfg.day === 'publish' ? 'Each scheduled post shows the events of the day it goes out.' : cfg.day === 'today' ? 'Always today’s events.' : cfg.day === 'tomorrow' ? 'Always tomorrow’s events: post the evening before.' : '';
-    const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>` : cfg.feed ? `<p class="lv-note">${cfg.feed.count} events on ${esc(fmt(new Date(cfg.feed.date + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
+    const wk = isWeek(cfg), range = (() => { if (!wk || !cfg.feed) return ''; const w = weekDays(cfg.feed.date), o = { day: 'numeric', month: 'short' }; return ` Now: ${fmt(new Date(w[0] + 'T12:00'), o)} – ${fmt(new Date(w[4] + 'T12:00'), o)}.`; })();
+    const dayHint = wk
+      ? (cfg.day === 'publish' ? 'Each scheduled post shows the week it goes out, Monday to Friday. Posts on a weekend show the coming week.' : cfg.day === 'today' ? 'Always the current week (the coming one on weekends).' : cfg.day === 'tomorrow' ? 'Always next week: post it the week before.' : '') + range
+      : cfg.day === 'publish' ? 'Each scheduled post shows the events of the day it goes out.' : cfg.day === 'today' ? 'Always today’s events.' : cfg.day === 'tomorrow' ? 'Always tomorrow’s events: post the evening before.' : '';
+    const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>` : cfg.feed ? `<p class="lv-note">${cfg.feed.count} events ${cfg.feed.week ? `in the week of ${esc(fmt(new Date(weekDays(cfg.feed.date)[0] + 'T12:00'), { day: 'numeric', month: 'long' }))}` : `on ${esc(fmt(new Date(cfg.feed.date + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))}`} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
     const ctry = cfg.countries.length;
     return sec('Data', field('Source', `<select class="field sm" id="lvSrc">${SOURCES.map(([v, l]) => `<option value="${v}" ${cfg.src === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
-        + field('Day', seg('lvDay', cfg.day, [['publish', 'Post day'], ['today', 'Today'], ['tomorrow', 'Tomorrow'], ['fixed', 'Date']]) + (cfg.day === 'fixed' ? `<input class="field sm" type="date" id="lvDate" value="${esc(cfg.date || nowIn(tz).date)}">` : `<p class="lv-hint">${dayHint}</p>`))
-        + field('Language', seg('lvLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']])))
+        + field(wk ? 'Week' : 'Day', seg('lvDay', cfg.day, wk ? [['publish', 'Post week'], ['today', 'This week'], ['tomorrow', 'Next week'], ['fixed', 'Pick']] : [['publish', 'Post day'], ['today', 'Today'], ['tomorrow', 'Tomorrow'], ['fixed', 'Date']])
+          + (cfg.day === 'fixed' ? `<input class="field sm" type="date" id="lvDate" value="${esc(cfg.date || nowIn(tz).date)}">${wk ? `<p class="lv-hint">Any day of the week to show.${range}</p>` : ''}` : `<p class="lv-hint">${dayHint}</p>`))
+        + field('Language', seg('lvLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']])
+          + `<p class="lv-hint lv-langnote">${cfg.lang === (cfg.srcLang || 'en') ? 'The whole slide follows the language: titles, labels, dates and events.' : !map.texts ? 'Re-analyze the slide to translate its titles and labels too.' : cfg.i18nEngine === 'claude' ? 'Titles and labels translated by Claude. Brand names and websites stay as they are.' : 'Titles and labels translated with the built-in dictionary. Add a Claude key in Settings → AI assistant for a full translation.'}</p>`
+          + (cfg.lang === 'ar' && (cfg.srcLang || 'en') !== 'ar' ? `<div class="lv-swr lv-rtl"><div class="grow"><b>Right-to-left layout</b><p>Mirror the design for Arabic: times on the right, text aligned right.</p></div>${sw(cfg.mirror !== false, 'lvMirror', '', 'Right-to-left layout')}</div>` : '')))
       + sec('Filters', field('Impact', `<div class="chips">${['high', 'medium', 'low'].map((k) => `<button class="chip ${cfg.impact.includes(k) ? 'on' : ''}" data-act="lvImp" data-k="${k}" aria-pressed="${cfg.impact.includes(k)}">${IMP_WORD.en[k]}</button>`).join('')}</div>`)
         + field(`Countries <em>${ctry} selected</em>`, `<div class="chips">${CTRY.map(([k, l]) => `<button class="chip ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}" aria-pressed="${cfg.countries.includes(k)}">${l}</button>`).join('')}</div>`))
       + sec('Events on the slide', feedNote + `<div class="lv-evs">${visible.length ? visible.map((e) => evRow(e, chosen.has(e.id), cfg)).join('') : cfg.events ? `<p class="lv-empty">No event matches these filters that day. The rows stay hidden until there is one.</p>` : '<div class="skel" style="height:54px"></div><div class="skel" style="height:54px"></div><div class="skel" style="height:54px"></div>'}</div>`,
-        `<span class="lv-count">${list.length}/${map.rows.length}</span>${cfg.pick ? '<button class="btn link sm lv-auto" data-act="lvAuto">Auto-pick</button>' : '<span class="lv-tag">Auto</span>'}`)
+        `<span class="lv-count">${isWeek(cfg) ? list.length : `${list.length}/${map.rows.length}`}</span>${cfg.pick ? '<button class="btn link sm lv-auto" data-act="lvAuto">Auto-pick</button>' : '<span class="lv-tag">Auto</span>'}`)
       + sec('Updates', `<div class="lv-sw">
           <div class="lv-swr"><div class="grow"><b>Actual and forecast</b><p>Show the figures line when an event has figures.</p></div>${sw(cfg.values, 'lvVals', '', 'Actual and forecast')}</div>
           <div class="lv-swr"><div class="grow"><b>Update automatically</b><p>While the studio is open, and before each scheduled post.</p></div>${sw(!cfg.paused, 'lvPause', '', 'Update automatically')}</div>
         </div>` + field('Check for new data every', `<select class="field sm" id="lvEvery" ${cfg.paused ? 'disabled' : ''}>${EVERY.map(([v, l]) => `<option value="${v}" ${+cfg.every === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
         + `<button class="btn secondary lv-wide" data-act="lvRefresh">${ic('refresh', 16)}Refresh now</button>`)
       + `<details class="lv-sec lv-how"${ED.liveHow ? ' open' : ''}><summary><b>How we read this slide</b><span class="lv-tag ${map.engine === 'claude' ? 'ai' : ''}">${map.engine === 'claude' ? 'Claude' : 'Layout'}</span></summary>
-        <p class="lv-hint">${esc(map.reason || '')}${map.note ? ' ' + esc(map.note) : ''}</p>
-        <div class="lv-maps">${r1 ? r1.fields.map((f, n) => `<div class="lv-map">${mapChip(f, cfg, byId)}<select class="field sm" data-lvrole="${n}" aria-label="Field type">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
-        ${map.date ? `<div class="lv-map"><span class="tx">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 28))}</span><span class="lv-fixed">Date</span></div>` : ''}</div>
-        ${r1 && !r1.fields.some((f) => f.role === 'impact') ? `<p class="lv-note warn">${ic('alert', 14)}<span>Impact isn't live on this slide${/image|picture/i.test(map.reason || '') ? ': its stars are pictures' : ''}. Import the design again (Import an image) to get editable stars.</span></p>` : ''}
-        <p class="lv-hint">Based on row 1; the other ${map.rows.length - 1} rows follow it. Change colours, fonts and layout freely. After moving or adding text, re-analyze.</p>
-        <div class="lv-row"><button class="btn secondary sm" data-act="lvAnalyze">${ic('refresh', 14)}Re-analyze</button><button class="btn ghost sm lv-danger" data-act="lvRemove">Remove live data</button></div>
+        <div class="lv-how-b">
+          ${map.reason || map.note ? `<p class="lv-hint">${esc(map.reason || '')}${map.note ? ' ' + esc(map.note) : ''}</p>` : ''}
+          ${map.needs && map.needs.note ? `<p class="lv-note">${ic('wand', 14)}<span>${esc(map.needs.note)}</span></p>` : ''}
+          <div class="lv-maps" role="table" aria-label="Fields read on the slide">
+            <div class="lv-map lv-map-h" role="row"><span role="columnheader">On the slide</span><span role="columnheader">Reads as</span></div>
+            ${isWeek(cfg) ? [['Day heading', map.week.dayHeader.layerId, 'Day'], ...(map.week.groupHeader ? [['Group heading', map.week.groupHeader.layerId, 'Country']] : []), ['Events list', map.week.list.layerId, 'Event lines']].map(([n2, id, lab]) => `<div class="lv-map" role="row"><span class="tx" title="${esc((cfg.orig[id] || {}).text || '')}">${esc(String((cfg.orig[id] || {}).text || n2).split('\n')[0].slice(0, 28))}</span><span class="lv-fixed live">${lab}</span></div>`).join('') + `<p class="lv-hint">Every day of the week is rebuilt from the first day block, one group per country, with the design's spacing. Each line: <code>${esc(map.week.list.lineTemplate)}</code></p>` : ''}
+            ${r1 ? r1.fields.map((f, n) => `<div class="lv-map" role="row">${mapChip(f, cfg, byId)}<select class="field sm" data-lvrole="${n}" aria-label="Field type">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
+            ${map.date ? `<div class="lv-map" role="row"><span class="tx" title="${esc((cfg.orig[map.date.layerId] || {}).text || '')}">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 28))}</span><span class="lv-fixed">Date</span></div>` : ''}
+            ${map.tz ? `<div class="lv-map" role="row"><span class="tx">${esc(((cfg.orig[map.tz.layerId] || {}).text || '').split('\n')[0].slice(0, 28))}</span><span class="lv-fixed">Time zone</span></div>` : ''}
+          </div>
+          ${(map.texts || []).length ? `<div class="lv-maps"><div class="lv-map lv-map-h"><span>Other texts</span><span>Behaviour</span></div>${map.texts.map((t) => `<div class="lv-map"><span class="tx" title="${esc((cfg.orig[t.layerId] || {}).text || '')}">${esc(String((cfg.orig[t.layerId] || {}).text || '').replace(/\n/g, ' · ').slice(0, 30))}</span><span class="lv-fixed ${t.template ? 'live' : t.translate ? 'tr' : ''}">${t.template ? 'Updates' : t.translate ? 'Translated' : 'Stays the same'}</span></div>`).join('')}</div>` : ''}
+          ${r1 && !r1.fields.some((f) => f.role === 'impact') && !(map.needs && map.needs.impact === 'notNeeded' && !ratingPictures(pg, map).length) ? (ratingPictures(pg, map).length
+            ? `<div class="lv-fixcard">${ic('alert', 16)}<div><b>Impact isn't live: the stars are pictures</b><p>AI turns them into editable stars that follow each event's impact, with the same size, spacing and colours.</p></div><button class="btn primary sm" data-act="lvStars">${ic('wand', 15)}Make stars editable with AI</button></div>`
+            : `<div class="lv-fixcard">${ic('alert', 16)}<div><b>Impact isn't on this slide</b><p>Add live stars at the end of each row. They follow each event's impact; edit their colours like any text.</p></div><button class="btn primary sm" data-act="lvStars">${ic('wand', 15)}Add live stars</button></div>`) : ''}
+          <p class="lv-hint lv-foot">Based on row 1: the other ${map.rows.length - 1} rows follow it. Change colours, fonts and layout freely; after moving or adding text, re-analyze.</p>
+          <div class="lv-row"><button class="btn secondary sm" data-act="lvAnalyze">${ic('refresh', 14)}Re-analyze</button><button class="btn ghost sm lv-danger" data-act="lvRemove">Remove live data</button></div>
+        </div>
       </details>`;
   }
   const importCard = () => `<div class="lv-or"><span>or bring your own</span></div>
@@ -5002,7 +5338,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   function unboundSlide(d, i) {
     const r = peek.get(pageSig(d.pages[i])), found = r && !(r instanceof Promise) ? r : null; if (!found) peekPage(d, i);
     const card = !found ? '<div class="lv-card"><div class="skel" style="height:14px;width:55%"></div><div class="skel" style="height:12px;width:85%;margin-top:10px"></div></div>'
-      : found.isCalendar ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>Calendar design found</b><p>${found.rows.length} rows. We keep your design and make its text live.</p></div></div>`
+      : found.isCalendar ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>${found.layout === 'week' ? 'Weekly calendar found' : 'Calendar design found'}</b><p>${found.layout === 'week' ? 'Day blocks with event lists. We keep your design and fill the whole week.' : `${found.rows.length} rows. We keep your design and make its text live.`}</p></div></div>`
         : `<div class="lv-card"><span class="lv-ic muted">${ic('chart', 16)}</span><div><b>No calendar found yet</b><p>Claude can still look for one, or build a template from your Brand Kit.</p></div></div>`;
     return `${card}<div class="lv-cta"><button class="btn primary lv-go" data-act="lvAnalyze">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Nothing is replaced. Only the text becomes live.</p></div>${importCard()}`;
   }
@@ -5202,10 +5538,14 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         const keep = pg.live && pg.live.map ? pg.live : null;
         if (keep) unbind(pg); // read the original texts, not the live ones
         const map = await analyze(d, i, 'auto');
-        if (!map.isCalendar || !map.rows.length) { if (keep) bind(pg, keep.map, keep); done(); edPanel(); return toast(map.note || map.reason || 'No calendar found on this slide'); }
+        if (!map.isCalendar || (!map.rows.length && !(map.layout === 'week' && map.week))) { if (keep) bind(pg, keep.map, keep); done(); edPanel(); return toast(map.note || map.reason || 'No calendar found on this slide'); }
         mutate(() => bind(pg, map, keep));
-        toast(`${map.engine === 'claude' ? 'Claude' : 'Layout'} found ${map.rows.length} rows. The slide is now live.`);
         await refresh(d, { silent: false, force: true });
+        // what the slide still needs: star pictures become editable stars right away (once)
+        const needsStars = map.rows[0] && !map.rows[0].fields.some((f) => f.role === 'impact') && ratingGroups(pg, map).length && (!map.needs || map.needs.impact !== 'notNeeded');
+        if (needsStars && !ED.liveAutoStars) { ED.liveAutoStars = true; toast('Making the star pictures editable…'); try { await editableStars(null); } finally { ED.liveAutoStars = false; } return; }
+        if (pg.live && pg.live.lang !== (pg.live.srcLang || 'en')) { await ensureI18n(pg, pg.live.lang); await refresh(d, { force: true }); }
+        toast(`${map.engine === 'claude' ? 'Claude' : 'Layout'} read the slide: ${map.layout === 'week' ? 'weekly layout' : map.rows.length + ' rows'}${(map.texts || []).filter((t) => t.template).length ? ', live dates' : ''}${(map.texts || []).some((t) => t.translate) ? ', translatable titles' : ''}. The slide is now live.`);
       } catch (e) { done(); toast('Could not analyze the slide: ' + e.message); }
     },
     lvBuild: async () => {
@@ -5218,14 +5558,20 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         await refresh(d, { silent: false, force: true });
       } catch (e) { done(); toast('Could not build the template: ' + e.message); }
     },
+    lvStars: (a) => { if (!a.getAttribute('aria-busy')) editableStars(a); },
     lvRemove: () => { const pg = curP(); if (!pg.live) return; mutate(() => unbind(pg)); toast('Live data removed. The slide keeps its original text.'); },
     lvRefresh: async () => { const done = busyWith('[data-act=lvRefresh]', 'Checking…'); feed.clear(); await refresh(ED.d, { silent: false, force: true }); done(); },
     lvDay: (a) => { const c = cfgNow(); c.day = a.dataset.v; c.pick = null; save(); reapply(); },
-    lvLang: (a) => { const c = cfgNow(); c.lang = a.dataset.v; save(); reapply(); },
+    lvLang: async (a) => {
+      const pg = curP(), c = pg.live, lang = a.dataset.v; if (c.lang === lang) return;
+      $$('[data-act=lvLang]').forEach((b) => (b.disabled = true)); const tag = $('.lv-langnote'); tag && (tag.textContent = 'Translating the slide…');
+      await ensureI18n(pg, lang); c.lang = lang; save(); reapply();
+    },
+    lvMirror: () => { const c = cfgNow(); c.mirror = c.mirror === false; save(); reapply(); },
     lvImp: (a) => { const c = cfgNow(), k = a.dataset.k; c.impact = c.impact.includes(k) ? c.impact.filter((x) => x !== k) : [...c.impact, k]; if (!c.impact.length) c.impact = [k]; c.pick = null; save(); reapply(); },
     lvCty: (a) => { const c = cfgNow(), k = a.dataset.k; c.countries = c.countries.includes(k) ? c.countries.filter((x) => x !== k) : [...c.countries, k]; if (!c.countries.length) c.countries = [k]; c.pick = null; save(); reapply(); },
     lvPick: (a) => {
-      const c = cfgNow(), n = c.map.rows.length, cur = choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id;
+      const c = cfgNow(), n = isWeek(c) ? 999 : c.map.rows.length, cur = choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id;
       let next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
       if (next.length > n) { toast(`This design has ${n} rows: untick an event first`); return; }
       const order = new Map((c.events || []).map((e, i) => [e.id, i])); c.pick = next.sort((x, y) => order.get(x) - order.get(y)); save(); reapply();
@@ -5259,7 +5605,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       for (const p of S.posts.filter((x) => x.d === d.id && x.status === 'Scheduled' && x.publish && x.publish.state === 'pending')) {
         try {
           const sigs = [];
-          for (const pg of livePages(d)) { const r = await fetchDay(pg.live, dayFor(pg.live, d, p)); sigs.push(sigOf(r.events, pg.live, pg.live.map.rows.length)); }
+          for (const pg of livePages(d)) { const r = await dataFor(pg.live, dayFor(pg.live, d, p)); sigs.push(sigOf(r.events, pg.live, isWeek(pg.live) ? 999 : pg.live.map.rows.length)); }
           const sig = sigs.join('#'); if (p.liveSig !== sig) { const first = p.liveSig == null; p.liveSig = sig; save(); if (!first) PUB.prepare(p); }
         } catch (e) { /* next tick */ }
       }

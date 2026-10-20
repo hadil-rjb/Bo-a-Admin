@@ -9,6 +9,8 @@
  * Text, rectangles and ellipses become editable layers (fills, gradients, blend modes, strokes,
  * corner radius, strokes, rotation, opacity); anything the studio can't express (vectors, boolean
  * operations, masks, shadows on shapes, clipped content) is rendered by Figma and placed as an image.
+ * Frames that hold text are never flattened: their effects are drawn by the studio (simplified when needed)
+ * and only the shapes that cross their clip are rendered by Figma, cut to the frame's box.
  *
  * Fills that need pixels are emitted as placeholders and resolved by the caller:
  *   {{raster:<nodeId>}}  rendered node      {{image:<imageRef>}}  image fill
@@ -153,6 +155,15 @@ export interface ConvertOut {
 const RASTER_TYPES = new Set(["VECTOR", "BOOLEAN_OPERATION", "STAR", "LINE", "REGULAR_POLYGON", "POLYGON"]);
 const CONTAINERS = new Set(["FRAME", "COMPONENT", "COMPONENT_SET", "INSTANCE", "SECTION"]);
 const hasEffects = (n: any) => (n.effects || []).some((e: any) => e.visible !== false);
+/** Visible text somewhere inside: such frames stay editable layers instead of one picture */
+const hasText = (n: any): boolean => n.visible !== false && (n.type === "TEXT" ? !!String(n.characters || "").trim() : (n.children || []).some(hasText));
+/** Clip box of a container, in Figma's absolute coordinates; r: its corner radius */
+type Clip = { x: number; y: number; w: number; h: number; r: number };
+const cut = (a: Clip | undefined, b: Clip): Clip => {
+  if (!a) return b;
+  const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y);
+  return { x, y, w: Math.max(0, Math.min(a.x + a.w, b.x + b.w) - x), h: Math.max(0, Math.min(a.y + a.h, b.y + b.h) - y), r: Math.max(a.r, b.r) };
+};
 /** A group or instance drawn only with vectors (a logo, an icon): one image, like it looks in Figma */
 const vectorOnly = (n: any): boolean => {
   const kids = (n.children || []).filter((c: any) => c.visible !== false);
@@ -211,11 +222,29 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     if (mode === "LINEAR_BURN") warn.add("“Linear burn” is approximated with Multiply");
     return b ? { blend: b } : {};
   };
-  const raster = (n: any, op: number) => {
-    const b = boxOf(n);
-    if (!b || b.w < 0.5 || b.h < 0.5) return;
+  /**
+   * A node rendered by Figma, placed as an image. Inside a clipping frame the image is cut to the frame's box
+   * (the picture keeps its full size, offset in the layer), so content that overflows stays hidden like in Figma.
+   */
+  const raster = (n: any, op: number, clip?: Clip) => {
+    const b = boxOf(n), a = n.absoluteRenderBounds || n.absoluteBoundingBox;
+    if (!b || !a || b.w < 0.5 || b.h < 0.5) return;
+    const c = clip ? cut(clip, { x: a.x, y: a.y, w: a.width, h: a.height, r: 0 }) : null;
+    if (c && (c.w < 0.5 || c.h < 0.5)) return; // entirely outside the frame
     rasters.push({ id: n.id, w: b.w, h: b.h });
-    layers.push({ id: uid(), type: "image", name: String(n.name || "Image").slice(0, 40), x: r1(b.x), y: r1(b.y), w: r1(b.w), h: r1(b.h), rot: 0, op: r3(op), ...blendOf(n), fill: `url({{raster:${n.id}}}) center/100% 100% no-repeat`, r: 0 });
+    const base = { id: uid(), type: "image", name: String(n.name || "Image").slice(0, 40), rot: 0, op: r3(op), ...blendOf(n) };
+    // rounded frame: the studio has one radius per layer, so the picture takes the frame's radius when it covers
+    // the frame along at least three of its sides (a full-bleed or banner picture), not when it only sits in a corner
+    const edges = c ? [Math.abs(c.x - clip!.x), Math.abs(c.y - clip!.y), Math.abs(c.x + c.w - clip!.x - clip!.w), Math.abs(c.y + c.h - clip!.y - clip!.h)].filter((d) => d < 1).length : 0;
+    const r = edges >= 3 ? r1(clip!.r * k) : 0;
+    if (!c || (c.w >= a.width - 0.5 && c.h >= a.height - 0.5)) {
+      layers.push({ ...base, x: r1(b.x), y: r1(b.y), w: r1(b.w), h: r1(b.h), fill: `url({{raster:${n.id}}}) center/100% 100% no-repeat`, r });
+      return;
+    }
+    layers.push({
+      ...base, x: r1((c.x - fbb.x) * k + offX), y: r1((c.y - fbb.y) * k + offY), w: r1(c.w * k), h: r1(c.h * k), r,
+      fill: `url({{raster:${n.id}}}) ${r1((a.x - c.x) * k)}px ${r1((a.y - c.y) * k)}px/${r1(a.width * k)}px ${r1(a.height * k)}px no-repeat`,
+    });
   };
 
   /**
@@ -320,40 +349,62 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
   const gnames = new Map<string, string>();
   const tag = (from: number, gid: string) => { for (let i = from; i < layers.length; i++) layers[i].gid ??= gid; };
 
-  /** m: transform of the node's coordinate parent (frames/components define one, groups don't); gid: enclosing group */
-  const walk = (n: any, m: M, op: number, gid?: string) => {
+  /** Where a node stands against the clip of the frames around it: inside, partly outside, or hidden */
+  const against = (n: any, clip?: Clip): "in" | "part" | "out" => {
+    const a = n.absoluteRenderBounds || n.absoluteBoundingBox;
+    if (!clip || !a) return "in";
+    const c = cut(clip, { x: a.x, y: a.y, w: a.width, h: a.height, r: 0 });
+    if (c.w < 0.5 || c.h < 0.5) return "out";
+    return c.w >= a.width - 0.5 && c.h >= a.height - 0.5 ? "in" : "part";
+  };
+
+  /**
+   * m: transform of the node's coordinate parent (frames/components define one, groups don't); gid: enclosing group;
+   * clip: box of the clipping frames around the node (Figma coordinates). Shapes that cross it are rendered by Figma and cut to it.
+   */
+  const walk = (n: any, m: M, op: number, gid?: string, clip?: Clip) => {
     if (!n || n.visible === false) return;
     if (n.isMask) { warn.add("Masks are approximated"); return; }
     const rel: M = (n.relativeTransform as M) || [[1, 0, n.absoluteBoundingBox ? n.absoluteBoundingBox.x - fbb.x : 0], [0, 1, n.absoluteBoundingBox ? n.absoluteBoundingBox.y - fbb.y : 0]];
     const mm = mul(m, rel), o = op * (n.opacity ?? 1);
     if (o <= 0.001) return;
     const kids: any[] = n.children || [];
+    const where = against(n, clip);
+    if (where === "out") return;
+    const R = () => raster(n, op, clip);
 
-    if (BLEND[n.blendMode] && (n.type === "GROUP" || CONTAINERS.has(n.type)) && kids.length) return raster(n, op); // blended as a whole
-    if ((n.type === "GROUP" || CONTAINERS.has(n.type)) && vectorOnly(n) && !visiblePaints(n.fills).length) return raster(n, op); // logo / icon
+    if (BLEND[n.blendMode] && (n.type === "GROUP" || CONTAINERS.has(n.type)) && kids.length) return R(); // blended as a whole
+    if ((n.type === "GROUP" || CONTAINERS.has(n.type)) && vectorOnly(n) && !visiblePaints(n.fills).length) return R(); // logo / icon
     if (n.type === "GROUP") {
-      if (kids.some((c) => c.isMask)) return raster(n, op); // masked group: let Figma render it
+      if (kids.some((c) => c.isMask)) return R(); // masked group: let Figma render it
       const g = gid || uid(), from = layers.length;
       if (!gid) gnames.set(g, String(n.name || "Group").slice(0, 40));
-      kids.forEach((c) => walk(c, m, o, g)); // group children are positioned in the group's parent space
+      kids.forEach((c) => walk(c, m, o, g, clip)); // group children are positioned in the group's parent space
       tag(from, g);
       return;
     }
-    if (RASTER_TYPES.has(n.type) || (mirrored(mm) && !["RECTANGLE", "ELLIPSE", "TEXT"].includes(n.type))) return raster(n, op);
+    if (n.type === "TEXT") return text(n, mm, o); // text stays editable, even when a frame cuts part of it
+    if (where === "part" && !CONTAINERS.has(n.type)) return R(); // a shape crossing its frame's edge: cut like in Figma
+    if (clip?.r && !CONTAINERS.has(n.type) && hasImageInside(n)) return R(); // a picture in a rounded frame: rounded like the frame
+    if (RASTER_TYPES.has(n.type) || (mirrored(mm) && !["RECTANGLE", "ELLIPSE"].includes(n.type))) return R();
     if (n.type === "ELLIPSE") {
-      if (n.arcData && (n.arcData.endingAngle - n.arcData.startingAngle < 6.28 || n.arcData.innerRadius > 0)) return raster(n, op);
-      const E = effectsOf(n, false); return E.ok ? shape(n, mm, o, "ellipse", E.props) : raster(n, op);
+      if (n.arcData && (n.arcData.endingAngle - n.arcData.startingAngle < 6.28 || n.arcData.innerRadius > 0)) return R();
+      const E = effectsOf(n, false); return E.ok ? shape(n, mm, o, "ellipse", E.props) : R();
     }
-    if (n.type === "RECTANGLE") { const E = effectsOf(n, false); return E.ok ? shape(n, mm, o, "rect", E.props) : raster(n, op); }
-    if (n.type === "TEXT") return text(n, mm, o);
+    if (n.type === "RECTANGLE") { const E = effectsOf(n, false); return E.ok ? shape(n, mm, o, "rect", E.props) : R(); }
     if (CONTAINERS.has(n.type)) {
-      const clips = n.clipsContent !== false;
+      const clips = n.clipsContent !== false, name = String(n.name || "Frame").slice(0, 40);
       const radius = n.cornerRadius || (n.rectangleCornerRadii ? Math.max(...n.rectangleCornerRadii) : 0);
-      if (hasEffects(n) || kids.some((c) => c.isMask) || (clips && (overflows(n) || (radius > 0 && kids.some(hasImageInside))))) return raster(n, op);
+      const E = effectsOf(n, false), fx = hasEffects(n);
+      const flat = kids.some((c) => c.isMask) || fx || (clips && (overflows(n) || (radius > 0 && kids.some(hasImageInside))));
+      // frames with text stay editable: their effects are drawn by the studio and their clip is applied to what crosses it
+      if (flat && (!hasText(n) || kids.some((c) => c.isMask))) return R();
+      if (fx && !E.ok) warn.add(`“${name}”: some effects were simplified so its texts stay editable`);
       const g = gid || uid(), from = layers.length;
-      if (!gid) gnames.set(g, String(n.name || "Frame").slice(0, 40));
-      shape(n, mm, o, "rect");
-      kids.forEach((c) => walk(c, mm, o, g));
+      if (!gid) gnames.set(g, name);
+      shape(n, mm, o, "rect", fx ? E.props : {});
+      const b = n.absoluteBoundingBox, inner = clips && b ? cut(clip, { x: b.x, y: b.y, w: b.width, h: b.height, r: radius }) : clip;
+      kids.forEach((c) => walk(c, mm, o, g, inner));
       tag(from, g);
       return;
     }

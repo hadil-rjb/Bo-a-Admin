@@ -1,7 +1,7 @@
 import { BadGatewayException, BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { AiService } from "../../ai/ai.service";
 import { validTz } from "../../framer/time";
-import { analyzeWithClaude, heuristic, importWithClaude, Layer, Mapping, sanitize } from "./analyze";
+import { analyzeWithClaude, heuristic, importWithClaude, Layer, Mapping, ratingWithClaude, sanitize, translateWithClaude } from "./analyze";
 import { COUNTRY_CODES, dayEvents, Source } from "./feeds";
 
 @Injectable()
@@ -48,6 +48,30 @@ export class CalendarService {
     } catch (e: any) {
       this.log.warn(`Image import failed: ${e?.message || e}`);
       throw new BadGatewayException(`Claude couldn't rebuild this picture: ${e?.message || "error"}`);
+    }
+  }
+
+  /** What a rating picture shows (stars, how many, colours). null without a Claude key: the studio reads the pixels instead. */
+  async rating(image: string) {
+    const key = await this.ai.anthropicKey();
+    if (!key) return { engine: "pixels" as const, rating: null };
+    try {
+      return { engine: "claude" as const, rating: await ratingWithClaude(key, image) };
+    } catch (e: any) {
+      this.log.warn(`Rating read failed: ${e?.message || e}`);
+      return { engine: "pixels" as const, rating: null, note: `Claude was unavailable (${e?.message || "error"})` };
+    }
+  }
+
+  /** Slide texts in another language (Claude). Without a key: { engine: "none" } and the studio uses its small dictionary. */
+  async translate(input: { items: { id: string; text: string }[]; to: "ar" | "en"; brand?: string }) {
+    const key = await this.ai.anthropicKey();
+    if (!key) return { engine: "none" as const, items: [] };
+    try {
+      return { engine: "claude" as const, ...(await translateWithClaude(key, input)) };
+    } catch (e: any) {
+      this.log.warn(`Translation failed: ${e?.message || e}`);
+      return { engine: "none" as const, items: [], note: `Claude was unavailable (${e?.message || "error"})` };
     }
   }
 }
