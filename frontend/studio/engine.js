@@ -252,6 +252,18 @@ const kitOf = (b) => ({ name: b.name, colors: b.colors.map((c) => c.hex), fonts:
 const initialsOf = (n) => { const w = String(n || '').trim().split(/\s+/).filter(Boolean); if (!w.length) return '?'; return (w.length > 1 ? w[0][0] + w[1][0] : w[0].slice(0, 2)).toUpperCase(); };
 const shade = (h, k) => { const n = parseInt(h.slice(1), 16), f = (v) => Math.max(0, Math.min(255, Math.round(v * (1 + k)))); return '#' + [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(f).map((v) => v.toString(16).padStart(2, '0')).join('').toUpperCase(); };
 const cloneLayers = (ls) => ls.map((l) => ({ ...JSON.parse(JSON.stringify(l)), id: uid() }));
+/** Old layer id → new one, in every id and id-keyed entry of a value ("t:<id>" translation keys too) */
+const remapIds = (v, m) => {
+  if (Array.isArray(v)) return v.map((x) => remapIds(x, m));
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [m.get(k) || k.replace(/^([a-z]:)(.+)$/, (s, p, id) => (m.has(id) ? p + m.get(id) : s)), remapIds(x, m)]));
+  return typeof v === 'string' && m.has(v) ? m.get(v) : v;
+};
+/** A copied page gets new layer ids; its Live data settings, which name layers by id, follow them */
+function reIdPage(pg) {
+  const m = new Map(); (pg.layers || []).forEach((l) => { const n = uid(); m.set(l.id, n); l.id = n; });
+  if (pg.live) pg.live = remapIds(pg.live, m);
+  return pg;
+}
 function fitLayers(ls, from, to) {
   const oh = RATIOS[from][1], nh = RATIOS[to][1], sy = nh / oh; if (from === to) return ls;
   ls.forEach((l) => { l.y = Math.round(l.y * sy); if (l.h >= oh * 0.5 || l.name === 'Background') l.h = Math.round(l.h * sy); }); return ls;
@@ -504,7 +516,7 @@ Object.assign(ACT, {
     c.id = 'd' + uid(); c.name = (d.name + ' (copy)').slice(0, 80); c.status = 'Draft'; c.upd = 'Just now';
     // the copy is a design of its own: it is not linked to the Figma frame of the original
     if (c.source === 'Figma') { c.source = 'Template'; delete c.figma; }
-    (c.pages || []).forEach((pg) => { pg.id = uid(); (pg.layers || []).forEach((l) => (l.id = uid())); });
+    (c.pages || []).forEach((pg) => { pg.id = uid(); reIdPage(pg); });
     S.designs.splice(Math.max(0, S.designs.indexOf(d)), 0, c); save(); synced('Design duplicated');
   },
   dStatus: (a) => { const d = getD(a.dataset.id); if (!d || !canEdit() || d.status === a.dataset.s) return; d.status = a.dataset.s; d.upd = 'Just now'; save(); synced('Marked as ' + d.status); },
@@ -1620,7 +1632,7 @@ Object.assign(ACT, {
   edApplyCal: () => { ED.d.tpl = 'calendar'; rebuildCalendar(); toast('Calendar slide built from the live feed'); },
   edPage: (a) => { ED.pi = +a.dataset.i; ED.sel = null; edAll(); },
   edAddPage: () => { const [w, h] = dim(); mutate(() => { ED.d.pages.push({ id: uid(), bg: '#0b1220', layers: TPL.blank.fn(w, h) }); ED.pi = ED.d.pages.length - 1; ED.sel = null; }); },
-  edDupPage: () => mutate(() => { const c = JSON.parse(JSON.stringify(curP())); c.id = uid(); c.layers.forEach((l) => (l.id = uid())); ED.d.pages.splice(ED.pi + 1, 0, c); ED.pi++; ED.sel = null; }),
+  edDupPage: () => mutate(() => { const c = reIdPage(JSON.parse(JSON.stringify(curP()))); c.id = uid(); ED.d.pages.splice(ED.pi + 1, 0, c); ED.pi++; ED.sel = null; }),
   edDelPage: () => mutate(() => { ED.d.pages.splice(ED.pi, 1); ED.pi = Math.max(0, ED.pi - 1); ED.sel = null; }),
   edPick: (a, e) => { if (e.target.closest('.tg')) return; ED.sel = a.dataset.id; drawSel(); edProps(); },
   edVis: (a) => { const l = curP().layers.find((x) => x.id === a.dataset.id); mutate(() => { l.hidden = !l.hidden; }); },
@@ -1811,7 +1823,7 @@ const AG = {
   carousel: (c) => ({ steps: ['Duplicating this slide', 'Adding page counters'], apply() {
     const d = ED.d, [W] = c.dim, base = c.pg;
     mutate(() => {
-      const copies = [1, 2].map(() => { const x = JSON.parse(JSON.stringify(base)); x.id = uid(); x.layers.forEach((l) => (l.id = uid())); return x; });
+      const copies = [1, 2].map(() => { const x = reIdPage(JSON.parse(JSON.stringify(base))); x.id = uid(); return x; });
       d.pages.splice(ED.pi + 1, 0, ...copies);
       [base, ...copies].forEach((pg, i) => { pg.layers = pg.layers.filter((l) => l.name !== 'Page counter'); pg.layers.push(Tx(W - 80 - 140, 70, 140, `${i + 1}/3`, { name: 'Page counter', size: 28, weight: 600, color: pageLum(pg) > 0.55 ? '#0f172a' : '#ffffff', align: 'right', font: 'Inter', op: 0.7 })); });
     });
@@ -1826,8 +1838,8 @@ const AG = {
     const [W, H] = c.dim, d = ED.d, ar = brand().fonts.arabic || 'Cairo', live = d.tpl === 'calendar';
     mutate(() => {
       const x = live ? { id: uid(), bg: c.pg.bg, layers: tplCalendar(W, H, 'ar', EVENTS.filter((e) => e.on)) } : JSON.parse(JSON.stringify(c.pg));
-      x.id = uid();
-      if (!live) x.layers.forEach((l) => { l.id = uid(); if (l.locked && l.name === 'Background') return; l.x = W - l.x - l.w; if (l.type === 'text') { l.dir = 'rtl'; l.font = ar; if (l.align === 'left') l.align = 'right'; else if (l.align === 'right') l.align = 'left'; } });
+      x.id = uid(); if (!live) reIdPage(x);
+      if (!live) x.layers.forEach((l) => { if (l.locked && l.name === 'Background') return; l.x = W - l.x - l.w; if (l.type === 'text') { l.dir = 'rtl'; l.font = ar; if (l.align === 'left') l.align = 'right'; else if (l.align === 'right') l.align = 'left'; } });
       d.pages.splice(ED.pi + 1, 0, x); ED.pi++; ED.sel = null;
     });
     return { t: live ? 'Built the Arabic slide from the live calendar feed, with Arabic event names.' : 'Added an RTL slide with the layout mirrored and the Arabic font applied. The text is still English: translation needs an AI key in Settings.' };
@@ -3398,7 +3410,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   };
 
   const addBlank = (at) => { const [w, h] = dim(); mutate(() => { ED.d.pages.splice(at, 0, { id: uid(), bg: '#0b1220', layers: TPL.blank.fn(w, h) }); ED.pi = at; ED.sel = null; }); };
-  const dupAt = (i) => mutate(() => { const c = JSON.parse(JSON.stringify(ED.d.pages[i])); c.id = uid(); c.layers.forEach((l) => (l.id = uid())); ED.d.pages.splice(i + 1, 0, c); ED.pi = i + 1; ED.sel = null; });
+  const dupAt = (i) => mutate(() => { const c = reIdPage(JSON.parse(JSON.stringify(ED.d.pages[i]))); c.id = uid(); ED.d.pages.splice(i + 1, 0, c); ED.pi = i + 1; ED.sel = null; });
   const delAt = (i) => { if (ED.d.pages.length < 2) return toast('A design needs at least one slide'); mutate(() => { ED.d.pages.splice(i, 1); ED.pi = clamp(ED.pi > i ? ED.pi - 1 : Math.min(ED.pi, ED.d.pages.length - 1), 0, ED.d.pages.length - 1); ED.sel = null; }); };
   const moveAt = (i, to) => { if (to < 0 || to >= ED.d.pages.length) return; mutate(() => { const [x] = ED.d.pages.splice(i, 1); ED.d.pages.splice(to, 0, x); ED.pi = to; ED.sel = null; }); };
   const go = (i) => { i = clamp(i, 0, ED.d.pages.length - 1); if (i !== ED.pi) ACT.edPage({ dataset: { i } }); };
@@ -4930,7 +4942,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       const next = days.filter((day) => caps[day] && caps[day] < ranked[day].length).map((day) => ({ day, e: ranked[day][caps[day]].e })).sort((a, b) => IMP[b.e.impact] - IMP[a.e.impact] || a.e.at.localeCompare(b.e.at));
       for (const c of next) { caps[c.day]++; if (m.top + height() <= m.limit) { more = true; break; } caps[c.day]--; }
     }
-    let y = m.top, n = 0;
+    const ghFlag = /^\s*\{flag\}/.test(ghTpl), ghRest = ghTpl.replace(/^\s*\{flag\}\s*/, '');
+    let y = m.top, n = 0; const shown = [];
     for (const day of days) {
       const evs = pickDay(day); if (!evs.length) continue;
       if (y + m.headEnd + m.firstGap + m.ghH + m.ghToList + m.lineH > m.limit) break;
@@ -4940,8 +4953,17 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       const groups = []; evs.forEach((e) => { const k = e.country || e.currency; let g = groups.find((x) => x.k === k); if (!g) groups.push(g = { k, e, list: [] }); g.list.push(e); });
       groups.forEach((g, j) => {
         if (y + m.ghH + m.ghToList + m.lineH > m.limit) return;
-        if (P.gh) { add(P.gh, `lvw-${n}-g${j}`, { y, w: Math.max(P.gh.w, m.listW - (P.gh.x - P.list.x)), text: fill(ghTpl, { flag: flagEmoji(g.e.country), country: g.e.country || '', countryName: countryName(g.e.country, cfg.lang), currency: g.e.currency || '' }) }); y += m.ghH + m.ghToList; }
+        if (P.gh) {
+          // a flag at the start of the heading is drawn as a picture (emoji flags show as letters on Windows and on the export server)
+          const fs = P.gh.size || 20, flag = ghFlag && flagOf(g.e), fw = Math.round(fs * 1.1), fh = Math.round(fs * 0.78), gap = Math.round(fs * 0.4);
+          const vals = { flag: flagEmoji(g.e.country), country: g.e.country || '', countryName: countryName(g.e.country, cfg.lang), currency: g.e.currency || '' };
+          if (flag) add({ type: 'image', name: 'Flag', x: P.gh.x, y: 0, w: fw, h: fh, rot: 0, op: 1, r: Math.max(2, Math.round(fs * 0.12)), fill: flag }, `lvw-${n}-f${j}`, { y: Math.round(y + (Math.min(P.gh.h, fs * (P.gh.lh || 1.2)) - fh) / 2) });
+          const gx = flag ? P.gh.x + fw + gap : P.gh.x;
+          add(flag ? { ...P.gh, x: gx } : P.gh, `lvw-${n}-g${j}`, { y, w: Math.max(P.gh.w - (gx - P.gh.x), m.listW - (gx - P.list.x)), text: fill(flag ? ghRest : ghTpl, vals) });
+          y += m.ghH + m.ghToList;
+        }
         const room = Math.max(1, Math.floor((m.limit - y) / m.lineH)), lines = g.list.slice(0, room).map((e) => {
+          shown.push(e.id);
           let v = values(e, cfg), t = fill(lineTpl, { ...v, tz: tzShort() || schedTz(), flag: flagEmoji(e.country) });
           // a line never wraps: long names are shortened, the time stays
           while (textW(P.list, t, P.list.size) > m.listW && v.event.length > 14) { v = { ...v, event: v.event.replace(/\s*\S+…?$/, '') + '…' }; t = fill(lineTpl, { ...v, tz: tzShort() || schedTz(), flag: flagEmoji(e.country) }); }
@@ -4953,6 +4975,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       });
       y += m.dayGap - m.groupGap; n++;
     }
+    cfg.shown = shown; // what the slide actually lists (the panel's ticks and count)
     if (!out.length) { add(P.dh, 'lvw-0-day', { y: m.top + m.dhOff, text: cfg.lang === 'ar' ? 'لا توجد أحداث هذا الأسبوع' : 'No events this week' }); }
     const at = pg.layers.findIndex((l) => l.id === m.anchor); pg.layers.splice(at >= 0 ? at + 1 : pg.layers.length, 0, ...out);
     return JSON.stringify(out) !== before;
@@ -5147,8 +5170,16 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const sec = (title, body, extra = '') => `<section class="lv-sec"><div class="lv-sec-h"><b>${title}</b>${extra}</div>${body}</section>`;
   const field = (label, body) => `<div class="lv-f"><span class="lv-l">${label}</span>${body}</div>`;
   const seg = (act, cur, opts) => `<div class="seg lv-seg">${opts.map(([v, l]) => `<button class="${cur === v ? 'on' : ''}" data-act="${act}" data-v="${v}" aria-pressed="${cur === v}">${l}</button>`).join('')}</div>`;
+  const flagImg = (cc) => (/^[A-Z]{2}$/.test(cc || '') ? `<img class="lv-flag" src="https://flagcdn.com/${cc.toLowerCase()}.svg" alt="" loading="lazy">` : '');
   function evRow(e, on, cfg) {
-    return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" aria-pressed="${on}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b><span class="grow" title="${esc(cfg.lang === 'ar' ? e.ar : e.en)}"><span class="n">${esc(cfg.lang === 'ar' ? e.ar : e.en)}</span><small>${esc(e.currency || e.country)} · <span class="st">${'★'.repeat(IMP[e.impact])}</span></small></span>${e.actual != null ? `<span class="v">${esc(e.actual)}</span>` : ''}</button>`;
+    const name = cfg.lang === 'ar' ? (e.translated ? e.ar : (cfg.evAr && cfg.evAr[e.en]) || e.ar) : e.en;
+    return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" aria-pressed="${on}" title="${esc(name)}${on ? ' · on the slide' : ''}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><b class="t">${timeIn(e.at, cfg.map && cfg.map.timeFmt)}</b>${flagImg(e.country)}<span class="n">${esc(name)}</span><span class="st i${IMP[e.impact]}">${'★'.repeat(IMP[e.impact])}</span>${e.actual != null ? `<span class="v">${esc(e.actual)}</span>` : ''}</button>`;
+  }
+  /** "Oct 19 – 23, 2026" / "Tue, Oct 20, 2026" */
+  function periodLabel(date, wk) {
+    if (!wk) return fmt(new Date(date + 'T12:00'), { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+    const w = weekDays(date), a = new Date(w[0] + 'T12:00'), b = new Date(w[4] + 'T12:00');
+    return a.getMonth() === b.getMonth() ? `${fmt(a, { month: 'short', day: 'numeric' })} – ${b.getDate()}, ${b.getFullYear()}` : `${fmt(a, { month: 'short', day: 'numeric' })} – ${fmt(b, { month: 'short', day: 'numeric' })}, ${b.getFullYear()}`;
   }
   /* ---------- star pictures → editable stars ---------- */
   /* A rating drawn as a picture can't follow the data. Claude reads one of them (symbol, colours);
@@ -5287,22 +5318,33 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const list = choose(events, cfg, isWeek(cfg) ? 999 : map.rows.length), chosen = new Set(list.map((e) => e.id));
     const visible = events.filter((e) => cfg.impact.includes(e.impact) || chosen.has(e.id));
     const r1 = map.rows[0], byId = new Map(pg.layers.map((l) => [l.id, l]));
-    const wk = isWeek(cfg), range = (() => { if (!wk || !cfg.feed) return ''; const w = weekDays(cfg.feed.date), o = { day: 'numeric', month: 'short' }; return ` Now: ${fmt(new Date(w[0] + 'T12:00'), o)} – ${fmt(new Date(w[4] + 'T12:00'), o)}.`; })();
+    const wk = isWeek(cfg), shownDate = (cfg.feed && cfg.feed.date) || dayFor(cfg, ED.d);
     const dayHint = wk
-      ? (cfg.day === 'publish' ? 'Each scheduled post shows the week it goes out, Monday to Friday. Posts on a weekend show the coming week.' : cfg.day === 'today' ? 'Always the current week (the coming one on weekends).' : cfg.day === 'tomorrow' ? 'Always next week: post it the week before.' : '') + range
-      : cfg.day === 'publish' ? 'Each scheduled post shows the events of the day it goes out.' : cfg.day === 'today' ? 'Always today’s events.' : cfg.day === 'tomorrow' ? 'Always tomorrow’s events: post the evening before.' : '';
-    const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>` : cfg.feed ? `<p class="lv-note">${cfg.feed.count} events ${cfg.feed.week ? `in the week of ${esc(fmt(new Date(weekDays(cfg.feed.date)[0] + 'T12:00'), { day: 'numeric', month: 'long' }))}` : `on ${esc(fmt(new Date(cfg.feed.date + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))}`} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
-    const ctry = cfg.countries.length;
+      ? ({ publish: 'The week of each post, Mon–Fri', today: 'The current week', tomorrow: 'The following week', fixed: 'A week you choose' })[cfg.day]
+      : ({ publish: 'The day of each post', today: 'Always today', tomorrow: 'Always tomorrow', fixed: 'A day you choose' })[cfg.day];
+    const unit = wk ? 'week' : 'day';
+    const period = `<div class="lv-period"><button class="lv-pa" data-act="lvShift" data-n="-1" aria-label="Previous ${unit}" title="Previous ${unit}">${ic('chevL', 16)}</button>
+        <button class="lv-pd" data-act="lvCal" title="Choose a ${unit}">${ic('cal', 15)}<span>${esc(periodLabel(shownDate, wk))}</span><input type="date" id="lvDate" tabindex="-1" aria-hidden="true" value="${esc(cfg.day === 'fixed' && cfg.date ? cfg.date : shownDate)}"></button>
+        <button class="lv-pa" data-act="lvShift" data-n="1" aria-label="Next ${unit}" title="Next ${unit}">${ic('chevR', 16)}</button></div>`;
+    const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>` : cfg.feed ? `<p class="lv-src">${cfg.feed.count} events ${wk ? 'this week' : 'that day'} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
+    const ctry = cfg.countries.length, onSlide = wk ? new Set(cfg.shown || []) : chosen;
+    // the list: what's on the slide first in mind, grouped by day on weekly slides
+    let evHtml = '';
+    if (visible.length) {
+      if (wk) {
+        const byDay = new Map(); visible.forEach((e) => { const p = tzParts(Date.parse(e.at), tz), k = `${p.year}-${p.month}-${p.day}`; (byDay.get(k) || byDay.set(k, []).get(k)).push(e); });
+        evHtml = [...byDay].sort((x, y) => x[0].localeCompare(y[0])).map(([k, evs]) => { const n = evs.filter((e) => onSlide.has(e.id)).length; return `<div class="lv-evd"><b>${esc(fmt(new Date(k + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'short' }))}</b><span>${n ? `${n} on the slide` : 'none on the slide'}</span></div>` + evs.map((e) => evRow(e, onSlide.has(e.id), cfg)).join(''); }).join('');
+      } else evHtml = visible.map((e) => evRow(e, onSlide.has(e.id), cfg)).join('');
+    } else evHtml = cfg.events ? `<p class="lv-empty">No event matches these filters${wk ? ' this week' : ' that day'}.</p>` : '<div class="skel" style="height:36px"></div><div class="skel" style="height:36px"></div><div class="skel" style="height:36px"></div>';
     return sec('Data', field('Source', `<select class="field sm" id="lvSrc">${SOURCES.map(([v, l]) => `<option value="${v}" ${cfg.src === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
-        + field(wk ? 'Week' : 'Day', seg('lvDay', cfg.day, wk ? [['publish', 'Post week'], ['today', 'This week'], ['tomorrow', 'Next week'], ['fixed', 'Pick']] : [['publish', 'Post day'], ['today', 'Today'], ['tomorrow', 'Tomorrow'], ['fixed', 'Date']])
-          + (cfg.day === 'fixed' ? `<input class="field sm" type="date" id="lvDate" value="${esc(cfg.date || nowIn(tz).date)}">${wk ? `<p class="lv-hint">Any day of the week to show.${range}</p>` : ''}` : `<p class="lv-hint">${dayHint}</p>`))
+        + field(wk ? 'Week' : 'Day', seg('lvDay', cfg.day, [['publish', 'Auto'], ['today', wk ? 'This' : 'Today'], ['tomorrow', wk ? 'Next' : 'Tomorrow'], ['fixed', 'Pick']]) + period + `<p class="lv-hint">${dayHint}</p>`)
         + field('Language', seg('lvLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']])
-          + `<p class="lv-hint lv-langnote">${cfg.lang === (cfg.srcLang || 'en') ? 'The whole slide follows the language: titles, labels, dates and events.' : !map.texts ? 'Re-analyze the slide to translate its titles and labels too.' : cfg.i18nEngine === 'claude' ? 'Titles and labels translated by Claude. Brand names and websites stay as they are.' : 'Titles and labels translated with the built-in dictionary. Add a Claude key in Settings → AI assistant for a full translation.'}</p>`
-          + (cfg.lang === 'ar' && (cfg.srcLang || 'en') !== 'ar' ? `<div class="lv-swr lv-rtl"><div class="grow"><b>Right-to-left layout</b><p>Mirror the design for Arabic: times on the right, text aligned right.</p></div>${sw(cfg.mirror !== false, 'lvMirror', '', 'Right-to-left layout')}</div>` : '')))
-      + sec('Filters', field('Impact', `<div class="chips">${['high', 'medium', 'low'].map((k) => `<button class="chip ${cfg.impact.includes(k) ? 'on' : ''}" data-act="lvImp" data-k="${k}" aria-pressed="${cfg.impact.includes(k)}">${IMP_WORD.en[k]}</button>`).join('')}</div>`)
-        + field(`Countries <em>${ctry} selected</em>`, `<div class="chips">${CTRY.map(([k, l]) => `<button class="chip ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}" aria-pressed="${cfg.countries.includes(k)}">${l}</button>`).join('')}</div>`))
-      + sec('Events on the slide', feedNote + `<div class="lv-evs">${visible.length ? visible.map((e) => evRow(e, chosen.has(e.id), cfg)).join('') : cfg.events ? `<p class="lv-empty">No event matches these filters that day. The rows stay hidden until there is one.</p>` : '<div class="skel" style="height:54px"></div><div class="skel" style="height:54px"></div><div class="skel" style="height:54px"></div>'}</div>`,
-        `<span class="lv-count">${isWeek(cfg) ? list.length : `${list.length}/${map.rows.length}`}</span>${cfg.pick ? '<button class="btn link sm lv-auto" data-act="lvAuto">Auto-pick</button>' : '<span class="lv-tag">Auto</span>'}`)
+          + (cfg.lang === (cfg.srcLang || 'en') ? '' : `<p class="lv-hint lv-langnote">${!map.texts ? 'Re-analyze the slide to translate its titles too.' : cfg.i18nEngine === 'claude' ? 'Whole slide translated by Claude.' : 'Translated with the built-in dictionary.'}</p>`)
+          + (cfg.lang === 'ar' && (cfg.srcLang || 'en') !== 'ar' ? `<div class="lv-swr lv-rtl"><div class="grow"><b>Right-to-left</b><p>Mirror the layout for Arabic.</p></div>${sw(cfg.mirror !== false, 'lvMirror', '', 'Right-to-left layout')}</div>` : '')))
+      + sec('Filters', field('Impact', `<div class="lv-imps">${['high', 'medium', 'low'].map((k) => `<button class="lv-impb i${IMP[k]} ${cfg.impact.includes(k) ? 'on' : ''}" data-act="lvImp" data-k="${k}" aria-pressed="${cfg.impact.includes(k)}"><span class="st">${'★'.repeat(IMP[k])}</span>${IMP_WORD.en[k]}</button>`).join('')}</div>`)
+        + field(`Countries <em>${ctry}/${CTRY.length}</em>${ctry < CTRY.length ? '<button class="btn link sm lv-all" data-act="lvCtyAll">All</button>' : ''}`, `<div class="lv-ctys">${CTRY.map(([k, l]) => `<button class="lv-cty ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}" aria-pressed="${cfg.countries.includes(k)}" title="${esc(countryName(k, 'en'))} · ${l}">${flagImg(k)}<span>${k === 'GB' ? 'UK' : k}</span></button>`).join('')}</div>`))
+      + sec('Events', feedNote + `<div class="lv-evs">${evHtml}</div>`,
+        `<span class="lv-count" title="Events on the slide">${onSlide.size} on the slide</span>${cfg.pick ? '<button class="btn link sm lv-auto" data-act="lvAuto">Auto-pick</button>' : '<span class="lv-tag">Auto</span>'}`)
       + sec('Updates', `<div class="lv-sw">
           <div class="lv-swr"><div class="grow"><b>Actual and forecast</b><p>Show the figures line when an event has figures.</p></div>${sw(cfg.values, 'lvVals', '', 'Actual and forecast')}</div>
           <div class="lv-swr"><div class="grow"><b>Update automatically</b><p>While the studio is open, and before each scheduled post.</p></div>${sw(!cfg.paused, 'lvPause', '', 'Update automatically')}</div>
@@ -5571,12 +5613,16 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     lvImp: (a) => { const c = cfgNow(), k = a.dataset.k; c.impact = c.impact.includes(k) ? c.impact.filter((x) => x !== k) : [...c.impact, k]; if (!c.impact.length) c.impact = [k]; c.pick = null; save(); reapply(); },
     lvCty: (a) => { const c = cfgNow(), k = a.dataset.k; c.countries = c.countries.includes(k) ? c.countries.filter((x) => x !== k) : [...c.countries, k]; if (!c.countries.length) c.countries = [k]; c.pick = null; save(); reapply(); },
     lvPick: (a) => {
-      const c = cfgNow(), n = isWeek(c) ? 999 : c.map.rows.length, cur = choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id;
+      const c = cfgNow(), n = isWeek(c) ? 999 : c.map.rows.length, cur = isWeek(c) ? [...(c.shown || [])] : choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id;
       let next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
       if (next.length > n) { toast(`This design has ${n} rows: untick an event first`); return; }
       const order = new Map((c.events || []).map((e, i) => [e.id, i])); c.pick = next.sort((x, y) => order.get(x) - order.get(y)); save(); reapply();
     },
     lvAuto: () => { cfgNow().pick = null; save(); reapply(); },
+    lvCtyAll: () => { const c = cfgNow(); c.countries = CTRY.map(([k]) => k); c.pick = null; save(); reapply(); },
+    /** ‹ › steps the shown day or week (and switches to Pick); the middle button opens the date picker */
+    lvShift: (a) => { const c = cfgNow(), base = (c.feed && c.feed.date) || dayFor(c, ED.d); c.date = addDay(base, +a.dataset.n * (isWeek(c) ? 7 : 1)); c.day = 'fixed'; c.pick = null; save(); reapply(); },
+    lvCal: () => { const i = $('#lvDate'); if (!i) return; try { i.showPicker(); } catch (x) { i.focus(); i.click(); } },
     lvVals: () => { const c = cfgNow(); c.values = !c.values; save(); reapply(); },
     lvPause: () => { const c = cfgNow(); c.paused = !c.paused; save(); if (!c.paused) reapply(); else edPanel(); },
   });
@@ -5584,7 +5630,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const t = e.target; if (!ED.d || ED.tab !== 'data' || !curP().live) return; const c = cfgNow();
     if (t.id === 'lvSrc') { c.src = t.value; save(); reapply(); }
     else if (t.id === 'lvEvery') { c.every = +t.value; save(); edPanel(); }
-    else if (t.id === 'lvDate' && t.value) { c.date = t.value; c.pick = null; save(); reapply(); }
+    else if (t.id === 'lvDate' && t.value) { c.date = t.value; c.day = 'fixed'; c.pick = null; save(); reapply(); }
     else if (t.dataset && t.dataset.lvrole != null) {
       // one fix applies to the same layer position in every row
       const n = +t.dataset.lvrole, role = t.value;
