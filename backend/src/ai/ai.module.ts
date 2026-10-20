@@ -12,5 +12,6 @@ import { Idea, IdeaSchema } from "./idea.schema";
   imports: [GscModule, MongooseModule.forFeature([{ name: AiSettings.name, schema: AiSettingsSchema }, { name: Idea.name, schema: IdeaSchema }, { name: Article.name, schema: ArticleSchema }])],
   controllers: [AiController],
   providers: [AiService, CoverImageService],
+  exports: [AiService],
 })
 export class AiModule {}

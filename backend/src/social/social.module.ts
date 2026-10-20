@@ -18,10 +18,14 @@ import { PublishScheduler } from "./publishing/publish.scheduler";
 import { PublishingController } from "./publishing/publishing.controller";
 import { FigmaController } from "./figma/figma.controller";
 import { FigmaService } from "./figma/figma.service";
+import { AiModule } from "../ai/ai.module";
+import { CalendarController } from "./calendar/calendar.controller";
+import { CalendarService } from "./calendar/calendar.service";
 
 /** Social Media workspace: brands, designs, posts, settings, connected accounts, publishing and Figma import (collections prefixed social_). */
 @Module({
   imports: [
+    AiModule,
     MongooseModule.forFeature([
       { name: SocialBrand.name, schema: SocialBrandSchema },
       { name: SocialDesign.name, schema: SocialDesignSchema },
@@ -34,7 +38,7 @@ import { FigmaService } from "./figma/figma.service";
       { name: SocialIntegration.name, schema: SocialIntegrationSchema },
     ]),
   ],
-  controllers: [SocialWorkspaceController, SocialBrandsController, PublishingController, FigmaController],
-  providers: [WorkspaceService, BrandsService, ConnectionsService, PublisherService, PublishScheduler, FigmaService],
+  controllers: [SocialWorkspaceController, SocialBrandsController, PublishingController, FigmaController, CalendarController],
+  providers: [WorkspaceService, BrandsService, ConnectionsService, PublisherService, PublishScheduler, FigmaService, CalendarService],
 })
 export class SocialModule {}

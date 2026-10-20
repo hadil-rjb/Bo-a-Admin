@@ -72,6 +72,8 @@ function fitPage(layers, from, to) {
 }
 /** Renders one slide to an image Blob (set by the export section, used for publishing) */
 let renderSlide = null;
+/** Live data templates (set by the live data section): forPost(d, post) → the design with that post's data */
+let LIVE = null;
 /** Waits until the adjusted images of a page are rendered at full size (set by the image adjustments section) */
 let fxReady = async () => {};
 /** Text of a text layer as HTML (plain, or spans for mixed styles: set by the mixed text section) */
@@ -4513,7 +4515,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const toDataUrl = (blob) => new Promise((r) => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(blob); });
   const plain = (p) => { const { publish, media, ...rest } = p; return JSON.parse(JSON.stringify(rest)); };
   /** Slides for publishing: lossless PNG at the design's size (at most 2160 px), the API encodes the JPEG once */
-  async function render(d) { const [w, h] = RATIOS[d.ratio], sc = Math.min(1, 2160 / Math.max(w, h)), out = []; for (let i = 0; i < d.pages.length; i++) out.push(await toDataUrl(await renderSlide(d, i, sc, 'png'))); return out; }
+  async function render(d, post) {
+    // live calendar slides show the events of the day the post goes out
+    if (LIVE && post) d = await LIVE.forPost(d, post);
+    const [w, h] = RATIOS[d.ratio], sc = Math.min(1, 2160 / Math.max(w, h)), out = []; for (let i = 0; i < d.pages.length; i++) out.push(await toDataUrl(await renderSlide(d, i, sc, 'png'))); return out;
+  }
   function merge(st) {
     const p = S.posts.find((x) => x.id === st.id); if (!p) return false;
     const before = JSON.stringify([p.status, p.publish, p.media]);
@@ -4531,7 +4537,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     /** Scheduled post: upload its slides so the API can publish it on time, even with the studio closed */
     async prepare(post) {
       const d = getD(post.d); if (!d || busy.has(post.id)) return; busy.add(post.id);
-      try { const st = await api(`${brandPath()}/posts/${encodeURIComponent(post.id)}/media`, { method: 'PUT', body: { post: plain(post), images: await render(d), hash: designHash(d) } }); if (merge(st)) save(); }
+      try { const st = await api(`${brandPath()}/posts/${encodeURIComponent(post.id)}/media`, { method: 'PUT', body: { post: plain(post), images: await render(d, post), hash: designHash(d) } }); if (merge(st)) save(); }
       catch (e) { toast('Could not prepare the post for publishing: ' + e.message); }
       finally { busy.delete(post.id); }
     },
@@ -4539,7 +4545,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       const d = getD(post.d); if (!d) return; if (busy.has(post.id)) return toast('Already publishing this post');
       busy.add(post.id); toast(`Publishing to ${post.pf.map(net).join(', ')}…`);
       try {
-        const st = await api(`${brandPath()}/posts/${encodeURIComponent(post.id)}/publish`, { method: 'POST', body: { post: plain(post), images: await render(d), hash: designHash(d) } });
+        const st = await api(`${brandPath()}/posts/${encodeURIComponent(post.id)}/publish`, { method: 'POST', body: { post: plain(post), images: await render(d, post), hash: designHash(d) } });
         merge(st); save(); toast(summary(st));
       } catch (e) { toast('Publishing failed: ' + e.message); }
       finally { busy.delete(post.id); refreshViews(); }
@@ -4609,6 +4615,358 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   FIG.load();
   polledBrand = S.active; setTimeout(() => PUB.poll(), 1500);
   setInterval(() => PUB.poll(), 20000);
+})();
+
+/* ============ v23 · live data templates: any calendar design, real economic data ============ */
+/* A slide becomes a template without being redesigned: the API (Claude, or a layout heuristic)
+   finds which text layers are each row's time, currency, event, values and impact, and the date.
+   That reading is stored on the page (pg.live.map); the studio then fills only those texts with
+   events from TradingView or Forex Factory, hides the rows it has no event for, and refreshes
+   them on its own. Colours, fonts, positions and every other layer stay exactly as designed. */
+(function () {
+  const IMP = { high: 3, medium: 2, low: 1 };
+  const IMP_WORD = { en: { high: 'High', medium: 'Medium', low: 'Low' }, ar: { high: 'عالي', medium: 'متوسط', low: 'منخفض' } };
+  const CTRY = [['US', 'USD'], ['EU', 'EUR'], ['GB', 'GBP'], ['JP', 'JPY'], ['DE', 'DE'], ['CA', 'CAD'], ['AU', 'AUD'], ['NZ', 'NZD'], ['CH', 'CHF'], ['CN', 'CNY']];
+  const SOURCES = [['tradingview', 'TradingView · actual, forecast, previous'], ['forexfactory', 'Forex Factory · forecast, previous']];
+  const EVERY = [[1, '1 minute'], [5, '5 minutes'], [15, '15 minutes'], [60, '1 hour']];
+  const ROLES = [['time', 'Time'], ['currency', 'Currency'], ['country', 'Country'], ['event', 'Event'], ['value', 'Value'], ['actual', 'Actual'], ['forecast', 'Forecast'], ['previous', 'Previous'], ['impact', 'Impact']];
+  const VAL_ONLY = /^[^{}]*(\{(actual|forecast|previous|value)\}[^{}]*)+$/;
+  const defaults = () => ({ v: 1, src: 'tradingview', day: 'publish', date: '', impact: ['high', 'medium'], countries: ['US', 'EU', 'GB', 'JP', 'DE', 'CA', 'AU', 'CN'], lang: 'en', pick: null, values: true, every: 15, paused: false, map: null, orig: {}, at: 0 });
+  const livePages = (d) => (d && d.pages ? d.pages.filter((pg) => pg.live && pg.live.map) : []);
+  const pad2 = (n) => String(n).padStart(2, '0');
+
+  /* ---------- data ---------- */
+  const feed = new Map(); // "date|tz|countries|src" → { at, p }
+  function fetchDay(cfg, date) {
+    const tz = schedTz(), k = [date, tz, cfg.countries.join(','), cfg.src].join('|'), hit = feed.get(k);
+    if (hit && Date.now() - hit.at < 60_000) return hit.p;
+    const qs = new URLSearchParams({ date, tz, countries: cfg.countries.join(','), source: cfg.src });
+    const p = api('/social/calendar/events?' + qs).catch((e) => { feed.delete(k); throw e; });
+    feed.set(k, { at: Date.now(), p }); return p;
+  }
+  const addDay = (date, n) => { const [y, m, d] = date.split('-').map(Number), x = new Date(Date.UTC(y, m - 1, d + n)); return x.toISOString().slice(0, 10); };
+  /** Which day a page shows: the post's day when rendering a post, otherwise its setting */
+  function dayFor(cfg, d, post) {
+    const today = nowIn(schedTz()).date;
+    if (cfg.day === 'today') return today;
+    if (cfg.day === 'tomorrow') return addDay(today, 1);
+    if (cfg.day === 'fixed' && /^\d{4}-\d{2}-\d{2}$/.test(cfg.date)) return cfg.date;
+    if (post && post.date) return post.date;
+    // "the day it's published": the next scheduled post of this design, else today
+    const next = S.posts.filter((p) => p.d === d.id && p.status === 'Scheduled' && p.date >= today).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0];
+    return next ? next.date : today;
+  }
+  /** Events for the rows: the hand-picked ones of that day, else the most important (then in time order) */
+  function choose(events, cfg, n) {
+    if (cfg.pick && cfg.pick.length) { const set = new Set(cfg.pick), mine = events.filter((e) => set.has(e.id)); if (mine.length) return mine.slice(0, n); }
+    const ok = events.filter((e) => cfg.impact.includes(e.impact));
+    return ok.map((e, i) => ({ e, i })).sort((a, b) => IMP[b.e.impact] - IMP[a.e.impact] || a.i - b.i).slice(0, n).sort((a, b) => a.i - b.i).map((x) => x.e);
+  }
+  const hhmm = (iso) => { const p = tzParts(Date.parse(iso), schedTz()); return pad2(+p.hour % 24) + ':' + p.minute; };
+  function values(e, cfg) {
+    const v = (x) => (x == null || x === '' ? '—' : x), sym = cfg.map.impactSymbol;
+    return {
+      time: hhmm(e.at), currency: e.currency || e.country, country: e.country, event: cfg.lang === 'ar' ? e.ar : e.en,
+      actual: v(e.actual), forecast: v(e.forecast), previous: v(e.previous), value: v(e.actual ?? e.forecast ?? e.previous),
+      impact: sym ? sym.repeat(IMP[e.impact]) : IMP_WORD[cfg.lang === 'ar' ? 'ar' : 'en'][e.impact],
+    };
+  }
+  function dateValues(date, lang) {
+    const [y, m, d] = date.split('-').map(Number), at = new Date(Date.UTC(y, m - 1, d, 12)), loc = lang === 'ar' ? 'ar' : 'en-GB';
+    const f = (o) => new Intl.DateTimeFormat(loc, { timeZone: 'UTC', ...o }).format(at);
+    return { weekday: f({ weekday: 'long' }), day: f({ day: 'numeric' }), month: f({ month: 'long' }), year: f({ year: 'numeric' }) };
+  }
+  /** Latin-only fonts can't draw Arabic: use the brand's Arabic font for Arabic texts */
+  const AR_OK = /cairo|tajawal|noto (sans|kufi|naskh) arabic|ibm plex sans arabic|almarai|amiri|changa|readex|vazir|rubik/i;
+  const arFont = (f) => (AR_OK.test(f || '') ? f : brand().fonts.arabic || 'Cairo');
+  const fill = (tpl, vals) => tpl.replace(/\{(\w+)\}/g, (m, k) => (k in vals ? vals[k] : m));
+
+  /* Keeping the layout: a text that was one line stays one line (shrunk up to 72%, then it may wrap) */
+  const mctx = document.createElement('canvas').getContext('2d');
+  const textW = (l, text, size) => { mctx.font = `${l.it ? 'italic ' : ''}${l.weight || 400} ${size}px '${l.font}', sans-serif`; return Math.max(...String(text).split('\n').map((t) => mctx.measureText(t).width + (l.ls || 0) * [...t].length)); };
+  function fitSize(l, o, text) {
+    const size = o.size || l.size; if (!size || !l.w || String(o.text || '').includes('\n')) return size;
+    if (textW(l, o.text || '', size) > l.w * 1.02) return size; // the original already wrapped: leave it
+    const w = textW(l, text, size); return w <= l.w ? size : Math.max(Math.round(size * 0.72), Math.floor(size * (l.w / w) * 0.98));
+  }
+  /** The design's own currency colours, learned from its original rows: { USD: '#2b6cb0', … } */
+  function badgeOf(pg, row, curId) {
+    const c = pg.layers.find((l) => l.id === curId); if (!c) return null;
+    const x = c.x + c.w / 2, y = c.y + c.h / 2;
+    return pg.layers.find((l) => l.type !== 'text' && row.layerIds.includes(l.id) && x >= l.x && x <= l.x + l.w && y >= l.y && y <= l.y + l.h && l.w < c.w * 3) || null;
+  }
+  function palette(pg, cfg) {
+    const pal = {};
+    cfg.map.rows.forEach((row) => { const f = row.fields.find((x) => x.role === 'currency'); if (!f) return; const b = badgeOf(pg, row, f.layerId), o = cfg.orig[f.layerId], ob = b && cfg.orig[b.id]; if (b && o && ob && typeof ob.fill === 'string') pal[String(o.text).trim().toUpperCase()] = ob.fill; });
+    return new Set(Object.values(pal)).size > 1 ? pal : null; // one colour for every currency: the design doesn't colour-code
+  }
+
+  /** Writes the events into a page's mapped layers. Returns true when something changed. */
+  function applyPage(pg, events, date) {
+    const cfg = pg.live, map = cfg.map, byId = new Map(pg.layers.map((l) => [l.id, l])); let changed = false;
+    const set = (id, k, v) => { const l = byId.get(id); if (l && l[k] !== v) { l[k] = v; changed = true; } };
+    const shown = (id) => !!(cfg.orig[id] && cfg.orig[id].hidden);
+    const list = choose(events, cfg, map.rows.length), pal = palette(pg, cfg);
+    map.rows.forEach((row, i) => {
+      const e = list[i];
+      if (!e) { row.layerIds.forEach((id) => set(id, 'hidden', true)); return; }
+      row.layerIds.forEach((id) => set(id, 'hidden', shown(id)));
+      const vals = values(e, cfg), empty = e.actual == null && e.forecast == null && e.previous == null;
+      row.fields.forEach((f) => {
+        // speeches and auctions have no figures: hide their value line instead of printing dashes
+        if (VAL_ONLY.test(f.template) && (!cfg.values || empty)) return set(f.layerId, 'hidden', true);
+        const text = fill(f.template, vals), l = byId.get(f.layerId), o = cfg.orig[f.layerId] || {};
+        set(f.layerId, 'text', text);
+        if (l && l.type === 'text' && o.size) set(f.layerId, 'size', fitSize(l, o, text));
+        if (pal && f.role === 'currency') { const b = badgeOf(pg, row, f.layerId), col = pal[vals.currency] || CUR_COLOR[vals.currency]; if (b && col) set(b.id, 'fill', col); }
+        if (f.role === 'event') { const o = cfg.orig[f.layerId] || {}; set(f.layerId, 'dir', cfg.lang === 'ar' ? 'rtl' : (o.dir || 'ltr')); if (o.font) set(f.layerId, 'font', cfg.lang === 'ar' ? arFont(o.font) : o.font); }
+      });
+    });
+    if (map.date) { const o = cfg.orig[map.date.layerId] || {}; set(map.date.layerId, 'text', fill(map.date.template, dateValues(date, cfg.lang))); if (o.font) set(map.date.layerId, 'font', cfg.lang === 'ar' ? arFont(o.font) : o.font); }
+    return changed;
+  }
+  const sigOf = (events, cfg, n) => choose(events, cfg, n).map((e) => [e.id, e.actual, e.forecast, e.previous].join('~')).join('|');
+
+  /** Refreshes every live page of a design. `silent`: no toast on failure (background updates). */
+  async function refresh(d, { silent = true, force = false } = {}) {
+    let changed = false, err = null;
+    for (const pg of livePages(d)) {
+      const cfg = pg.live; if (cfg.paused && !force) continue;
+      try {
+        const date = dayFor(cfg, d), r = await fetchDay(cfg, date);
+        cfg.feed = { date, source: r.source, count: r.events.length, errors: r.errors || [] };
+        cfg.events = r.events; // shown in the panel; not needed for rendering
+        changed = applyPage(pg, r.events, date) || changed; cfg.at = Date.now(); cfg.err = '';
+      } catch (e) { err = e; pg.live.err = e.message; }
+    }
+    if (changed) { d.upd = 'Just now'; save(); }
+    if (ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data') edPanel(); }
+    if (err && !silent) toast('Live data: ' + err.message);
+    return changed;
+  }
+
+  /** The design as a post published on its day would show it (a copy: the design itself is untouched) */
+  async function forPost(d, post) {
+    if (!livePages(d).length) return d;
+    const c = JSON.parse(JSON.stringify(d));
+    for (const pg of livePages(c)) { try { const date = dayFor(pg.live, c, post), r = await fetchDay(pg.live, date); applyPage(pg, r.events, date); } catch (e) { /* keep the last data */ } }
+    return c;
+  }
+  LIVE = { forPost, refresh };
+
+  /* ---------- reading a slide ---------- */
+  const layersIn = (pg) => pg.layers.map((l) => ({ id: l.id, type: l.type, name: l.name, text: l.type === 'text' ? String(l.text ?? '') : undefined, x: +l.x || 0, y: +l.y || 0, w: +l.w || 0, h: +l.h || 0, size: l.size, weight: l.weight, color: typeof l.color === 'string' ? l.color : undefined, locked: !!l.locked, hidden: !!l.hidden }));
+  async function preview(d, i) {
+    const [w, h] = RATIOS[d.ratio], s = Math.min(1, 1000 / Math.max(w, h));
+    try { const b = await renderSlide(d, i, s, 'jpeg'); return await new Promise((r) => { const f = new FileReader(); f.onload = () => r(f.result); f.readAsDataURL(b); }); } catch (e) { return undefined; }
+  }
+  async function analyze(d, i, engine) {
+    const pg = d.pages[i], [w, h] = RATIOS[d.ratio];
+    return api('/social/calendar/analyze', { method: 'POST', body: { layers: layersIn(pg), w, h, engine, image: engine === 'heuristic' ? undefined : await preview(d, i) } });
+  }
+  /** Binds the mapping to the page (undoable) and fills it with live data */
+  function bind(pg, map, keep) {
+    const cfg = { ...defaults(), ...(keep || {}), map, orig: {} };
+    const ids = new Set([...map.rows.flatMap((r) => r.layerIds), ...(map.date ? [map.date.layerId] : [])]);
+    pg.layers.forEach((l) => { if (ids.has(l.id)) cfg.orig[l.id] = { hidden: !!l.hidden, text: l.text, dir: l.dir, size: l.size, fill: l.fill, font: l.font }; });
+    if (keep && keep.orig) Object.entries(keep.orig).forEach(([id, o]) => { cfg.orig[id] = { ...(cfg.orig[id] || {}), ...o }; }); // re-analysis keeps the first originals
+    // a design written in Arabic stays Arabic
+    const evText = map.rows.flatMap((r) => r.fields.filter((f) => f.role === 'event')).map((f) => (pg.layers.find((l) => l.id === f.layerId) || {}).text || '').join(' ');
+    cfg.lang = keep && keep.lang ? keep.lang : /[\u0600-\u06FF]/.test(evText) ? 'ar' : 'en';
+    pg.live = cfg;
+  }
+  function unbind(pg) {
+    const cfg = pg.live; if (!cfg) return;
+    pg.layers.forEach((l) => { const o = cfg.orig[l.id]; if (!o) return; if (o.hidden) l.hidden = true; else delete l.hidden; if (o.text != null && l.type === 'text') l.text = o.text; if (o.dir) l.dir = o.dir; else delete l.dir; if (o.size) l.size = o.size; if (o.font) l.font = o.font; if (o.fill !== undefined && l.type !== 'text') l.fill = o.fill; });
+    delete pg.live;
+  }
+
+  /* quick detection when the panel opens on an unbound slide (layout heuristic, no AI cost) */
+  const peek = new Map(); // page signature → result | promise
+  const pageSig = (pg) => JSON.stringify(pg.layers.map((l) => [l.id, l.text, Math.round(l.x), Math.round(l.y)]));
+  function peekPage(d, i) {
+    const k = pageSig(d.pages[i]); if (peek.has(k)) return peek.get(k);
+    const p = analyze(d, i, 'heuristic').then((r) => (peek.set(k, r), (ED.d === d && ED.tab === 'data' && edPanel()), r)).catch(() => (peek.delete(k), null));
+    peek.set(k, p); return p;
+  }
+
+  /* ---------- Brand Kit template ---------- */
+  function brandCalendar(w, h, style, lang, rows) {
+    const b = brand(), col = (n, f) => ((b.colors.find((c) => c.name === n) || {}).hex || f);
+    const primary = col('Primary', '#FD0E35'), dark = col('Dark', '#0B1220'), light = col('Light', '#F8FAFC');
+    const S7 = {
+      dark: { bg: `radial-gradient(ellipse 120% 60% at 15% 100%, ${primary}66 0%, transparent 65%), ${dark}`, fg: '#FFFFFF', muted: 'rgba(255,255,255,.72)', card: 'rgba(255,255,255,.06)', line: 'rgba(255,255,255,.08)', accent: primary },
+      light: { bg: light, fg: dark, muted: 'rgba(15,23,42,.62)', card: 'rgba(15,23,42,.045)', line: 'rgba(15,23,42,.08)', accent: primary },
+      brand: { bg: `linear-gradient(160deg, ${primary}, ${shade(primary, -0.35)})`, fg: '#FFFFFF', muted: 'rgba(255,255,255,.8)', card: 'rgba(0,0,0,.16)', line: 'rgba(255,255,255,.14)', accent: '#FFFFFF' },
+    }[style];
+    const L = tplCalendar(w, h, lang, EVENTS_DEFAULT.slice(0, rows));
+    const head = b.fonts.heading || 'Plus Jakarta Sans', body = b.fonts.body || 'Inter', ar = lang === 'ar' ? (b.fonts.arabic || 'Cairo') : null;
+    L.forEach((l) => {
+      if (l.name === 'Background') { l.fill = S7.bg; return; }
+      if (/^Row \d/.test(l.name)) { l.fill = S7.card; l.stroke = S7.line; return; }
+      if (l.type !== 'text') return;
+      if (l.name === 'Kicker') { l.text = lang === 'ar' ? 'المفكرة الاقتصادية' : 'ECONOMIC CALENDAR'; l.color = S7.accent; }
+      else if (l.name === 'Headline') { l.text = lang === 'ar' ? 'أهم الأحداث' : 'Key events'; l.color = S7.fg; l.size = Math.round(l.size * 0.82); }
+      else if (l.name === 'Impact') l.color = S7.accent;
+      else if (l.name === 'Footer') { l.text = b.website || b.handle || b.name; l.color = S7.muted; }
+      else if (l.name === 'Date') l.color = S7.muted;
+      else if (l.name !== 'Currency label') l.color = S7.fg;
+      l.font = ar && l.name !== 'Time' ? ar : ['Kicker', 'Headline'].includes(l.name) ? head : body;
+    });
+    return L;
+  }
+
+  /* ---------- panel ---------- */
+  const tab = () => ED.liveTab || 'slide';
+  const stamp = (cfg) => (cfg && cfg.at ? `<span class="lv-ok" title="Data from ${esc(cfg.feed ? cfg.feed.source : '')}">● Updated ${esc(new Date(cfg.at).toLocaleTimeString('en-GB', { timeZone: schedTz() }))} ${esc((tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1])}</span>` : '');
+  function evRow(e, on, cfg) {
+    return `<button class="lv-ev ${on ? 'on' : ''}" data-act="lvPick" data-id="${esc(e.id)}" aria-pressed="${on}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><b class="t">${hhmm(e.at)}</b><span class="grow"><span class="n">${esc(cfg.lang === 'ar' ? e.ar : e.en)}</span><small>${esc(e.currency || e.country)} · ${'★'.repeat(IMP[e.impact])}</small></span>${e.actual != null ? `<span class="v">${esc(e.actual)}</span>` : ''}</button>`;
+  }
+  function bound(pg, d) {
+    const cfg = pg.live, map = cfg.map, events = cfg.events || [], tz = schedTz();
+    const list = choose(events, cfg, map.rows.length), chosen = new Set(list.map((e) => e.id));
+    const visible = events.filter((e) => cfg.impact.includes(e.impact) || chosen.has(e.id));
+    const r1 = map.rows[0], byId = new Map(pg.layers.map((l) => [l.id, l]));
+    const seg = (act, cur, opts) => `<div class="seg">${opts.map(([v, l]) => `<button class="${cur === v ? 'on' : ''}" data-act="${act}" data-v="${v}">${l}</button>`).join('')}</div>`;
+    const feedNote = cfg.err ? `<p class="xs-t" style="color:var(--neg)">${esc(cfg.err)}</p>` : cfg.feed ? `<p class="xs-t muted">${cfg.feed.count} events on ${esc(fmt(new Date(cfg.feed.date + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))} from ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback source)' : ''}. Times in ${esc(tzLabel(tz))}.</p>` : '<p class="xs-t muted">Loading events…</p>';
+    return `
+      <span class="label">Source</span><select class="field sm" id="lvSrc">${SOURCES.map(([v, l]) => `<option value="${v}" ${cfg.src === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <span class="label" style="margin-top:6px">Day</span>${seg('lvDay', cfg.day, [['publish', 'Post day'], ['today', 'Today'], ['tomorrow', 'Tomorrow'], ['fixed', 'Date']])}
+      ${cfg.day === 'fixed' ? `<input class="field sm" type="date" id="lvDate" value="${esc(cfg.date || nowIn(tz).date)}">` : `<p class="xs-t muted">${cfg.day === 'publish' ? 'Each scheduled post shows the events of the day it goes out.' : ''}</p>`}
+      <span class="label" style="margin-top:6px">Language</span>${seg('lvLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']])}
+      <span class="label" style="margin-top:6px">Impact</span><div class="chips">${['high', 'medium', 'low'].map((k) => `<button class="chip ${cfg.impact.includes(k) ? 'on' : ''}" data-act="lvImp" data-k="${k}">${IMP_WORD.en[k]}</button>`).join('')}</div>
+      <span class="label" style="margin-top:6px">Countries</span><div class="chips">${CTRY.map(([k, l]) => `<button class="chip ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}">${l}</button>`).join('')}</div>
+      <div class="row sp" style="margin-top:6px"><span class="label" style="margin:0">Events on the slide · ${list.length}/${map.rows.length}</span>${cfg.pick ? '<button class="btn link sm" data-act="lvAuto">Auto-pick</button>' : '<span class="xs-t muted">Auto-picked</span>'}</div>
+      ${feedNote}
+      <div class="lv-evs">${visible.length ? visible.map((e) => evRow(e, chosen.has(e.id), cfg)).join('') : cfg.events ? '<p class="xs-t muted">No event matches these filters on that day. The rows stay hidden until there is one.</p>' : '<div class="skel" style="height:52px"></div><div class="skel" style="height:52px"></div><div class="skel" style="height:52px"></div>'}</div>
+      <div class="swlist lv-sw">
+        <div class="swrow"><div class="grow"><b>Actual and forecast</b><p>Hide the figures line when off, or when an event has none.</p></div>${sw(cfg.values, 'lvVals', '', 'Actual and forecast')}</div>
+        <div class="swrow"><div class="grow"><b>Update automatically</b><p>New figures appear while the studio is open, and before every scheduled post is sent.</p></div>${sw(!cfg.paused, 'lvPause', '', 'Update automatically')}</div>
+      </div>
+      <span class="label">Check for new data every</span><select class="field sm" id="lvEvery">${EVERY.map(([v, l]) => `<option value="${v}" ${+cfg.every === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <button class="btn secondary" data-act="lvRefresh">${ic('refresh', 16)}Refresh now</button>
+      <details class="lv-how"><summary>How we read this slide</summary>
+        <p class="xs-t muted">${map.engine === 'claude' ? `Analysed by Claude${map.model ? ' (' + esc(map.model) + ')' : ''}` : 'Read from the layout'}. ${esc(map.reason || '')}${map.note ? ' ' + esc(map.note) : ''}</p>
+        ${r1 ? r1.fields.map((f, n) => `<div class="lv-map"><span class="tx" title="${esc((cfg.orig[f.layerId] || {}).text || '')}">${esc(((cfg.orig[f.layerId] || {}).text || (byId.get(f.layerId) || {}).text || '').slice(0, 26))}</span><select class="field sm" data-lvrole="${n}">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
+        ${map.date ? `<div class="lv-map"><span class="tx">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 26))}</span><span class="xs-t muted">Date</span></div>` : ''}
+        <p class="xs-t muted">Based on row 1: the other ${map.rows.length - 1} rows follow the same pattern. Edit colours, fonts and layout freely; after moving or adding text, re-analyze.</p>
+        <div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn secondary sm" data-act="lvAnalyze">Re-analyze design</button><button class="btn ghost sm" data-act="lvRemove" style="color:var(--neg)">Remove live data</button></div>
+      </details>`;
+  }
+  function unboundSlide(d, i) {
+    const r = peek.get(pageSig(d.pages[i])), found = r && !(r instanceof Promise) ? r : null; if (!found) peekPage(d, i);
+    const card = !found ? '<div class="lv-card"><div class="skel" style="height:14px;width:60%"></div><div class="skel" style="height:12px;width:85%;margin-top:8px"></div></div>'
+      : found.isCalendar ? `<div class="lv-card"><b>Calendar design found</b><p>${found.rows.length} rows found. We keep your design and make its text live.</p></div>`
+        : '<div class="lv-card"><b>No calendar found yet</b><p>Claude can still look for one, or build a template from your Brand Kit.</p></div>';
+    return `${card}<button class="btn primary lv-go" data-act="lvAnalyze">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="xs-t muted" style="text-align:center">Nothing is replaced. Only the text becomes live.</p>`;
+  }
+  function unboundBrand(d) {
+    const b = brand(), [w, h] = RATIOS[d.ratio], st = ED.liveStyle || 'dark', rows = ED.liveRows || 5;
+    return `<div class="lv-card row" style="gap:14px"><span class="lv-dots">${b.colors.slice(0, 5).map((c) => `<i style="background:${esc(c.hex)}"></i>`).join('')}</span><div class="grow"><b>${esc(b.name)} Brand Kit</b><p>${esc(b.fonts.heading)} · ${esc(b.fonts.body)}<br>${w}×${h} · up to 5 rows</p></div></div>
+      <span class="label" style="margin-top:6px">Style</span><div class="seg">${[['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']].map(([v, l]) => `<button class="${st === v ? 'on' : ''}" data-act="lvStyle" data-v="${v}">${l}</button>`).join('')}</div>
+      <span class="label" style="margin-top:6px">Rows</span><div class="seg">${[3, 4, 5].map((n) => `<button class="${rows === n ? 'on' : ''}" data-act="lvRows" data-v="${n}">${n}</button>`).join('')}</div>
+      <button class="btn primary lv-go" data-act="lvBuild">${ic('wand', 18)}Build template from Brand Kit</button><p class="xs-t muted" style="text-align:center">Replaces this slide with a new template. You can undo it.</p>`;
+  }
+  function livePanel(p) {
+    const d = ED.d, pg = curP(), cfg = pg.live && pg.live.map ? pg.live : null;
+    let h = `<div class="row sp"><h3>Live data</h3>${stamp(cfg)}</div><p class="sm-t muted">${cfg ? 'This slide is a live template: its texts follow the economic calendar.' : 'Make this slide live without changing its design, or build a new template from your Brand Kit.'}</p>`;
+    if (cfg) h += bound(pg, d);
+    else {
+      h += `<div class="seg lv-tabs"><button class="${tab() === 'slide' ? 'on' : ''}" data-act="lvTab" data-v="slide">${ic('layers', 15)}This slide</button><button class="${tab() === 'brand' ? 'on' : ''}" data-act="lvTab" data-v="brand">${ic('palette', 15)}Brand Kit</button></div>`;
+      h += tab() === 'slide' ? unboundSlide(d, ED.pi) : unboundBrand(d);
+      h += `<p class="xs-t muted">Designing in Figma? Import it from the <button class="btn link sm" data-act="edTab" data-k="figma" style="padding:0;height:auto">Figma tab</button>, then come back: we find the calendar on the slide.</p>`;
+    }
+    p.innerHTML = h;
+    if (cfg && !cfg.events) refresh(d, { force: true });
+  }
+  const _pn23 = edPanel;
+  edPanel = function () {
+    const p = $('#edPanel');
+    if (ED.tab === 'data' && p && ED.d) { p.classList.remove('agent'); return livePanel(p); }
+    return _pn23();
+  };
+
+  /* ---------- actions ---------- */
+  const cfgNow = () => curP().live;
+  const reapply = () => { const d = ED.d; d && refresh(d, { force: true }); };
+  const busyWith = (sel, label) => { const b = $(sel); b && busy(b, true, label); return () => b && b.isConnected && busy(b, false); };
+  Object.assign(ACT, {
+    lvTab: (a) => { ED.liveTab = a.dataset.v; edPanel(); },
+    lvStyle: (a) => { ED.liveStyle = a.dataset.v; edPanel(); },
+    lvRows: (a) => { ED.liveRows = +a.dataset.v; edPanel(); },
+    lvAnalyze: async () => {
+      if (!canEdit()) return; const d = ED.d, i = ED.pi, pg = d.pages[i], done = busyWith('[data-act=lvAnalyze]', 'Analyzing…');
+      try {
+        const keep = pg.live && pg.live.map ? pg.live : null;
+        if (keep) unbind(pg); // read the original texts, not the live ones
+        const map = await analyze(d, i, 'auto');
+        if (!map.isCalendar || !map.rows.length) { if (keep) bind(pg, keep.map, keep); done(); edPanel(); return toast(map.note || map.reason || 'No calendar found on this slide'); }
+        mutate(() => bind(pg, map, keep));
+        toast(`${map.engine === 'claude' ? 'Claude' : 'Layout'} found ${map.rows.length} rows. The slide is now live.`);
+        await refresh(d, { silent: false, force: true });
+      } catch (e) { done(); toast('Could not analyze the slide: ' + e.message); }
+    },
+    lvBuild: async () => {
+      if (!canEdit()) return; const d = ED.d, pg = curP(), [w, h] = RATIOS[d.ratio], done = busyWith('[data-act=lvBuild]', 'Building…');
+      try {
+        const lang = ED.lang === 'ar' ? 'ar' : 'en', layers = brandCalendar(w, h, ED.liveStyle || 'dark', lang, ED.liveRows || 5);
+        const map = await api('/social/calendar/analyze', { method: 'POST', body: { layers: layersIn({ layers }), w, h, engine: 'heuristic' } });
+        mutate(() => { pg.layers = layers; pg.bg = layers[0].fill; ED.sel = null; delete pg.live; if (map.isCalendar) bind(pg, map, { lang }); d.tpl = 'calendar'; });
+        toast('Template built from your Brand Kit with live data');
+        await refresh(d, { silent: false, force: true });
+      } catch (e) { done(); toast('Could not build the template: ' + e.message); }
+    },
+    lvRemove: () => { const pg = curP(); if (!pg.live) return; mutate(() => unbind(pg)); toast('Live data removed. The slide keeps its original text.'); },
+    lvRefresh: async () => { const done = busyWith('[data-act=lvRefresh]', 'Checking…'); feed.clear(); await refresh(ED.d, { silent: false, force: true }); done(); },
+    lvDay: (a) => { const c = cfgNow(); c.day = a.dataset.v; c.pick = null; save(); reapply(); },
+    lvLang: (a) => { const c = cfgNow(); c.lang = a.dataset.v; save(); reapply(); },
+    lvImp: (a) => { const c = cfgNow(), k = a.dataset.k; c.impact = c.impact.includes(k) ? c.impact.filter((x) => x !== k) : [...c.impact, k]; if (!c.impact.length) c.impact = [k]; c.pick = null; save(); reapply(); },
+    lvCty: (a) => { const c = cfgNow(), k = a.dataset.k; c.countries = c.countries.includes(k) ? c.countries.filter((x) => x !== k) : [...c.countries, k]; if (!c.countries.length) c.countries = [k]; c.pick = null; save(); reapply(); },
+    lvPick: (a) => {
+      const c = cfgNow(), n = c.map.rows.length, cur = choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id;
+      let next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+      if (next.length > n) { toast(`This design has ${n} rows: untick an event first`); return; }
+      const order = new Map((c.events || []).map((e, i) => [e.id, i])); c.pick = next.sort((x, y) => order.get(x) - order.get(y)); save(); reapply();
+    },
+    lvAuto: () => { cfgNow().pick = null; save(); reapply(); },
+    lvVals: () => { const c = cfgNow(); c.values = !c.values; save(); reapply(); },
+    lvPause: () => { const c = cfgNow(); c.paused = !c.paused; save(); if (!c.paused) reapply(); else edPanel(); },
+  });
+  document.addEventListener('change', (e) => {
+    const t = e.target; if (!ED.d || ED.tab !== 'data' || !curP().live) return; const c = cfgNow();
+    if (t.id === 'lvSrc') { c.src = t.value; save(); reapply(); }
+    else if (t.id === 'lvEvery') { c.every = +t.value; save(); edPanel(); }
+    else if (t.id === 'lvDate' && t.value) { c.date = t.value; c.pick = null; save(); reapply(); }
+    else if (t.dataset && t.dataset.lvrole != null) {
+      // one fix applies to the same layer position in every row
+      const n = +t.dataset.lvrole, role = t.value;
+      mutate(() => c.map.rows.forEach((r) => { const f = r.fields[n]; if (f) { f.role = role; f.template = `{${role}}`; } }));
+      reapply();
+    }
+  });
+
+  /* ---------- automatic updates ---------- */
+  async function tick() {
+    if (document.hidden || persist.readOnly) return;
+    const now = Date.now();
+    for (const d of S.designs) {
+      const due = livePages(d).some((pg) => !pg.live.paused && now - (pg.live.at || 0) >= (pg.live.every || 15) * 60_000);
+      if (due) await refresh(d);
+      // scheduled posts on another day than the preview: re-send their slides when that day's data changes
+      if (!livePages(d).length || !PUB) continue;
+      for (const p of S.posts.filter((x) => x.d === d.id && x.status === 'Scheduled' && x.publish && x.publish.state === 'pending')) {
+        try {
+          const sigs = [];
+          for (const pg of livePages(d)) { const r = await fetchDay(pg.live, dayFor(pg.live, d, p)); sigs.push(sigOf(r.events, pg.live, pg.live.map.rows.length)); }
+          const sig = sigs.join('#'); if (p.liveSig !== sig) { const first = p.liveSig == null; p.liveSig = sig; save(); if (!first) PUB.prepare(p); }
+        } catch (e) { /* next tick */ }
+      }
+    }
+  }
+  setInterval(() => { tick(); }, 60_000);
+  setTimeout(() => { tick(); }, 4000);
+  const _oe23 = openEditor;
+  openEditor = function (id) { _oe23(id); const d = ED.d; if (d && livePages(d).some((pg) => Date.now() - (pg.live.at || 0) > 60_000)) refresh(d); };
 })();
 
 /* ============ first paint, with every renderer installed ============ */
