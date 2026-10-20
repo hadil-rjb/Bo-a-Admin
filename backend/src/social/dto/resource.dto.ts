@@ -49,12 +49,15 @@ export class CreateTemplateDto {
   @Matches(RATIO_RE) ratio!: string;
   @IsOptional() @IsString() bg?: string;
   @IsArray() layers!: Record<string, unknown>[];
+  /** Live data settings of a dynamic slide (mapping, filters, language): the template stays live when reused */
+  @IsOptional() @IsObject() live?: Record<string, unknown>;
 }
 
 export class UpdateTemplateDto {
   @IsOptional() @IsString() @IsNotEmpty() @MaxLength(80) name?: string;
   @IsOptional() @IsString() bg?: string;
   @IsOptional() @IsArray() layers?: Record<string, unknown>[];
+  @IsOptional() @IsObject() live?: Record<string, unknown>;
 }
 
 export class CreatePostDto {

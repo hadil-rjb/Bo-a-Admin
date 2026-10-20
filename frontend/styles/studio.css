@@ -1454,17 +1454,24 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 #edPanel.drop{outline:2px dashed var(--accent);outline-offset:-6px}
 .lv-progress{display:flex;align-items:center;gap:12px;font-size:14px;color:var(--text-2)}.lv-progress .spin{width:18px;height:18px}
 /* events */
-.lv-evs{display:flex;flex-direction:column;gap:6px;max-height:340px;overflow-y:auto;margin:0 -4px;padding:0 4px;scrollbar-width:thin}
-.lv-ev{display:flex;align-items:center;gap:10px;width:100%;min-height:54px;padding:9px 10px;border:1px solid var(--border);border-radius:11px;text-align:left;background:var(--surface);transition:border-color .12s,background .12s}
+.lv-evs{position:relative;display:flex;flex-direction:column;gap:6px;max-height:min(460px,55vh);overflow-y:auto;margin:0 -6px;padding:0 6px 8px;scrollbar-width:thin;scrollbar-gutter:stable}
+.lv-ev{display:flex;align-items:flex-start;gap:10px;width:100%;flex:none;padding:10px 12px;border:1px solid var(--border);border-radius:11px;text-align:left;background:var(--surface);transition:border-color .12s,background .12s}
 .lv-ev:hover{border-color:var(--text-3)}
 .lv-ev.on{border-color:var(--accent);background:rgba(253,14,53,.05)}
-.lv-ev .cbx{width:18px;height:18px}
-.lv-ev .t{flex-shrink:0;min-width:40px;white-space:nowrap;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums}
-.lv-ev .grow{min-width:0}
-.lv-ev .n{display:block;font-size:13px;line-height:1.3;color:var(--text-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lv-ev small{display:block;margin-top:2px;font-size:11px;color:var(--text-3)}
-.lv-ev small .st{color:var(--accent);letter-spacing:1px}
-.lv-ev .v{flex-shrink:0;font-size:12px;font-weight:600;color:var(--pos);font-variant-numeric:tabular-nums}
+.lv-ev .cbx{width:18px;height:18px;flex:none;margin-top:1px}
+.lv-evb{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.lv-ev .r1{display:flex;align-items:center;gap:8px;min-width:0}
+.lv-ev .n{flex:1;min-width:0;font-size:13px;font-weight:500;line-height:1.35;color:var(--text-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lv-ev .st{flex:none;font-size:10.5px;letter-spacing:.5px;color:var(--text-3)}
+.lv-ev .st.i3{color:var(--accent)}.lv-ev .st.i2{color:#f59e0b}
+.lv-ev .r2{display:flex;align-items:center;flex-wrap:wrap;gap:3px 10px;font-size:11.5px;line-height:1.4;color:var(--text-3)}
+.lv-ev .t{flex:none;font-weight:600;color:var(--text-2);font-variant-numeric:tabular-nums}
+.lv-ev .cc{flex:none;display:inline-flex;align-items:center;gap:5px;font-weight:600;color:var(--text-2)}
+.lv-ev .cc .lv-flag{width:15px;height:11px}
+.lv-ev .fgs{display:inline-flex;flex-wrap:wrap;gap:3px 8px;margin-left:auto}
+.lv-ev .fg{flex:none;display:inline-flex;align-items:baseline;gap:3px;font-weight:600;color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.lv-ev .fg em{font-style:normal;font-size:10px;font-weight:600;color:var(--text-3)}
+.lv-ev .fg.a{color:var(--pos)}
 .lv-empty{padding:14px;border-radius:10px;background:var(--pill);font-size:12px;line-height:1.45;color:var(--text-2);text-align:center}
 /* switches */
 .lv-sw{display:flex;flex-direction:column}
@@ -1511,3 +1518,75 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ai-uses li b{color:var(--text-1);font-weight:500}
 .prov.pick[disabled]{cursor:default;opacity:1}
 }}
+
+/* v24 Live data: short controls, period picker, flag and star filters, events grouped by day */
+.lv-seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr}
+.lv-seg button{padding:0 6px;white-space:nowrap}
+.lv-period{display:flex;align-items:center;gap:4px;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.lv-pa{flex:none;width:30px;height:30px;display:grid;place-items:center;border-radius:7px;color:var(--text-2)}
+.lv-pa:hover{background:var(--pill);color:var(--text-1)}
+.lv-pd{position:relative;flex:1;min-width:0;height:30px;display:flex;align-items:center;justify-content:center;gap:7px;border-radius:7px;font-size:13px;font-weight:600;color:var(--text-1);font-variant-numeric:tabular-nums}
+.lv-pd:hover{background:var(--pill)}
+.lv-pd .ic{color:var(--accent);flex:none}
+.lv-pd span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lv-imps{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.lv-impb{height:34px;display:flex;align-items:center;justify-content:center;gap:5px;border:1px solid var(--border);border-radius:9px;font-size:12.5px;font-weight:500;color:var(--text-2);background:var(--surface)}
+.lv-impb .st{font-size:10px;letter-spacing:.5px;color:var(--text-3)}
+.lv-impb.on{border-color:var(--accent);background:rgba(253,14,53,.07);color:var(--text-1)}
+.lv-impb.on.i3 .st{color:var(--accent)}.lv-impb.on.i2 .st{color:#f59e0b}.lv-impb.on.i1 .st{color:var(--text-2)}
+.lv-l em{margin-left:6px;font-style:normal;font-weight:500;letter-spacing:0;text-transform:none;color:var(--text-3)}
+.lv-l .lv-all{float:right;height:auto;padding:0;font-size:11.5px;letter-spacing:0;text-transform:none}
+.lv-ctys{display:grid;grid-template-columns:repeat(5,1fr);gap:5px}
+.lv-cty{height:30px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-weight:600;letter-spacing:.02em;color:var(--text-3);background:var(--surface);transition:border-color .12s,color .12s,background .12s}
+.lv-cty:hover{color:var(--text-1);border-color:var(--text-3)}
+.lv-cty.on{border-color:var(--accent);background:rgba(253,14,53,.07);color:var(--text-1)}
+.lv-flag{width:16px;height:12px;flex:none;border-radius:2px;object-fit:cover;box-shadow:0 0 0 1px rgba(0,0,0,.08)}
+.lv-src{font-size:11.5px;color:var(--text-3);margin-bottom:2px}
+.lv-evd{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:10px 4px 4px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3)}
+.lv-evd:first-child{padding-top:2px}
+.lv-evd b{font-weight:600;color:var(--text-2)}
+.lv-evd span{text-transform:none;letter-spacing:0}
+@media (max-width:380px){.lv-ctys{grid-template-columns:repeat(4,1fr)}}
+/* v25 period picker: a calendar popover (weeks light up Monday to Friday) */
+.lv-period{position:relative}
+.lv-pd .ic:last-child{color:var(--text-3);transition:transform .15s}
+.lv-pd.on{background:var(--pill)}.lv-pd.on .ic:last-child{transform:rotate(180deg)}
+.lv-cal{position:absolute;z-index:30;top:calc(100% + 6px);left:0;right:0;padding:12px;border:1px solid var(--border);border-radius:14px;background:var(--surface);box-shadow:0 18px 40px rgba(15,23,42,.18),0 2px 6px rgba(15,23,42,.06);animation:tin .14s ease-out}
+.lv-cal-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.lv-cal-h b{font-size:13.5px;font-weight:600}
+.lv-cal-dw,.lv-cal-w{display:grid;grid-template-columns:repeat(7,1fr)}
+.lv-cal-dw span{height:24px;display:grid;place-items:center;font-size:10.5px;font-weight:600;color:var(--text-3)}
+.lv-cal-dw .we{opacity:.6}
+.lv-cal-w{margin-top:2px;border-radius:9px}
+.lv-cal-w button{height:32px;display:grid;place-items:center;border-radius:8px;font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--text-1)}
+.lv-cal-w button:hover{background:var(--pill)}
+.lv-cal-w button.out{color:var(--text-3);opacity:.55}
+.lv-cal-w button.we{color:var(--text-3)}
+.lv-cal-w button.today{box-shadow:inset 0 0 0 1px var(--accent);font-weight:600}
+.lv-cal-w button.sel{background:var(--accent);color:#fff;font-weight:600}
+/* weekly: the whole row is one choice */
+.lv-cal-w.wk{cursor:pointer}
+.lv-cal-w.wk:hover{background:var(--pill)}
+.lv-cal-w.wk:hover button{background:transparent}
+.lv-cal-w.wk.on{background:rgba(253,14,53,.1)}
+.lv-cal-w.wk button.in{color:var(--accent);font-weight:600}
+.lv-cal-w.wk.on button.in:first-child{background:var(--accent);color:#fff}
+.lv-cal-w.wk.on button.in:nth-child(5){background:var(--accent);color:#fff}
+.lv-cal-f{display:flex;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.lv-cal-f button{flex:1;height:30px;border-radius:8px;font-size:12px;font-weight:600;color:var(--text-2);background:var(--pill)}
+.lv-cal-f button:hover{color:var(--text-1)}
+.lv-sec:has(.lv-cal){position:relative;z-index:20}
+.lv-full{display:flex;align-items:center;gap:6px;padding:7px 9px;border-radius:9px;background:rgba(251,191,36,.12);font-size:11.5px;color:var(--text-1)}
+.lv-full .ic{flex:none;color:#d97706}
+.lv-evs.full .lv-ev:not(.on){opacity:.55}
+.lv-evs.full .lv-ev:not(.on):hover{opacity:.8}
+.lv-evd{align-items:center;margin:6px 2px 0;padding:8px 0 2px;border-top:1px solid var(--border)}
+.lv-evd:first-child{margin-top:0;padding-top:2px;border-top:0}
+.lv-evd span{padding:1px 7px;border-radius:99px;background:var(--pill);font-size:10.5px;font-weight:600;color:var(--text-2)}
+/* v26 responsive: narrow panels (mobile sheet, small laptops) */
+@media (max-width:420px){.lv-ctys{grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}.lv-cty{height:28px;font-size:11.5px}.lv-impb{font-size:12px;gap:3px}.lv-ev{padding:9px 10px;gap:8px}}
+/* phones: the panel is a bottom sheet that scrolls itself, so the list doesn't get a second scroll */
+@media (max-width:700px){.lv-evs{max-height:none;overflow:visible;margin:0;padding:0}}
+/* brand templates made from a live (dynamic) slide */
+.thumb{position:relative}
+.tpl-live{position:absolute;left:6px;top:6px;z-index:1;display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border-radius:99px;background:var(--accent);color:#fff;font:600 10px/1.4 var(--sans);box-shadow:0 2px 6px rgba(0,0,0,.25)}
