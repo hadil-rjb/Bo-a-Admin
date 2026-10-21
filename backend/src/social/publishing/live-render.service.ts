@@ -71,11 +71,31 @@ export class LiveRenderService implements OnModuleDestroy {
     if (this.disabledByEnv) return null;
     const post = await this.posts.findOne({ brandId, id: postId }).lean<Record<string, any>>();
     if (!post?.d) return null;
+    // an automation's post was rendered with fresh data a few minutes ago, when it was armed
+    if (post.auto && post.media?.live?.at && Date.now() - new Date(post.media.live.at).getTime() < 15 * 60_000) return null;
     const design = await this.designs.findOne({ brandId, id: post.d }).lean<Record<string, any>>();
     if (!hasLive(design)) return null;
     const ws = await this.workspaces.findById(WORKSPACE_ID).lean();
+    if (!liveServerOn((ws?.set || {}) as Record<string, unknown>)) return null;
+    const out = await this.renderPost(brandId, postId);
+    if (!out) return null;
+    await this.publisher.replaceRendered(brandId, postId, out.images, { by: "server", at: new Date(), pages: out.live });
+    return { brandId, postId, ms: out.ms, pages: out.live };
+  }
+
+  /**
+   * Renders any post's design with the studio engine (live data applied for its day), like a studio export.
+   * Returns the slides, what the live pages showed and the slides' texts (for captions); null when the post,
+   * design or brand is missing or rendering is switched off for this server.
+   */
+  async renderPost(brandId: string, postId: string): Promise<{ images: string[]; live: any[]; texts: string[]; ms: number } | null> {
+    if (this.disabledByEnv) return null;
+    const post = await this.posts.findOne({ brandId, id: postId }).lean<Record<string, any>>();
+    if (!post?.d) return null;
+    const design = await this.designs.findOne({ brandId, id: post.d }).lean<Record<string, any>>();
+    if (!design) return null;
+    const ws = await this.workspaces.findById(WORKSPACE_ID).lean();
     const set = (ws?.set || {}) as Record<string, unknown>;
-    if (!liveServerOn(set)) return null;
     const brand = await this.brands.findById(brandId).lean<Record<string, any>>();
     if (!brand) return null;
 
@@ -88,16 +108,15 @@ export class LiveRenderService implements OnModuleDestroy {
       set: { ...set, sec: "accounts" },
     };
     const started = Date.now();
-    const { images, live } = await this.render(state, String(post.d), postId);
-    await this.publisher.replaceRendered(brandId, postId, images, { by: "server", at: new Date(), pages: live });
-    const r = { brandId, postId, ms: Date.now() - started, pages: live };
+    const { images, live, texts } = await this.render(state, String(post.d), postId);
     for (const p of live) {
       if (p.error) this.log.warn(`Post ${postId} (${brandId}) slide ${p.page + 1}: live data unavailable (${p.error}), kept the last data`);
       else if (p.kind) this.log.log(`Post ${postId} (${brandId}) slide ${p.page + 1}: ${p.kind} · ${p.source} · ${(p.shown || []).join(" | ") || "none"}`);
       else this.log.log(`Post ${postId} (${brandId}) slide ${p.page + 1}: ${p.date} · ${p.source} · ${p.shown.length}/${p.events} events: ${p.shown.join(" | ") || "none"}`);
     }
-    this.log.log(`Refreshed live post ${postId} (${brandId}): ${images.length} slide(s) in ${r.ms} ms`);
-    return r;
+    const ms = Date.now() - started;
+    this.log.log(`Rendered post ${postId} (${brandId}): ${images.length} slide(s) in ${ms} ms`);
+    return { images, live, texts: texts || [], ms };
   }
 
   /** One render at a time (memory), each in its own page */
@@ -107,7 +126,7 @@ export class LiveRenderService implements OnModuleDestroy {
     return job;
   }
 
-  private async renderNow(state: unknown, designId: string, postId: string): Promise<{ images: string[]; live: any[] }> {
+  private async renderNow(state: unknown, designId: string, postId: string): Promise<{ images: string[]; live: any[]; texts?: string[] }> {
     if (this.idle) clearTimeout(this.idle);
     const browser = await this.open();
     const page = await browser.newPage();
@@ -127,7 +146,7 @@ export class LiveRenderService implements OnModuleDestroy {
       await page.waitForFunction("window.bogaReady === true", { timeout: RENDER_TIMEOUT_MS });
       await page.evaluate((s) => (window as any).bogaBoot(s), state as any);
       const out = await Promise.race([
-        page.evaluate((d, p) => (window as any).bogaRender(d, p), designId, postId) as Promise<{ images: string[]; live: any[] }>,
+        page.evaluate((d, p) => (window as any).bogaRender(d, p), designId, postId) as Promise<{ images: string[]; live: any[]; texts?: string[] }>,
         new Promise<never>((_, no) => setTimeout(() => no(new Error("Rendering timed out")), RENDER_TIMEOUT_MS)),
       ]);
       if (!out?.images?.length) throw new Error("The studio rendered no slide");

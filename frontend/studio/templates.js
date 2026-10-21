@@ -127,6 +127,35 @@ export function tplNews(w, h, o = {}) {
     Tx(0, h - band + Math.round(band / 2) - 15, w, o.site, { name: 'Footer', size: 25, weight: 700, font: o.body, color: o.onAccent, align: 'center', ls: 1 }),
   ];
 }
+/** Weekly economic calendar: one block per day (bar, country with its flag, event lines), rebuilt live for Monday–Friday */
+export function tplCalendarWeek(w, h, o = {}) {
+  o = { ...FEED_LOOK, ...o };
+  const ar = o.lang === 'ar', al = ar ? 'right' : 'left', dir = ar ? 'rtl' : 'ltr', P = 64, cw = w - P * 2, X = (x, wd) => (ar ? w - x - wd : x);
+  const wf = (f) => (ar ? o.ar || 'Cairo' : f), compact = h < 1200, band = compact ? 84 : 100;
+  const titleY = P + 96, panelY = titleY + (compact ? 150 : 176), panelH = h - band - 40 - panelY, ix = P + 24, iw = cw - 48;
+  const block = (y, day, country, flag, lines) => {
+    const by = y, gy = by + 52 + 18, ly = gy + 36;
+    return [
+      Rc(ix, by, iw, 52, o.accent, { name: 'Day bar', r: 12, op: 0.92 }),
+      Tx(X(ix + 20, iw - 40), by + 13, iw - 40, day, { name: 'Day', size: 24, weight: 700, font: wf(o.head), color: o.onAccent, align: al, dir }),
+      Rc(X(ix + 4, 32), gy + 4, 32, 22, flag, { name: 'Flag', r: 4 }),
+      Tx(X(ix + 48, iw - 48), gy, iw - 48, country, { name: 'Country', size: 23, weight: 700, font: wf(o.body), color: o.fg, align: al, dir }),
+      Tx(X(ix + 4, iw - 8), ly, iw - 8, lines.join('\n'), { name: 'Events', size: 20, weight: 400, font: wf(o.body), color: o.muted, align: al, lh: 1.55, lines: lines.length, dir }),
+    ];
+  };
+  return [
+    BG(w, h, o.bg),
+    logoLayer(X(P, 260), P - 4, 260, 64, o, al),
+    Tx(X(P, cw), titleY, cw, ar ? 'أجندة الأسبوع' : 'WEEK AHEAD', { name: 'Kicker', size: 22, weight: 700, font: wf(o.body), color: o.accent === '#FFFFFF' ? o.fg : o.accent, align: al, ls: ar ? 0 : 3, dir }),
+    Tx(X(P, cw), titleY + 34, cw, ar ? 'المفكرة الاقتصادية' : 'Economic calendar', { name: 'Headline', size: compact ? 58 : 66, weight: 800, font: wf(o.head), color: o.fg, align: al, ls: ar ? 0 : -1.5, dir }),
+    Tx(X(P, cw), titleY + (compact ? 106 : 120), cw, 'Oct 19 – 23, 2026', { name: 'Week', size: 26, weight: 500, font: o.body, color: o.muted, align: al, dir: 'ltr' }),
+    Rc(P, panelY, cw, panelH, o.card, { name: 'Panel', r: 28, stroke: o.line, sw: 2 }),
+    ...block(panelY + 24, 'Monday, October 19', 'United States', '#B22234', ['• Core CPI m/m – 13:30 GMT+1', '• Retail Sales m/m – 15:00 GMT+1']),
+    ...block(panelY + 24 + 52 + 18 + 36 + 2 * 31 + 30, 'Tuesday, October 20', 'Euro Area', '#003399', ['• ECB Press Conference – 14:45 GMT+1']),
+    Rc(0, h - band, w, band, o.accent, { name: 'Footer band' }),
+    Tx(0, h - band + Math.round(band / 2) - 15, w, o.site, { name: 'Footer', size: 25, weight: 700, font: o.body, color: o.onAccent, align: 'center', ls: 1 }),
+  ];
+}
 export function tplQuote(w, h) {
   return [
     BG(w, h, '#fd0e35'),
@@ -208,6 +237,7 @@ export function tplEvent(w, h) {
 }
 export const TPL = {
   calendar: { name: 'Economic calendar', cat: 'Live data', fn: (w, h) => tplCalendar(w, h, 'en'), live: 1 },
+  calendarWeek: { name: 'Weekly economic calendar', cat: 'Live data', fn: (w, h) => tplCalendarWeek(w, h), live: 1 },
   price: { name: 'Price alert', cat: 'Live data', fn: (w, h) => tplPrice(w, h), live: 1 },
   news: { name: 'News post', cat: 'Live data', fn: (w, h) => tplNews(w, h), live: 1 },
   article: { name: 'Blog article promo', cat: 'Blog', fn: tplArticle },

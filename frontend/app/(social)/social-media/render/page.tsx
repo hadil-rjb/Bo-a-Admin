@@ -14,11 +14,11 @@ import { useEffect } from "react";
  * The page holds no data and makes no API calls: requests the engine makes go to window.bogaApi,
  * which the API exposes to the page (only live data is answered: calendar events, quotes, news, photos).
  */
-type Renderer = { renderPost: (designId: string, postId: string) => Promise<{ images: string[]; live: unknown[] }> };
+type Renderer = { renderPost: (designId: string, postId: string) => Promise<{ images: string[]; live: unknown[]; texts?: string[] }> };
 type Win = Window & {
   bogaApi?: (path: string) => Promise<unknown>;
   bogaBoot?: (state: unknown) => Promise<boolean>;
-  bogaRender?: (designId: string, postId: string) => Promise<{ images: string[]; live: unknown[] }>;
+  bogaRender?: (designId: string, postId: string) => Promise<{ images: string[]; live: unknown[]; texts?: string[] }>;
   bogaReady?: boolean;
 };
 
