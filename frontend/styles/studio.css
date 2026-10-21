@@ -1776,3 +1776,21 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .pside-list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin:0 -6px;padding:0 6px 6px;scrollbar-width:thin;display:flex;flex-direction:column;gap:8px}
 .pside-list .label{margin:6px 0 0}
 @media (max-width:1180px){.pl7 .pside{position:static;max-height:none}.pside-list{max-height:none;overflow:visible}.pside-list .tray{flex-direction:row;overflow-x:auto}.pside-list .tray>*{flex:0 0 240px}}
+/* planner toolbar dropdowns (status, best times) */
+.pdd .ddb{width:auto;height:36px;gap:7px;padding:0 10px 0 12px;font-size:13px;border-radius:10px;white-space:nowrap}
+.pdd .pdd-l{color:var(--text-3)}
+.pdd .ddb b{font-weight:600;color:var(--text-1)}
+.pdd .ddb .ic{color:var(--text-3);transition:transform .15s}
+.pdd .ddb:has(+ .ddm:not([hidden])) .ic{transform:rotate(180deg)}
+.pdd.set .ddb{border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
+.pdd .ddm{left:auto;right:0;min-width:210px;max-height:320px;padding:6px}
+.pdd .ddm button{font-size:13.5px;gap:10px}
+.pdot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--c);box-shadow:0 0 0 2px color-mix(in srgb,var(--c) 22%,transparent)}
+.pdot.off{background:transparent;box-shadow:inset 0 0 0 1.5px var(--text-3)}
+/* calendar and designs panel: exactly the same height, each with its own scroll */
+.pl7{--plh:min(calc(100vh - 230px),980px)}
+.pl7 .cal-body{height:calc(var(--plh) - 55px);min-height:365px}
+.pl7 .pside{height:var(--plh);min-height:420px;max-height:none}
+.pl7 .pcal.month,.pl7 .pcal.list{min-height:var(--plh)}
+@media (max-width:1180px){.pl7 .pside{height:auto;min-height:0}}
+@media (max-width:760px){.pl7 .cal-body{height:calc(100vh - 330px);min-height:360px}}

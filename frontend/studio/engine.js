@@ -3101,6 +3101,11 @@ Object.assign(IC, {
   /* ---------- planner ---------- */
   Object.assign(P, { view: 'week', mo: new Date(), fPf: null, fSt: 'All', best: true, bn: null });
   try { if (localStorage.getItem('uxb.pside') === '0') P.side = false; const bn = localStorage.getItem('uxb.pbest'); if (bn != null) P.bestNet = bn || null; } catch (e) {}
+  /** Toolbar dropdown in the studio's style: a label, the current choice with its color dot, and a menu of choices */
+  const ST_C = { Scheduled: '#3b82f6', Draft: '#94a3b8', Approved: '#8b5cf6', Published: '#16a34a', Failed: '#ef4444' };
+  const pdd = (k, label, val, opts) => { const cur = opts.find((o) => o[0] === val) || opts[0];
+    return `<div class="dd pdd ${val && val !== 'All' ? 'set' : ''}"><button type="button" class="ddb" data-act="ddt" aria-haspopup="listbox" aria-label="${label}: ${esc(cur[1])}">${cur[2] ? `<i class="pdot" style="--c:${cur[2]}"></i>` : ''}<span class="pdd-l">${label}</span><b>${esc(k === 'st' && val === 'All' ? 'All' : cur[1])}</b>${ic('chevD', 14)}</button>
+      <div class="ddm" role="listbox" hidden>${opts.map(([v, l, c]) => `<button type="button" role="option" aria-selected="${v === val}" data-act="pddp" data-k="${k}" data-v="${esc(v)}" class="${v === val ? 'on' : ''}">${c ? `<i class="pdot" style="--c:${c}"></i>` : '<i class="pdot off"></i>'}<span class="grow">${esc(l)}</span>${v === val ? ic('check', 14) : ''}</button>`).join('')}</div></div>`; };
   /** Networks offered for best times (the connected ones, else all), and the one shown (null = off) */
   const bestNets = () => { const c = conn(); return c.length ? c : Object.keys(PLATFORMS); };
   const bestNet = () => { const L = bestNets(); if (P.bestNet === null) return null; if (!P.bestNet || !L.includes(P.bestNet)) P.bestNet = L[0]; return P.bestNet; };
@@ -3206,8 +3211,8 @@ Object.assign(IC, {
       const stats = P.view === 'list' ? '' : `<div class="pstats">${stat(rs.filter((p) => p.status === 'Scheduled').length, 'Scheduled')}${stat(rs.filter((p) => p.status === 'Draft').length, 'Drafts')}${stat(rs.filter((p) => p.status === 'Published').length, 'Published')}${stat(open, 'Open days left')}</div>`;
       return `<div class="ptool"><b class="ttl">${title}</b>
         <div class="chips">${Object.entries(PLATFORMS).filter(([k]) => S.platforms[k]).map(([k, v]) => `<button class="pnet ${!P.fPf || P.fPf.has(k) ? 'on' : ''}" style="--c:${v.c}" data-act="pfn" data-k="${k}" aria-pressed="${!P.fPf || P.fPf.has(k)}"><i></i>${v.n}</button>`).join('')}</div>
-        <select class="field sm" id="pSt" style="width:136px" aria-label="Status filter">${['All', 'Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((s) => `<option value="${s}" ${P.fSt === s ? 'selected' : ''}>${s === 'All' ? 'All statuses' : s}</option>`).join('')}</select>
-        ${P.view === 'week' ? (() => { const bn = bestNet(); return `<label class="pbest ${bn ? 'on' : ''}" style="--c:${bn ? PLATFORMS[bn].c : 'var(--text-3)'}" title="Best times to post, shown in the calendar"><i></i><span>Best times</span><select id="pBest" aria-label="Best times for">${bestNets().map((k) => `<option value="${k}" ${bn === k ? 'selected' : ''}>${PLATFORMS[k].n}</option>`).join('')}<option value="" ${bn ? '' : 'selected'}>Off</option></select>${ic('chevD', 14)}</label>`; })() : ''}
+        ${pdd('st', 'Status', P.fSt, [['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((x) => [x, x, ST_C[x]])])}
+        ${P.view === 'week' ? (() => { const bn = bestNet(); return pdd('best', 'Best times', bn || '', [...bestNets().map((k) => [k, PLATFORMS[k].n, PLATFORMS[k].c]), ['', 'Off', '']]); })() : ''}
         <button class="btn secondary sm psidebtn ${P.side === false ? '' : 'on'}" data-act="pside" aria-pressed="${P.side !== false}" title="${P.side === false ? 'Show' : 'Hide'} designs, ideas and best times">${ic('layout', 16)}<span class="hide-sm">Panel</span></button></div>
         ${stats}<div class="pl7 ${P.side === false ? 'noside' : ''}"><div class="widget pcal ${P.view}" style="padding:${P.view === 'week' ? 0 : 10}px">${P.view === 'month' ? monthView() : P.view === 'list' ? listView() : weekView()}</div>${P.side === false ? '' : side()}</div>${P.view === 'week' ? (setTimeout(calScroll, 0), '') : ''}`;
     },
@@ -3218,6 +3223,12 @@ Object.assign(IC, {
     pfn: (a) => { const all = conn(), s = P.fPf ? new Set(P.fPf) : new Set(all), k = a.dataset.k; s.has(k) ? s.delete(k) : s.add(k); if (!s.size) s.add(k); P.fPf = all.every((x) => s.has(x)) ? null : s; route(); },
     pday: (a) => { P.view = 'week'; P.ws = monday(dparse(a.dataset.date)); P.focus = a.dataset.date; route(); },
     pfocus: (a) => { P.focus = a.dataset.date; route(); },
+    pddp: (a) => {
+      const k = a.dataset.k, v = a.dataset.v;
+      if (k === 'st') P.fSt = v;
+      if (k === 'best') { P.bestNet = v || null; try { localStorage.setItem('uxb.pbest', v); } catch (x) {} }
+      route();
+    },
     pside: () => { P.side = P.side === false; try { localStorage.setItem('uxb.pside', P.side ? '1' : '0'); } catch (e) {} route(); },
     pnew: (a) => openSchedule(null, { date: a && a.dataset && a.dataset.date, time: a && a.dataset && a.dataset.time }),
     pnewd: (a) => openSchedule(getD(a.dataset.id), {}),
