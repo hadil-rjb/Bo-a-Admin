@@ -305,7 +305,8 @@ function brandAv(b, size) {
 const allOn = () => !!(S.set && S.set.allBrands) && S.brands.length > 1;
 /** "All brands" avatar: the first brands side by side, overlapping, and "+N" for the others */
 const allAv = (size) => `<span class="bgrp ${size || 'md'}" aria-hidden="true">${S.brands.slice(0, 3).map((b) => brandAv(b, 'xs')).join('')}${S.brands.length > 3 ? `<span class="bgrp-n">+${S.brands.length - 3}</span>` : ''}</span>`;
-const wsBtn = () => allOn() ? `${allAv('md')}<span class="t"><b>All brands</b><small>${S.brands.length} brands · Social Media Admin</small></span>${ic('chevD', 16)}` : `${brandAv(brand(), 'md')}<span class="t"><b>${esc(brand().name)}</b><small>Social Media Admin</small></span>${ic('chevD', 16)}`;
+/** The sidebar's workspace button always names the workspace (Social Media Admin), like the Blog Admin's; brands switch in the top bar */
+const wsBtn = () => `<span class="ws-ico" aria-hidden="true">${ic('globe', 18)}</span><span class="t"><b>Social Media Admin</b><small>Social &amp; Publishing</small></span>${ic('chevD', 16)}`;
 const pillHTML = () => allOn() ? `${allAv('sm')}<span class="hide-sm">All brands</span>${ic('chevD', 16)}` : `${brandAv(brand(), 'sm')}<span class="hide-sm">${esc(brand().name)}</span>${ic('chevD', 16)}`;
 function refreshChrome() { const w = $('.ws-btn'); if (w) w.innerHTML = wsBtn(); const p = $('.bpill'); if (p) p.innerHTML = pillHTML(); }
 function brandMenu() {
