@@ -10,9 +10,11 @@ async function bootstrap() {
   app.setGlobalPrefix("api");
   
 app.enableCors({
+  // plus any origins listed in CORS_ORIGIN (comma-separated), e.g. a preview deployment
   origin: [
     "https://boga-workspace.vercel.app",
     "http://localhost:3000",
+    ...(process.env.CORS_ORIGIN || "").split(",").map((o) => o.trim().replace(/\/+$/, "")).filter(Boolean),
   ],
   credentials: true,
   methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],

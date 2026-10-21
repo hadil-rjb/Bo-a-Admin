@@ -5305,7 +5305,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   function weekMetrics(pg, wk) {
     const byId = new Map(pg.layers.map((l) => [l.id, l])), dh = byId.get(wk.dayHeader.layerId), list = byId.get(wk.list.layerId), gh = wk.groupHeader && byId.get(wk.groupHeader.layerId), bar = wk.dayBar && byId.get(wk.dayBar), box = wk.container && byId.get(wk.container);
     const slots = wk.slotLayerIds.map((id) => byId.get(id)).filter(Boolean), top = bar ? bar.y : dh.y, headEnd = bar ? bar.y + bar.h : dh.y + dh.h;
-    const days = slots.filter((l) => l.type === 'text' && l.y > dh.y + 4 && Math.abs(l.x - dh.x) < 30 && Math.abs((l.size || 0) - (dh.size || 0)) < 2).sort((a, b) => a.y - b.y);
+    // other day headings: same column and size as the first, and they name a day or a month (a country heading can look alike)
+    const DAYISH = /monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(mon|tue|wed|thu|fri|sat|sun)\b|january|february|march|april|may|june|july|august|september|october|november|december|\b(jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b|\d{1,2}[\/.]\d{1,2}|الاثنين|الثلاثاء|الأربعاء|الخميس|الجمعة|السبت|الأحد/i;
+    const days = slots.filter((l) => l.type === 'text' && l.y > dh.y + 4 && Math.abs(l.x - dh.x) < 30 && Math.abs((l.size || 0) - (dh.size || 0)) < 2 && DAYISH.test(String(l.text || ''))).sort((a, b) => a.y - b.y);
     const nextDayTop = days[0] ? (slots.find((s) => s.type !== 'text' && s.y <= days[0].y && s.y + s.h >= days[0].y + days[0].h) || days[0]).y : null;
     const lists = slots.filter((l) => l.type === 'text' && Math.abs(l.x - list.x) < 30 && Math.abs((l.size || 0) - (list.size || 0)) < 2).sort((a, b) => a.y - b.y);
     const heads = gh ? slots.filter((l) => l.type === 'text' && Math.abs(l.x - gh.x) < 30 && Math.abs((l.size || 0) - (gh.size || 0)) < 2).sort((a, b) => a.y - b.y) : [];
@@ -5327,7 +5329,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   /** Rebuilds the day blocks with the week's events; returns true when the slide changed */
   function applyWeek(pg, byDay, cfg) {
-    const wk = cfg.map.week, m = cfg.wkm && cfg.wkm.v === 2 ? cfg.wkm : (cfg.wkm = { ...weekMetrics(pg, wk), v: 2 }), before = JSON.stringify(pg.layers.filter((l) => l.lvw));
+    const wk = cfg.map.week, m = cfg.wkm && cfg.wkm.v === 3 ? cfg.wkm : (cfg.wkm = { ...weekMetrics(pg, wk), v: 3 }), before = JSON.stringify(pg.layers.filter((l) => l.lvw));
     const keep = new Set(pg.live ? choose(Object.values(byDay || {}).flat(), cfg, 999).map((e) => e.id) : []);
     pg.layers = pg.layers.filter((l) => !l.lvw);
     wk.slotLayerIds.forEach((id) => { const l = pg.layers.find((x) => x.id === id); if (l) l.hidden = true; });
@@ -5534,7 +5536,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     cfg.geo = (keep && keep.geo) || {};
     pg.layers.forEach((l) => { if (!cfg.geo[l.id]) cfg.geo[l.id] = { x: l.x, align: l.align, dir: l.dir, font: l.font }; });
     if (keep && keep.i18n) cfg.i18n = keep.i18n;
-    if (map.layout === 'week' && map.week) { cfg.wkm = { ...weekMetrics(pg, map.week), v: 2 }; cfg.pick = null; const ll = pg.layers.find((l) => l.id === map.week.list.layerId); if (ll && !map.timeFmt) map.timeFmt = timeFmt(ll.text); }
+    if (map.layout === 'week' && map.week) { cfg.wkm = { ...weekMetrics(pg, map.week), v: 3 }; /* v3: day headings must name a day or month */ cfg.pick = null; const ll = pg.layers.find((l) => l.id === map.week.list.layerId); if (ll && !map.timeFmt) map.timeFmt = timeFmt(ll.text); }
     pg.live = cfg;
   }
   /** Free space to the right of each left-aligned data text (up to the next element in its row, or its card's edge):
@@ -7494,7 +7496,7 @@ if (headless) {
     if (el.type === 'date') { const d = parse(v); return d ? fmt(d, { day: 'numeric', month: 'short', year: 'numeric' }) : ''; }
     return /^\d{2}:\d{2}/.test(v || '') ? v.slice(0, 5) : '';
   };
-  const paintBtn = (el) => { const b = el._dtp; if (!b) return; const t = label(el); b.querySelector('.dtp-v').textContent = t || (el.type === 'date' ? 'Pick a date' : 'Pick a time'); b.classList.toggle('empty', !t); b.disabled = el.disabled; };
+  const paintBtn = (el) => { const b = el._dtp; if (!b) return; const t = label(el); b.querySelector('.dtp-v').textContent = t || (el.type === 'date' ? 'Pick a date' : 'Pick a time'); b.classList.toggle('is-empty', !t); /* not .empty: that's the empty-state panel */ b.disabled = el.disabled; };
   const setVal = (el, v) => { NATIVE.set.call(el, v); paintBtn(el); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
   let open = null; // { el, pop, ym }
   const close = (focus) => { if (!open) return; const { el, pop } = open; pop.remove(); el._dtp && el._dtp.setAttribute('aria-expanded', 'false'); open = null; focus && el._dtp && el._dtp.focus(); };

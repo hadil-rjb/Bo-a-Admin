@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectModel } from "@nestjs/mongoose";
-import { randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { Model } from "mongoose";
 import { AiService } from "../../ai/ai.service";
 import { validTz, zonedToUtc } from "../../framer/time";
@@ -15,6 +15,15 @@ import { SocialWorkspace, WORKSPACE_ID } from "../schemas/workspace.schema";
 import { NotionService } from "../notion/notion.service";
 import { strip } from "../social.util";
 import { fillCaption, localDate, occurrences } from "./schedule";
+
+/**
+ * What a design looks like, without its live data: layout, colours, fonts and fixed texts. Texts of live
+ * pages change with every refresh, so they don't count (a new preview is rendered when the design changes).
+ */
+function designHash(d: Record<string, any>) {
+  const pages = (d.pages || []).map((pg: any) => (pg.layers || []).filter((l: any) => !l.lvw).map((l: any) => [l.id, l.type, l.x, l.y, l.w, l.h, l.fill, l.color, l.font, l.size, l.weight, l.hidden, pg.live ? "" : l.text]));
+  return createHash("sha1").update(JSON.stringify([d.ratio, pages])).digest("hex");
+}
 
 /** Runs are created this far ahead, so they show in the planner */
 const HORIZON_MS = 7 * 864e5;
@@ -112,6 +121,7 @@ export class AutomationsService {
     if (!cur) throw new NotFoundException("Automation not found");
     await this.dropFuture(brandId, id, new Set());
     await this.autos.deleteOne({ brandId, id });
+    await this.media.deleteMany({ brandId, postId: `preview_${id}` });
     this.notion.reconcileSoon();
     return { ok: true };
   }
@@ -183,6 +193,30 @@ export class AutomationsService {
     }
     await this.dropFuture(a.brandId, a.id, keep);
     this.notion.reconcileSoon(); // Notion Calendar follows
+    if (a.active && a.notion !== false) void this.refreshPreview(a).catch((e) => this.log.warn(`Preview of ${a.id}: ${e?.message || e}`));
+  }
+
+  /**
+   * The design as a picture, for Notion Calendar (each run's page shows it until the run has its own
+   * slides). Rendered once, and again when the design changes; only while Notion is connected.
+   */
+  private previewing = new Set<string>();
+  private async refreshPreview(a: Record<string, any>) {
+    if (this.previewing.has(a.id) || !(await this.notion.ready())) return;
+    const design = await this.designs.findOne({ brandId: a.brandId, id: a.d }).select("ratio pages").lean<Record<string, any>>();
+    if (!design) return;
+    const hash = designHash(design);
+    if (a.preview?.d === a.d && a.preview?.hash === hash) return;
+    const run = await this.posts.findOne({ brandId: a.brandId, "auto.id": a.id, status: "Scheduled" }).sort({ date: 1, time: 1 }).select("id").lean<Record<string, any>>();
+    if (!run) return;
+    this.previewing.add(a.id);
+    try {
+      const r = await this.render.renderPost(a.brandId, run.id);
+      if (!r?.images.length) return;
+      const ids = await this.publisher.storeImages(a.brandId, `preview_${a.id}`, r.images.slice(0, 4));
+      await this.autos.updateOne({ brandId: a.brandId, id: a.id }, { $set: { preview: { ids, at: new Date(), d: a.d, hash } } });
+      this.notion.reconcileSoon();
+    } finally { this.previewing.delete(a.id); }
   }
 
   private async dropFuture(brandId: string, autoId: string, keep: Set<string>) {
