@@ -3169,6 +3169,14 @@ Object.assign(IC, {
       <div class="cal-head"><div class="cal-gut"><small title="${esc(tzLabel(schedTz()))}">${esc((tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1])}</small></div>${days.map(head).join('')}</div>
       <div class="cal-body" id="calBody"><div class="cal-grid"><div class="cal-hours">${[...Array(24)].map((_, h) => `<span>${h ? pad(h) + ':00' : ''}</span>`).join('')}</div>${days.map(col).join('')}</div></div></div>`;
   }
+  /** The calendar and the designs panel fill the window: from where they start down to the bottom edge (a 24px margin) */
+  const fitPlanner = () => {
+    const g = $('.pl7'); if (!g) return; const top = g.getBoundingClientRect().top + scrollY;
+    let h = Math.max(420, Math.round(innerHeight - top - 20)); g.style.setProperty('--plh', h + 'px');
+    // the page's own bottom padding must not make the window scroll: take back what overflows
+    const over = document.documentElement.scrollHeight - innerHeight; if (over > 0 && h - over >= 420) g.style.setProperty('--plh', h - over + 'px');
+  };
+  addEventListener('resize', () => { if (/^#\/planner/.test(location.hash)) fitPlanner(); });
   // first look at a week: start at 7:00 (or just before now); after that keep where the user scrolled
   const calScroll = () => { const b = $('#calBody'); if (!b) return; const key = iso(P.ws) + (narrow() ? P.focus : ''); if (P.calKey !== key) { P.calKey = key; const h = iso(new Date()) >= iso(P.ws) && iso(new Date()) <= iso(addD(P.ws, 6)) ? Math.max(0, new Date().getHours() - 2) : 7; b.scrollTop = Math.min(h, 7) * HH; P.calY = b.scrollTop; } else b.scrollTop = P.calY || 0; b.addEventListener('scroll', () => { P.calY = b.scrollTop; }, { passive: true }); };
   // the grid follows the clock: move the "now" line every minute, and switch between day and week when the width crosses the phone size
@@ -3221,7 +3229,7 @@ Object.assign(IC, {
         <div class="ptool-r">${netDd}${pdd('st', 'Status', P.fSt, [['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((x) => [x, x, ST_C[x]])], 'Show posts')}
         ${P.view === 'week' ? (() => { const bn = bestNet(); return pdd('best', 'Best times', bn || '', [...bestNets().map((k) => [k, PLATFORMS[k].n, PLATFORMS[k].c]), ['', 'Off', '']], 'Best times for'); })() : ''}
         <button class="btn secondary sm psidebtn ${P.side === false ? '' : 'on'}" data-act="pside" aria-pressed="${P.side !== false}" title="${P.side === false ? 'Show' : 'Hide'} the designs panel">${ic('layout', 16)}<span class="hide-sm">Panel</span></button></div></div>
-        <div class="pl7 ${P.side === false ? 'noside' : ''}"><div class="widget pcal ${P.view}" style="padding:${P.view === 'week' ? 0 : 10}px">${P.view === 'month' ? monthView() : P.view === 'list' ? listView() : weekView()}</div>${P.side === false ? '' : side()}</div>${P.view === 'week' ? (setTimeout(calScroll, 0), '') : ''}`;
+        <div class="pl7 ${P.side === false ? 'noside' : ''}"><div class="widget pcal ${P.view}" style="padding:${P.view === 'week' ? 0 : 10}px">${P.view === 'month' ? monthView() : P.view === 'list' ? listView() : weekView()}</div>${P.side === false ? '' : side()}</div>${(setTimeout(() => { fitPlanner(); if (P.view === 'week') calScroll(); }, 0), '')}`;
     },
   };
   Object.assign(ACT, {

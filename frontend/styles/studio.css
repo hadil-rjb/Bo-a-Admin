@@ -1788,12 +1788,12 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .pdot{flex:none;width:10px;height:10px;border-radius:50%;background:var(--c);box-shadow:0 0 0 2px color-mix(in srgb,var(--c) 22%,transparent)}
 .pdot.off{background:transparent;box-shadow:inset 0 0 0 1.5px var(--text-3)}
 /* calendar and designs panel: exactly the same height, each with its own scroll */
-.pl7{--plh:min(calc(100vh - 230px),980px)}
+.pl7{--plh:calc(100vh - 230px)}
 .pl7 .cal-body{height:calc(var(--plh) - 55px);min-height:365px}
 .pl7 .pside{height:var(--plh);min-height:420px;max-height:none}
 .pl7 .pcal.month,.pl7 .pcal.list{min-height:var(--plh)}
 @media (max-width:1180px){.pl7 .pside{height:auto;min-height:0}}
-@media (max-width:760px){.pl7 .cal-body{height:calc(100vh - 330px);min-height:360px}}
+@media (max-width:760px){.pl7 .cal-body{height:calc(var(--plh) - 66px);min-height:340px}}
 /* planner toolbar: the title on the left, filters on the right, all 36px high and evenly spaced */
 .ptool{gap:12px}
 .ptool .chips:empty{display:none}
