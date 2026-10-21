@@ -287,16 +287,31 @@ function brandize(layers, b) {
     return n;
   });
 }
+/**
+ * A brand's avatar: its profile photo (Brand kit → photo), else a logo fitted inside (the icon first, never cropped),
+ * else its initials on its color.
+ */
 function brandAv(b, size) {
-  const logo = (b.logos || []).find((l) => l.src && l.kind === 'Icon') || (b.logos || []).find((l) => l.src);
-  if (logo) return `<span class="bav ${size || 'md'}" style="background-color:#fff;background-image:url(${logo.src})"></span>`;
-  return `<span class="bav ${size || 'md'}" style="background:${b.colors[0] ? b.colors[0].hex : '#fd0e35'}">${esc(b.initials)}</span>`;
+  const cls = `bav ${size || 'md'}`;
+  if (b.avatar && b.avatar.src) return `<span class="${cls}" style="background-image:url(${b.avatar.src})"></span>`;
+  const L = b.logos || [], logo = L.find((l) => l.src && l.kind === 'Icon') || L.find((l) => l.src && l.kind === 'Light background') || L.find((l) => l.src && l.kind === 'Dark background') || L.find((l) => l.src);
+  if (logo) {
+    const dark = logo.kind === 'Dark background', lu = (h) => { const n = parseInt(String(h).replace('#', '').slice(0, 6), 16) || 0; return (n >> 16 & 255) * 0.3 + (n >> 8 & 255) * 0.59 + (n & 255) * 0.11; }, bg = dark ? ((b.colors || []).map((c) => c.hex).sort((x, y) => lu(x) - lu(y))[0] || '#0b1220') : '#fff';
+    return `<span class="${cls} fit" style="background-color:${bg};background-image:url(${logo.src})"></span>`;
+  }
+  return `<span class="${cls}" style="background:${b.avatarBg || (b.colors[0] ? b.colors[0].hex : '#fd0e35')}">${esc(b.initials)}</span>`;
 }
-const wsBtn = () => `${brandAv(brand(), 'md')}<span class="t"><b>${esc(brand().name)}</b><small>Social Media Admin</small></span>${ic('chevD', 16)}`;
-const pillHTML = () => `${brandAv(brand(), 'sm')}<span class="hide-sm">${esc(brand().name)}</span>${ic('chevD', 16)}`;
+/** "All brands" mode (Settings: S.set.allBrands): overview, planner and studio show every brand together */
+const allOn = () => !!(S.set && S.set.allBrands) && S.brands.length > 1;
+const allAv = (size) => `<span class="bav ${size || 'md'} all" aria-hidden="true">${S.brands.slice(0, 3).map((b) => brandAv(b, 'xs')).join('')}</span>`;
+const wsBtn = () => allOn() ? `${allAv('md')}<span class="t"><b>All brands</b><small>${S.brands.length} brands · Social Media Admin</small></span>${ic('chevD', 16)}` : `${brandAv(brand(), 'md')}<span class="t"><b>${esc(brand().name)}</b><small>Social Media Admin</small></span>${ic('chevD', 16)}`;
+const pillHTML = () => allOn() ? `${allAv('sm')}<span class="hide-sm">All brands</span>${ic('chevD', 16)}` : `${brandAv(brand(), 'sm')}<span class="hide-sm">${esc(brand().name)}</span>${ic('chevD', 16)}`;
 function refreshChrome() { const w = $('.ws-btn'); if (w) w.innerHTML = wsBtn(); const p = $('.bpill'); if (p) p.innerHTML = pillHTML(); }
 function brandMenu() {
-  return `<div class="div"></div><div class="cap">Switch brand</div>` + S.brands.map((b) => `<button class="it ${b.id === S.active ? 'on' : ''}" data-act="switchBrand" data-id="${b.id}">${brandAv(b, 'sm')}<span class="grow"><b>${esc(b.name)}</b><small>${esc(b.industry || 'Brand')} designs</small></span>${b.id === S.active ? ic('check', 14, 'faint') : ''}</button>`).join('')
+  const all = allOn();
+  return `<div class="div"></div><div class="cap">Switch brand</div>`
+    + (S.brands.length > 1 ? `<button class="it ${all ? 'on' : ''}" data-act="allBrands">${allAv('sm')}<span class="grow"><b>All brands</b><small>Every brand in one workspace</small></span>${all ? ic('check', 14, 'faint') : ''}</button>` : '')
+    + S.brands.map((b) => `<button class="it ${!all && b.id === S.active ? 'on' : ''}" data-act="switchBrand" data-id="${b.id}">${brandAv(b, 'sm')}<span class="grow"><b>${esc(b.name)}</b><small>${esc(b.industry || 'Brand')} designs</small></span>${!all && b.id === S.active ? ic('check', 14, 'faint') : ''}</button>`).join('')
     + `<div class="div"></div><button class="it addb" data-act="addBrand"><span class="ico">${ic('plus', 16)}</span><span class="grow"><b>Add brand</b><small>New workspace &amp; brand kit</small></span></button><button class="it" data-act="manageBrands"><span class="ico">${ic('layers', 16)}</span><span class="grow"><b>Manage brands</b><small>${S.brands.length} brands</small></span></button>`;
 }
 /* Brand templates are stored by the API, one document each (social_templates) */
@@ -569,7 +584,7 @@ PAGES.overview = {
     <div class="grid g4">${stat('Scheduled', S.posts.filter((p) => p.status === 'Scheduled').length, 'in the planner')}${stat('Designs in draft', S.designs.filter((d) => d.status === 'Draft').length, S.designs.filter((d) => d.status === 'Approved').length + ' approved')}${stat('Published', S.posts.filter((p) => p.status === 'Published').length, 'all time')}${stat('Designs', S.designs.length, S.designs.filter((d) => d.source === 'Figma').length + ' from Figma')}</div>
     <div class="grid g2">
       <div class="widget"><div class="wtitle">${ic('clock', 24)}Next up<span class="sp"></span><a class="btn ghost sm" href="#/planner">Open planner</a></div>
-        <div class="list">${next.length ? '' : `<div class="empty">${ic('cal', 28)}<p>Nothing scheduled for ${esc(brand().name)} yet.</p><a class="btn secondary" href="#/planner">Open planner</a></div>`}${next.map((p) => { const d = getD(p.d); return `<div class="li"><div class="thumbbox" style="width:56px;height:56px">${thumb(d.pages[0], d.ratio, 48, 48)}</div>
+        <div class="list">${next.length ? '' : `<div class="empty">${ic('cal', 28)}<p>Nothing scheduled for ${esc(allOn() ? 'your brands' : brand().name)} yet.</p><a class="btn secondary" href="#/planner">Open planner</a></div>`}${next.map((p) => { const d = getD(p.d); return `<div class="li"><div class="thumbbox" style="width:56px;height:56px">${thumb(d.pages[0], d.ratio, 48, 48)}</div>
           <div class="grow"><p class="tt">${esc(d.name)}</p><p class="xs-t muted">${fmt(new Date(p.date + 'T00:00'), { weekday: 'short', day: 'numeric', month: 'short' })} · ${p.time}</p></div>${pfDots(p.pf)}${badge(p.status)}</div>`; }).join('')}</div></div>
       <div class="widget"><div class="wtitle">${ic('studio', 24)}Post ideas<span class="sp"></span></div>
         <div class="list">${S.ideas.slice(0, 3).map((i, n) => `<div class="li"><div class="grow"><p class="tt">${esc(i.t)}</p><p class="xs-t muted">${i.cat}</p></div><span class="badge b-${i.p >= 75 ? 'High' : i.p >= 45 ? 'Medium' : 'Low'}">${i.p >= 75 ? 'High' : i.p >= 45 ? 'Medium' : 'Low'}</span><button class="btn secondary sm" data-act="fromTpl" data-tpl="${i.tpl}">Design it</button></div>`).join('')}</div></div>
@@ -577,7 +592,7 @@ PAGES.overview = {
     ${S.articles.length ? `<div class="widget"><div class="wtitle">${ic('doc', 24)}From your blog<span class="sp"></span><span class="xs-t muted">Articles from Blog Admin, ready to become posts</span></div>
       <div class="grid g3">${S.articles.map((a, i) => `<div class="idea"><p>${esc(a.t)}</p><div class="row sp"><span class="xs-t muted">${a.c}</span><button class="btn secondary sm" data-act="fromArticle" data-i="${i}">${ic('studio', 16)}Make post</button></div></div>`).join('')}</div></div>` : ''}
     <div class="widget"><div class="wtitle">${ic('layout', 24)}Continue designing<span class="sp"></span><a class="btn ghost sm" href="#/studio">All designs</a></div>
-      ${S.designs.length ? `<div class="cards">${S.designs.slice(0, 4).map((d) => designCard(d)).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No designs for ${esc(brand().name)} yet.</p><a class="btn primary" href="#/studio">${ic('plus')}Create the first one</a></div>`}</div>`;
+      ${S.designs.length ? `<div class="cards">${S.designs.slice(0, 4).map((d) => designCard(d)).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No designs for ${esc(allOn() ? 'your brands' : brand().name)} yet.</p><a class="btn primary" href="#/studio">${ic('plus')}Create the first one</a></div>`}</div>`;
   },
 };
 ACT.goStudio = () => {};
@@ -719,7 +734,7 @@ PAGES.brand = {
   actions: () => `<button class="btn secondary hide-sm" data-act="manageBrands">${ic('layers')}All brands</button><button class="btn primary" data-act="addBrand">${ic('plus')}New brand</button>`,
   view: () => {
     const b = brand(), it = setupItems(), done = it.filter((x) => x.d).length;
-    return `<div class="widget"><div class="bk-head">${brandAv(b, 'lg')}<div class="grow"><h2 id="bkName" style="font:600 20px/1.3 var(--jak)">${esc(b.name)}</h2><p class="sm-t muted">${esc([b.industry, b.website].filter(Boolean).join(' · ') || 'Add your brand details below')}</p></div><span class="badge ${done === it.length ? 'b-Published' : 'b-warn'}">${done === it.length ? 'Brand kit complete' : done + ' of ' + it.length + ' set up'}</span></div></div>
+    return `<div class="widget"><div class="bk-head"><button class="br-av lg" data-act="brandPhoto" data-id="${b.id}" title="Change the brand photo" aria-label="Change ${esc(b.name)}’s photo">${brandAv(b, 'lg')}<span class="br-cam">${ic('image', 13)}</span></button><div class="grow"><h2 id="bkName" style="font:600 20px/1.3 var(--jak)">${esc(b.name)}</h2><p class="sm-t muted">${esc([b.industry, b.website].filter(Boolean).join(' · ') || 'Add your brand details below')}</p></div><span class="badge ${done === it.length ? 'b-Published' : 'b-warn'}">${done === it.length ? 'Brand kit complete' : done + ' of ' + it.length + ' set up'}</span></div></div>
     <div class="bk-tabs">${BKTABS.map(([k, l, i]) => `<button class="${BK.tab === k ? 'on' : ''}" data-act="bkTab" data-k="${k}">${ic(i, 18)}${l}</button>`).join('')}</div>
     <div class="widget" style="gap:22px">${BKP[BK.tab]()}</div>`;
   },
@@ -727,11 +742,99 @@ PAGES.brand = {
 
 /* ---------- Brand switching, creating, managing ---------- */
 const closeModals = () => { $('#modal-root').innerHTML = ''; };
+/** Your brands: drag to reorder (the order of the switcher), quick sorts, photo, switch, delete */
 function openBrands() {
-  modal(`<div class="mh"><h2>Your brands</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
-  <div class="mb" style="gap:10px">${S.brands.map((b) => { const dt = S.data[b.id], sch = dt.posts.filter((p) => p.status === 'Scheduled').length; return `<div class="idea" style="flex-direction:row;align-items:center;gap:12px;${b.id === S.active ? 'border-color:var(--accent)' : ''}">${brandAv(b, 'md')}<div class="grow"><b class="sm-t">${esc(b.name)}</b><p class="xs-t muted">${dt.designs.length} designs · ${sch} scheduled · ${b.templates.length} templates</p></div>${b.id === S.active ? '<span class="badge b-Published">Active</span>' : `<button class="btn secondary sm" data-act="switchBrand" data-id="${b.id}">Switch</button>`}${S.brands.length > 1 ? `<button class="btn ghost icon sm" data-act="delBrand" data-id="${b.id}" title="Delete brand">${ic('trash', 16)}</button>` : ''}</div>`; }).join('')}</div>
-  <div class="mf"><button class="btn secondary" data-close>Close</button><button class="btn primary" data-act="addBrand">${ic('plus', 18)}Add brand</button></div>`);
+  const stats = (b) => { const dt = S.data[b.id] || { designs: [], posts: [] }; return { designs: dt.designs.length, sch: dt.posts.filter((p) => p.status === 'Scheduled').length }; };
+  const row = (b, i) => { const st = stats(b), on = !allOn() && b.id === S.active;
+    return `<div class="br-row ${on ? 'on' : ''}" draggable="true" data-bid="${b.id}">
+      <span class="br-grip" title="Drag to reorder" aria-hidden="true">${ic('menu', 16)}</span>
+      <button class="br-av" data-act="brandPhoto" data-id="${b.id}" title="Change ${esc(b.name)}’s photo" aria-label="Change ${esc(b.name)}’s photo">${brandAv(b, 'md')}<span class="br-cam">${ic('image', 11)}</span></button>
+      <div class="grow"><b class="sm-t">${esc(b.name)}</b><p class="xs-t muted">${st.designs} design${st.designs === 1 ? '' : 's'} · ${st.sch} scheduled</p></div>
+      <span class="br-mv"><button class="btn ghost icon sm" data-act="brMove" data-id="${b.id}" data-n="-1" ${i === 0 ? 'disabled' : ''} aria-label="Move ${esc(b.name)} up"><span class="r180">${ic('chevD', 14)}</span></button><button class="btn ghost icon sm" data-act="brMove" data-id="${b.id}" data-n="1" ${i === S.brands.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(b.name)} down">${ic('chevD', 14)}</button></span>
+      ${on ? '<span class="badge b-Published">Active</span>' : `<button class="btn secondary sm" data-act="switchBrand" data-id="${b.id}">Open</button>`}
+      ${S.brands.length > 1 ? `<button class="btn ghost icon sm" data-act="delBrand" data-id="${b.id}" title="Delete brand" aria-label="Delete ${esc(b.name)}">${ic('trash', 16)}</button>` : ''}</div>`; };
+  const view = () => `<div class="mh"><h2>Your brands</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
+    <div class="mb" style="gap:12px">
+      <div class="br-tools"><span class="xs-t muted">Sort</span><div class="seg br-sort">${[['az', 'A–Z'], ['recent', 'Recently used'], ['busy', 'Most scheduled']].map(([k, l]) => `<button data-act="brSort" data-k="${k}">${l}</button>`).join('')}</div></div>
+      <p class="xs-t muted">Drag a brand to change the order of the switcher. Click a photo to change it.</p>
+      <div class="br-list">${S.brands.map(row).join('')}</div>
+      ${S.brands.length > 1 ? `<button class="br-all ${allOn() ? 'on' : ''}" data-act="allBrands">${allAv('md')}<span class="grow"><b>All brands in one workspace</b><small>Overview, planner and designs of every brand together</small></span>${allOn() ? '<span class="badge b-Published">On</span>' : ic('chevR', 16)}</button>` : ''}
+    </div>
+    <div class="mf"><button class="btn secondary" data-close>Close</button><button class="btn primary" data-act="addBrand">${ic('plus', 18)}Add brand</button></div>`;
+  let bg = null, from = null;
+  const paint = () => { if (bg && bg.isConnected) { $('.modal', bg).innerHTML = view(); } };
+  BR.paint = paint;
+  modal(view(), { onClose: () => { BR.paint = null; }, onMount: (el) => {
+    bg = el;
+    el.addEventListener('dragstart', (e) => { const r = e.target.closest('.br-row'); if (!r) return; from = r.dataset.bid; r.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'brand:' + from); });
+    el.addEventListener('dragover', (e) => {
+      const r = e.target.closest('.br-row'); if (!r || !from || r.dataset.bid === from) return; e.preventDefault();
+      const a = S.brands.findIndex((x) => x.id === from), b = S.brands.findIndex((x) => x.id === r.dataset.bid), rc = r.getBoundingClientRect(), after = e.clientY > rc.top + rc.height / 2;
+      const [m] = S.brands.splice(a, 1); let to = S.brands.findIndex((x) => x.id === r.dataset.bid) + (after ? 1 : 0); S.brands.splice(to, 0, m);
+      if (a !== S.brands.indexOf(m)) { const list = $('.br-list', el), node = list.querySelector(`[data-bid="${from}"]`); after ? r.after(node) : r.before(node); }
+    });
+    el.addEventListener('dragend', () => { if (!from) return; from = null; save(); renderSide(); paint(); toast('Brand order saved'); });
+  } });
 }
+const BR = { paint: null };
+/** Brand photo: an uploaded picture or a logo, zoomed and moved inside the square, on a background; or the initials */
+function openBrandPhoto(b) {
+  const st = { src: null, img: null, zoom: 1, ox: 0, oy: 0, bg: '#FFFFFF', initials: !(b.avatar && b.avatar.src) && !(b.logos || []).some((l) => l.src) };
+  const sw = [...new Set(['#FFFFFF', '#0B1220', ...(b.colors || []).map((c) => String(c.hex).toUpperCase())])].slice(0, 9);
+  const logos = (b.logos || []).filter((l) => l.src);
+  const load = (src, cb) => { const im = new Image(); im.onload = () => { st.img = im; st.src = src; st.zoom = 1; st.ox = 0; st.oy = 0; st.initials = false; cb && cb(); draw(); }; im.src = src; };
+  let cv = null;
+  const draw = (target) => {
+    const c = target || cv; if (!c) return; const g = c.getContext('2d'), N = c.width;
+    g.clearRect(0, 0, N, N); g.fillStyle = st.initials ? (b.avatarBg || st.bg) : st.bg; g.fillRect(0, 0, N, N);
+    if (st.initials) { g.fillStyle = '#fff'; g.font = `700 ${Math.round(N * 0.36)}px ${'"' + (b.fonts && b.fonts.heading) + '"'}, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(b.initials || '?', N / 2, N / 2 + N * 0.02); return; }
+    if (!st.img) return;
+    const im = st.img, fit = Math.min(N / im.width, N / im.height) * 0.86, k = fit * st.zoom, w = im.width * k, h = im.height * k;
+    g.imageSmoothingQuality = 'high'; g.drawImage(im, (N - w) / 2 + st.ox * N, (N - h) / 2 + st.oy * N, w, h);
+  };
+  const view = () => `<div class="mh"><h2>${esc(b.name)} photo</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
+    <div class="mb bp">
+      <div class="bp-stage"><canvas id="bpCv" width="320" height="320" class="${st.initials ? '' : 'pan'}" aria-label="Photo preview. Drag to move it."></canvas><p class="xs-t muted">${st.initials ? 'Initials on the brand color.' : 'Drag to move · zoom below'}</p></div>
+      <div class="bp-side">
+        <span class="lv-l">Source</span>
+        <div class="bp-src">
+          <label class="bp-up">${ic('upload', 18)}<span>Upload</span><input type="file" id="bpFile" accept="image/*" hidden></label>
+          ${logos.map((l, i) => `<button type="button" class="bp-logo ${st.src === l.src ? 'on' : ''} ${l.kind === 'Dark background' ? 'dk' : ''}" data-i="${i}" title="${esc(l.name)}"><img src="${l.src}" alt=""></button>`).join('')}
+          <button type="button" class="bp-ini ${st.initials ? 'on' : ''}" id="bpIni" style="background:${b.avatarBg || (b.colors[0] ? b.colors[0].hex : '#fd0e35')}">${esc(b.initials || '?')}</button>
+        </div>
+        <span class="lv-l">Zoom</span><input type="range" id="bpZoom" min="0.5" max="3" step="0.01" value="${st.zoom}" ${st.initials ? 'disabled' : ''}>
+        <span class="lv-l">Background</span><div class="bp-sw">${sw.map((c) => `<button type="button" data-c="${c}" class="${(st.initials ? (b.avatarBg || '') : st.bg) === c ? 'on' : ''}" style="background:${c}" aria-label="Background ${c}"></button>`).join('')}</div>
+      </div></div>
+    <div class="mf">${b.avatar && b.avatar.src ? `<button class="btn ghost" id="bpDel" style="margin-right:auto;color:var(--neg)">${ic('trash', 16)}Remove photo</button>` : ''}<button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="bpGo">Save photo</button></div>`;
+  let el = null;
+  const paint = () => { $('.modal', el).innerHTML = view(); cv = $('#bpCv', el); draw(); };
+  const close = modal('', { onMount: (bg, cl) => {
+    el = bg; paint();
+    bg.addEventListener('click', (e) => {
+      const lg = e.target.closest('.bp-logo'), c = e.target.closest('.bp-sw [data-c]');
+      if (lg) { const l = logos[+lg.dataset.i]; st.bg = l.kind === 'Dark background' ? (sw.find((x) => x !== '#FFFFFF') || '#0B1220') : '#FFFFFF'; load(l.src, paint); }
+      else if (e.target.closest('#bpIni')) { st.initials = true; st.img = null; st.src = null; paint(); }
+      else if (c) { if (st.initials) b.avatarBg = c.dataset.c; else st.bg = c.dataset.c; paint(); }
+      else if (e.target.closest('#bpDel')) { delete b.avatar; save(); cl(); afterBrandPhoto(b, 'Photo removed'); }
+      else if (e.target.closest('#bpGo')) {
+        if (st.initials) { delete b.avatar; }
+        else if (st.img) { const out = document.createElement('canvas'); out.width = out.height = 256; draw(out); b.avatar = { src: out.toDataURL('image/png') }; }
+        save(); cl(); afterBrandPhoto(b, 'Photo saved');
+      }
+    });
+    bg.addEventListener('change', (e) => { if (e.target.id === 'bpFile' && e.target.files[0]) readImage(e.target.files[0], 1024, (src) => { st.bg = '#FFFFFF'; load(src, paint); }); });
+    bg.addEventListener('input', (e) => { if (e.target.id === 'bpZoom') { st.zoom = +e.target.value; draw(); } });
+    let drag = null;
+    bg.addEventListener('pointerdown', (e) => { if (e.target.id !== 'bpCv' || st.initials || !st.img) return; drag = { x: e.clientX, y: e.clientY, ox: st.ox, oy: st.oy, w: e.target.getBoundingClientRect().width }; e.target.setPointerCapture(e.pointerId); });
+    bg.addEventListener('pointermove', (e) => { if (!drag) return; st.ox = drag.ox + (e.clientX - drag.x) / drag.w; st.oy = drag.oy + (e.clientY - drag.y) / drag.w; draw(); });
+    bg.addEventListener('pointerup', () => { drag = null; });
+  } });
+  // start from what the brand shows today
+  if (b.avatar && b.avatar.src) load(b.avatar.src);
+  else if (logos.length) { const l = logos.find((x) => x.kind === 'Icon') || logos[0]; st.bg = l.kind === 'Dark background' ? '#0B1220' : '#FFFFFF'; load(l.src, () => el && paint()); }
+  return close;
+}
+function afterBrandPhoto(b, msg) { refreshChrome(); renderSide(); BR.paint && BR.paint(); if (location.hash === '#/brand' || !location.hash.startsWith('#/editor')) route(); toast(msg); }
 function openAddBrand() {
   let touched = false;
   modal(`<div class="mh"><h2>Add a brand</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
@@ -923,10 +1026,20 @@ function openGuideImport(file) {
 
 Object.assign(ACT, {
   switchBrand: (a) => {
-    closeModals(); if (a.dataset.id === S.active) { closeDrawer(); return; }
+    const wasAll = allOn(); if (S.set) S.set.allBrands = false;
+    const b0 = S.brands.find((x) => x.id === a.dataset.id); if (b0) b0.lastUsed = Date.now();
+    closeModals(); if (a.dataset.id === S.active && !wasAll) { closeDrawer(); return; }
     S.active = a.dataset.id; save(); ST.q = ''; ST.tab = 0; ST.cat = 'All'; P.tray = 'designs'; renderSide(); route(); toast('Switched to ' + brand().name);
   },
   addBrand: () => { closeModals(); closeDrawer(); openAddBrand(); },
+  allBrands: () => { closeModals(); closeDrawer(); S.set.allBrands = true; save(); renderSide(); if (/^#\/(brand|settings|profile|editor)/.test(location.hash)) location.hash = '#/overview'; else route(); toast('All brands in one workspace'); },
+  brandPhoto: (a) => { const b = S.brands.find((x) => x.id === (a.dataset.id || S.active)); if (b && canEdit()) openBrandPhoto(b); },
+  brMove: (a) => { const i = S.brands.findIndex((x) => x.id === a.dataset.id), j = i + +a.dataset.n; if (i < 0 || j < 0 || j >= S.brands.length) return; const [m] = S.brands.splice(i, 1); S.brands.splice(j, 0, m); save(); renderSide(); BR.paint && BR.paint(); },
+  brSort: (a) => {
+    const k = a.dataset.k, sch = (b) => ((S.data[b.id] || { posts: [] }).posts.filter((p) => p.status === 'Scheduled').length);
+    S.brands.sort(k === 'az' ? (x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: 'base' }) : k === 'recent' ? (x, y) => (y.lastUsed || 0) - (x.lastUsed || 0) : (x, y) => sch(y) - sch(x));
+    save(); renderSide(); BR.paint && BR.paint(); toast(k === 'az' ? 'Sorted A–Z' : k === 'recent' ? 'Sorted by last used' : 'Sorted by scheduled posts');
+  },
   manageBrands: () => { closeModals(); closeDrawer(); openBrands(); },
   bkTab: (a) => { BK.tab = a.dataset.k; rerender(); },
   bkGo: (a) => { if (a.dataset.tab) { BK.tab = a.dataset.tab; location.hash === '#/brand' ? route() : (location.hash = '#/brand'); } else location.hash = a.dataset.href; },
@@ -5936,6 +6049,53 @@ if (headless) {
       return { images: await PUB.renderPages(live), live: live.liveUsed || [] };
     },
   });
+}
+
+/* ============ All brands in one workspace ============
+   Overview, planner and studio render with the designs, posts and ideas of every brand (merged for the render only),
+   and each item is marked with its brand. Clicking or dragging an item first makes its brand the active one, so every
+   existing action (open, edit, reschedule, delete…) works on the right brand. Creating asks which brand. */
+{
+  const MERGE = ['designs', 'posts', 'ideas', 'articles', 'platforms'];
+  /** Runs a page render with every brand's data in S.designs, S.posts… (read-only: writes go nowhere) */
+  const asAll = (fn) => {
+    if (!allOn()) return fn();
+    const m = { designs: [], posts: [], ideas: [], articles: [], platforms: {} };
+    S.brands.forEach((b) => { const d = S.data[b.id]; if (!d) return; m.designs.push(...(d.designs || [])); m.posts.push(...(d.posts || [])); m.ideas.push(...(d.ideas || []).slice(0, 2)); Object.entries(d.platforms || {}).forEach(([k, v]) => { if (v) m.platforms[k] = v; }); });
+    const saved = MERGE.map((k) => Object.getOwnPropertyDescriptor(S, k));
+    MERGE.forEach((k) => Object.defineProperty(S, k, { get: () => m[k], set: () => {}, configurable: true }));
+    try { return fn(); } finally { MERGE.forEach((k, i) => Object.defineProperty(S, k, saved[i])); }
+  };
+  /** Which brand a design or a post belongs to */
+  const ownerOf = (id) => { if (!id) return null; for (const b of S.brands) { const d = S.data[b.id]; if (d && ((d.designs || []).some((x) => x.id === id) || (d.posts || []).some((x) => x.id === id))) return b; } return null; };
+  /** Marks the items of the page with their brand: a small avatar, and data-brand for the click / drag hand-off */
+  const decorate = () => {
+    if (!allOn()) return;
+    $$('#view [data-id], #view [data-drag], #view [data-dragpost]').forEach((el) => {
+      const b = ownerOf(el.dataset.dragpost || el.dataset.drag || el.dataset.id); if (!b) return;
+      el.dataset.brand = b.id;
+      const box = el.matches('.card.dc') ? el.querySelector('.pv') : el.matches('.pc7, .mc7, .l7r, .dcard, .li') ? el : null;
+      if (box && !box.querySelector(':scope > .bmark')) box.insertAdjacentHTML('afterbegin', `<span class="bmark" title="${esc(b.name)}">${brandAv(b, 'xs')}</span>`);
+    });
+  };
+  const brandsStrip = () => `<div class="widget"><div class="wtitle">${ic('layers', 24)}All brands<span class="sp"></span><button class="btn ghost sm" data-act="manageBrands">Manage</button></div>
+    <div class="ab-grid">${S.brands.map((b) => { const d = S.data[b.id] || { designs: [], posts: [] }, sch = d.posts.filter((p) => p.status === 'Scheduled').length, dr = d.designs.filter((x) => x.status === 'Draft').length;
+      return `<button class="ab-card" data-act="switchBrand" data-id="${b.id}">${brandAv(b, 'md')}<span class="grow"><b>${esc(b.name)}</b><small>${sch} scheduled · ${dr} draft${dr === 1 ? '' : 's'}</small></span>${ic('chevR', 16)}</button>`; }).join('')}</div></div>`;
+  const wrap = (page, extra) => { const P0 = PAGES[page]; if (!P0) return; const v = P0.view; P0.view = () => { if (!allOn()) return v(); const html = asAll(v); setTimeout(decorate, 0); return (extra ? extra() : '') + html; }; };
+  wrap('overview', brandsStrip); wrap('planner'); wrap('studio');
+  // the item's brand becomes the active one before its action runs
+  const handOff = (e) => { if (!allOn()) return; const el = e.target.closest && e.target.closest('[data-brand]'); if (el && el.dataset.brand !== S.active && S.data[el.dataset.brand]) S.active = el.dataset.brand; };
+  document.addEventListener('click', handOff, true);
+  document.addEventListener('dragstart', handOff, true);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Enter') handOff(e); }, true);
+  /** Creating something in All brands: pick the brand first */
+  const pickBrand = (title, then) => modal(`<div class="mh"><h2>${title}</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
+    <div class="mb" style="gap:8px">${S.brands.map((b) => `<button class="ab-card" data-pick="${b.id}">${brandAv(b, 'md')}<span class="grow"><b>${esc(b.name)}</b><small>${esc(b.industry || 'Brand')}</small></span>${ic('chevR', 16)}</button>`).join('')}</div>`,
+    { onMount: (bg, close) => bg.addEventListener('click', (e) => { const p = e.target.closest('[data-pick]'); if (!p) return; S.active = p.dataset.pick; save(); close(); then(); }) });
+  const ask = (name, title) => { const f = ACT[name]; if (!f) return; ACT[name] = (a, e) => { if (!allOn() || (a && a.closest && a.closest('[data-brand]'))) return f(a, e); pickBrand(title, () => f(a, e)); }; };
+  ask('newDesign', 'New design for which brand?'); ask('fromTpl', 'Design it for which brand?'); ask('pnew', 'New post for which brand?'); ask('figma', 'Import from Figma into which brand?');
+  // pages that belong to one brand say which one
+  ['brand', 'settings'].forEach((page) => { const P0 = PAGES[page]; if (!P0) return; const v = P0.view; P0.view = () => (allOn() ? `<div class="note">${ic('layers', 16)}<span>All brands view: this is <b>${esc(brand().name)}</b>. <button class="btn link sm" data-act="manageBrands">Choose another brand</button></span></div>` : '') + v(); });
 }
 
 /* ============ first paint, with every renderer installed ============ */
