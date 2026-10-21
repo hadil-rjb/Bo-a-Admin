@@ -3106,7 +3106,7 @@ Object.assign(IC, {
   const pdd = (k, label, val, opts, head) => { const cur = opts.find((o) => o[0] === val) || opts[0], picked = val && val !== 'All';
     const item = ([v, l, c]) => `<button type="button" role="option" aria-selected="${v === val}" data-act="pddp" data-k="${k}" data-v="${esc(v)}" class="${v === val ? 'on' : ''}">${c ? `<i class="pdot" style="--c:${c}"></i>` : '<i class="pdot off"></i>'}<span class="grow">${esc(l)}</span>${v === val ? ic('check', 14) : ''}</button>`;
     const main = opts.filter((o) => o[0] !== '' && o[0] !== 'All'), extra = opts.filter((o) => o[0] === '' || o[0] === 'All');
-    return `<div class="dd pdd ${picked ? 'pdd-on' : ''}"><button type="button" class="ddb" data-act="ddt" aria-haspopup="listbox" aria-label="${label}: ${esc(cur[1])}">${cur[2] ? `<i class="pdot" style="--c:${cur[2]}"></i>` : ''}<span class="pdd-l">${label}</span><b>${esc(k === 'st' && val === 'All' ? 'All' : cur[1])}</b>${ic('chevD', 14)}</button>
+    return `<div class="dd pdd ${picked ? 'pdd-on' : ''}" data-k="${k}"><button type="button" class="ddb" data-act="ddt" aria-haspopup="listbox" aria-label="${label}: ${esc(cur[1])}">${cur[2] ? `<i class="pdot" style="--c:${cur[2]}"></i>` : ''}<span class="pdd-l">${label}</span><b>${esc(k === 'st' && val === 'All' ? 'All' : cur[1])}</b>${ic('chevD', 14)}</button>
       <div class="ddm" role="listbox" aria-label="${esc(head)}" hidden><div class="pdd-h">${esc(head)}</div>${(k === 'st' ? extra : []).map(item).join('')}${k === 'st' ? '<div class="pdd-sep"></div>' : ''}${main.map(item).join('')}${k !== 'st' ? '<div class="pdd-sep"></div>' + extra.map(item).join('') : ''}</div></div>`; };
   /** Networks offered for best times (the connected ones, else all), and the one shown (null = off) */
   const bestNets = () => { const c = conn(); return c.length ? c : Object.keys(PLATFORMS); };
@@ -3169,6 +3169,14 @@ Object.assign(IC, {
       <div class="cal-head"><div class="cal-gut"><small title="${esc(tzLabel(schedTz()))}">${esc((tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1])}</small></div>${days.map(head).join('')}</div>
       <div class="cal-body" id="calBody"><div class="cal-grid"><div class="cal-hours">${[...Array(24)].map((_, h) => `<span>${h ? pad(h) + ':00' : ''}</span>`).join('')}</div>${days.map(col).join('')}</div></div></div>`;
   }
+  /** The calendar and the designs panel fill the window: from where they start down to the bottom edge (a 24px margin) */
+  const fitPlanner = () => {
+    const g = $('.pl7'); if (!g) return; const top = g.getBoundingClientRect().top + scrollY;
+    let h = Math.max(420, Math.round(innerHeight - top - 20)); g.style.setProperty('--plh', h + 'px');
+    // the page's own bottom padding must not make the window scroll: take back what overflows
+    const over = document.documentElement.scrollHeight - innerHeight; if (over > 0 && h - over >= 420) g.style.setProperty('--plh', h - over + 'px');
+  };
+  addEventListener('resize', () => { if (/^#\/planner/.test(location.hash)) fitPlanner(); });
   // first look at a week: start at 7:00 (or just before now); after that keep where the user scrolled
   const calScroll = () => { const b = $('#calBody'); if (!b) return; const key = iso(P.ws) + (narrow() ? P.focus : ''); if (P.calKey !== key) { P.calKey = key; const h = iso(new Date()) >= iso(P.ws) && iso(new Date()) <= iso(addD(P.ws, 6)) ? Math.max(0, new Date().getHours() - 2) : 7; b.scrollTop = Math.min(h, 7) * HH; P.calY = b.scrollTop; } else b.scrollTop = P.calY || 0; b.addEventListener('scroll', () => { P.calY = b.scrollTop; }, { passive: true }); };
   // the grid follows the clock: move the "now" line every minute, and switch between day and week when the width crosses the phone size
@@ -3201,28 +3209,34 @@ Object.assign(IC, {
   }
   PAGES.planner = {
     t: 'Social Media Planner', s: 'Plan, schedule and publish. Drag a post to another day to reschedule it.',
-    actions: () => `<div class="row" style="gap:6px"><button class="btn secondary icon" data-act="pnav" data-n="-1" title="Previous" aria-label="Previous">${ic('chevL')}</button><button class="btn secondary" data-act="pnav" data-n="0">Today</button><button class="btn secondary icon" data-act="pnav" data-n="1" title="Next" aria-label="Next">${ic('chevR')}</button></div>
-      <div class="tabs" style="min-width:210px">${[['week', 'Week'], ['month', 'Month'], ['list', 'List']].map(([k, l]) => `<button class="${P.view === k ? 'on' : ''}" data-act="pview" data-v="${k}">${l}</button>`).join('')}</div>
+    actions: () => `<div class="tabs pviews">${[['week', 'Week'], ['month', 'Month'], ['list', 'List']].map(([k, l]) => `<button class="${P.view === k ? 'on' : ''}" data-act="pview" data-v="${k}">${l}</button>`).join('')}</div>
       <button class="btn primary" data-act="pnew">${ic('plus', 18)}<span class="hide-sm">New post</span></button>`,
     view: () => {
       const days = [...Array(7)].map((_, i) => addD(P.ws, i)), today = iso(new Date());
       const title = P.view === 'month' ? fmt(P.mo, { month: 'long', year: 'numeric' }) : P.view === 'list' ? 'All posts' : `${fmt(days[0], { day: 'numeric', month: 'long' })} – ${fmt(days[6], { day: 'numeric', month: 'long', year: 'numeric' })}`;
       const inRange = (p) => (P.view === 'week' ? p.date >= iso(days[0]) && p.date <= iso(days[6]) : P.view === 'month' ? p.date.slice(0, 7) === iso(P.mo).slice(0, 7) : true), rs = S.posts.filter((p) => inRange(p) && fvis(p));
       const span = P.view === 'week' ? days.map(iso) : P.view === 'month' ? [...Array(new Date(P.mo.getFullYear(), P.mo.getMonth() + 1, 0).getDate())].map((_, i) => iso(new Date(P.mo.getFullYear(), P.mo.getMonth(), i + 1))) : [], open = span.filter((k) => k >= today && !S.posts.some((p) => p.date === k && fvis(p))).length;
-      const stat = (n, l) => `<div class="pstat"><b>${n}</b><span>${l}</span></div>`;
-      const stats = P.view === 'list' ? '' : `<div class="pstats">${stat(rs.filter((p) => p.status === 'Scheduled').length, 'Scheduled')}${stat(rs.filter((p) => p.status === 'Draft').length, 'Drafts')}${stat(rs.filter((p) => p.status === 'Published').length, 'Published')}${stat(open, 'Open days left')}</div>`;
-      return `<div class="ptool"><b class="ttl">${title}</b>
-        <div class="chips">${Object.entries(PLATFORMS).filter(([k]) => S.platforms[k]).map(([k, v]) => `<button class="pnet ${!P.fPf || P.fPf.has(k) ? 'on' : ''}" style="--c:${v.c}" data-act="pfn" data-k="${k}" aria-pressed="${!P.fPf || P.fPf.has(k)}"><i></i>${v.n}</button>`).join('')}</div>
-        <div class="ptool-r">${pdd('st', 'Status', P.fSt, [['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((x) => [x, x, ST_C[x]])], 'Show posts')}
+      const n = (st) => rs.filter((p) => p.status === st).length, unit = P.view === 'month' ? 'month' : 'week';
+      const sum = P.view === 'list' ? `<span class="psum"><span>${rs.length} post${rs.length === 1 ? '' : 's'}</span></span>` : `<span class="psum"><span><i style="--c:${ST_C.Scheduled}"></i>${n('Scheduled')} scheduled</span><span><i style="--c:${ST_C.Draft}"></i>${n('Draft')} draft${n('Draft') === 1 ? '' : 's'}</span><span><i style="--c:${ST_C.Published}"></i>${n('Published')} published</span><span class="open">${open} open day${open === 1 ? '' : 's'} left</span></span>`;
+      const short = P.view === 'week' ? (days[0].getMonth() === days[6].getMonth() ? `${fmt(days[0], { month: 'short' })} ${days[0].getDate()} – ${days[6].getDate()}, ${days[6].getFullYear()}` : `${fmt(days[0], { month: 'short', day: 'numeric' })} – ${fmt(days[6], { month: 'short', day: 'numeric' })}, ${days[6].getFullYear()}`) : title;
+      const nets = conn(), netVal = !P.fPf ? 'all' : [...P.fPf].length === 1 ? [...P.fPf][0] : 'some';
+      const netDd = nets.length > 1 ? (() => { const openNow = P.openDd === 'net'; return `<div class="dd pdd ${P.fPf ? 'pdd-on' : ''}"><button type="button" class="ddb" data-act="ddt" aria-haspopup="listbox" aria-label="Networks">${netVal !== 'all' && netVal !== 'some' ? `<i class="pdot" style="--c:${PLATFORMS[netVal].c}"></i>` : `<span class="pdots">${nets.slice(0, 3).map((k) => `<i style="--c:${PLATFORMS[k].c}"></i>`).join('')}</span>`}<span class="pdd-l">Networks</span><b>${netVal === 'all' ? 'All' : netVal === 'some' ? P.fPf.size + ' of ' + nets.length : PLATFORMS[netVal].n}</b>${ic('chevD', 14)}</button>
+        <div class="ddm" role="listbox" aria-multiselectable="true" aria-label="Show networks" ${openNow ? '' : 'hidden'}><div class="pdd-h">Show networks</div>${nets.map((k) => { const on = !P.fPf || P.fPf.has(k); return `<button type="button" role="option" aria-selected="${on}" data-act="pfn" data-k="${k}" class="pcheck ${on ? 'on' : ''}"><span class="cbx ${on ? 'on' : ''}">${on ? ic('check', 12) : ''}</span><i class="pdot" style="--c:${PLATFORMS[k].c}"></i><span class="grow">${PLATFORMS[k].n}</span></button>`; }).join('')}${P.fPf ? `<div class="pdd-sep"></div><button type="button" data-act="pfnAll"><i class="pdot off"></i><span class="grow">Show all networks</span></button>` : ''}</div></div>`; })() : '';
+      P.openDd = null;
+      return `<div class="ptool">
+        <div class="ptool-l"><div class="pnav"><button class="btn secondary sm" data-act="pnav" data-n="0">Today</button><button class="btn secondary icon sm" data-act="pnav" data-n="-1" title="Previous ${unit}" aria-label="Previous ${unit}">${ic('chevL', 16)}</button><button class="btn secondary icon sm" data-act="pnav" data-n="1" title="Next ${unit}" aria-label="Next ${unit}">${ic('chevR', 16)}</button></div>
+          <div class="ptitle"><b class="ttl"><span class="long">${title}</span><span class="short">${short}</span></b>${sum}</div></div>
+        <div class="ptool-r">${netDd}${pdd('st', 'Status', P.fSt, [['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((x) => [x, x, ST_C[x]])], 'Show posts')}
         ${P.view === 'week' ? (() => { const bn = bestNet(); return pdd('best', 'Best times', bn || '', [...bestNets().map((k) => [k, PLATFORMS[k].n, PLATFORMS[k].c]), ['', 'Off', '']], 'Best times for'); })() : ''}
-        <button class="btn secondary sm psidebtn ${P.side === false ? '' : 'on'}" data-act="pside" aria-pressed="${P.side !== false}" title="${P.side === false ? 'Show' : 'Hide'} designs, ideas and best times">${ic('layout', 16)}<span class="hide-sm">Panel</span></button></div></div>
-        ${stats}<div class="pl7 ${P.side === false ? 'noside' : ''}"><div class="widget pcal ${P.view}" style="padding:${P.view === 'week' ? 0 : 10}px">${P.view === 'month' ? monthView() : P.view === 'list' ? listView() : weekView()}</div>${P.side === false ? '' : side()}</div>${P.view === 'week' ? (setTimeout(calScroll, 0), '') : ''}`;
+        <button class="btn secondary sm psidebtn ${P.side === false ? '' : 'on'}" data-act="pside" aria-pressed="${P.side !== false}" title="${P.side === false ? 'Show' : 'Hide'} the designs panel">${ic('layout', 16)}<span class="hide-sm">Panel</span></button></div></div>
+        <div class="pl7 ${P.side === false ? 'noside' : ''}"><div class="widget pcal ${P.view}" style="padding:${P.view === 'week' ? 0 : 10}px">${P.view === 'month' ? monthView() : P.view === 'list' ? listView() : weekView()}</div>${P.side === false ? '' : side()}</div>${(setTimeout(() => { fitPlanner(); if (P.view === 'week') calScroll(); }, 0), '')}`;
     },
   };
   Object.assign(ACT, {
     pnav: (a) => { const n = +a.dataset.n; if (P.view === 'month') P.mo = n === 0 ? new Date() : new Date(P.mo.getFullYear(), P.mo.getMonth() + n, 1); else P.ws = n === 0 ? monday(new Date()) : addD(P.ws, 7 * n); route(); },
     pview: (a) => { const v = a.dataset.v; if (v === 'month' && P.view !== 'month') P.mo = addD(P.ws, 3); if (v === 'week' && P.view === 'month') { const n = new Date(); P.ws = P.mo.getMonth() === n.getMonth() && P.mo.getFullYear() === n.getFullYear() ? monday(n) : monday(new Date(P.mo.getFullYear(), P.mo.getMonth(), 1)); } P.view = v; route(); },
-    pfn: (a) => { const all = conn(), s = P.fPf ? new Set(P.fPf) : new Set(all), k = a.dataset.k; s.has(k) ? s.delete(k) : s.add(k); if (!s.size) s.add(k); P.fPf = all.every((x) => s.has(x)) ? null : s; route(); },
+    pfn: (a) => { const all = conn(), s = P.fPf ? new Set(P.fPf) : new Set(all), k = a.dataset.k; s.has(k) ? s.delete(k) : s.add(k); if (!s.size) s.add(k); P.fPf = all.every((x) => s.has(x)) ? null : s; if (a.closest('.ddm')) P.openDd = 'net'; route(); },
+    pfnAll: () => { P.fPf = null; route(); },
     pday: (a) => { P.view = 'week'; P.ws = monday(dparse(a.dataset.date)); P.focus = a.dataset.date; route(); },
     pfocus: (a) => { P.focus = a.dataset.date; route(); },
     pddp: (a) => {
