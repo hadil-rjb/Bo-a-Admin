@@ -35,11 +35,11 @@ export type CalendarEvent = {
 
 export const COUNTRY_CODES = ["US", "EU", "GB", "JP", "CN", "CA", "AU", "NZ", "CH", "DE", "FR", "IT", "ES"];
 
-const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
+export const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36";
 const cache = new Map<string, { at: number; value: Promise<unknown> }>();
 
 /** Shared in-flight promise per key: concurrent callers wait on one upstream request */
-function cached<T>(key: string, ttl: number, fn: () => Promise<T>): Promise<T> {
+export function cached<T>(key: string, ttl: number, fn: () => Promise<T>): Promise<T> {
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < ttl) return hit.value as Promise<T>;
   const value = fn().catch((e) => { cache.delete(key); throw e; });
@@ -47,7 +47,7 @@ function cached<T>(key: string, ttl: number, fn: () => Promise<T>): Promise<T> {
   return value;
 }
 
-async function fetchJson(url: string, headers: Record<string, string> = {}) {
+export async function fetchJson(url: string, headers: Record<string, string> = {}) {
   const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json", ...headers }, signal: AbortSignal.timeout(15_000) });
   if (!res.ok) throw new Error(`HTTP ${res.status} from ${new URL(url).host}`);
   return res.json();

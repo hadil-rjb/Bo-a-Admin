@@ -52,6 +52,54 @@ export function tplCalendar(w, h, lang = 'en', evs = EVENTS.filter((e) => e.on))
   L.push(Tx(0, h - 120, w, 'mypowerfunds.com', { name: 'Footer', size: 28, weight: 500, color: '#D6D6D6', align: 'center', font: 'Poppins' }));
   return L;
 }
+/* Live market templates: a text layer's `feed` is what it shows ({price}, {title}…; `feedAr` in Arabic),
+   `feed: '@image'` takes the headline photo, `feed: '@pos'` slides along the 'Range track', and
+   `tone` ('fill' | 'color') follows the price direction. The live data section fills them. */
+const FEED_LOOK = { bg: 'radial-gradient(ellipse 110% 55% at 88% 0%, rgba(253,14,53,.32) 0%, rgba(11,18,32,0) 62%), #0b1220', base: '#0b1220', fg: '#ffffff', muted: 'rgba(255,255,255,.66)', card: 'rgba(255,255,255,.06)', line: 'rgba(255,255,255,.12)', accent: '#fd0e35', onAccent: '#ffffff', head: 'Plus Jakarta Sans', body: 'Inter', site: 'uxboga.com' };
+export function tplPrice(w, h, o = {}) {
+  o = { ...FEED_LOOK, ...o };
+  const ar = o.lang === 'ar', al = ar ? 'right' : 'left', dir = ar ? 'rtl' : 'ltr', P = 80, X = (x, wd) => (ar ? w - x - wd : x);
+  const wf = (f) => (ar ? o.ar || 'Cairo' : f), compact = h < 1200, ps = Math.round(Math.min(190, w * 0.17));
+  const nameY = Math.round(h * 0.19), priceY = Math.round(h * 0.35), pillY = priceY + Math.round(ps * 1.12) + 14;
+  const cardY = Math.round(h * (compact ? 0.6 : 0.62)), cardH = compact ? 160 : 200, cw = w - P * 2;
+  return [
+    BG(w, h, o.bg),
+    Rc(X(P, 270), P + 10, 270, 56, o.accent, { name: 'Kicker pill', r: 28 }),
+    Tx(X(P, 270), P + 25, 270, ar ? 'تنبيه السعر' : 'PRICE ALERT', { name: 'Kicker', size: 22, weight: 700, font: wf(o.body), color: o.onAccent, align: 'center', ls: ar ? 0 : 3, dir, feed: 'PRICE ALERT', feedAr: 'تنبيه السعر' }),
+    Tx(X(P, cw), nameY, cw, ar ? 'الذهب' : 'Gold', { name: 'Market', size: 84, weight: 700, font: wf(o.head), color: o.fg, align: al, ls: ar ? 0 : -2, dir, feed: '{name}' }),
+    Tx(X(P, cw), nameY + 104, cw, 'XAU/USD', { name: 'Ticker', size: 34, weight: 500, font: o.body, color: o.muted, align: al, ls: 1, dir, feed: '{ticker}' }),
+    Tx(X(P, cw), priceY, cw, '4,130.41', { name: 'Price', size: ps, weight: 700, font: o.head, color: o.fg, align: al, lh: 1.05, ls: -4, dir: 'ltr', feed: '{price}' }),
+    Rc(X(P, 290), pillY, 290, 72, '#16A34A', { name: 'Change pill', r: 36, tone: 'fill' }),
+    Tx(X(P, 290), pillY + 17, 290, '▲ +0.12%', { name: 'Change %', size: 32, weight: 700, font: o.body, color: '#ffffff', align: 'center', dir: 'ltr', feed: '{arrow} {changePct}' }),
+    Tx(X(P + 320, cw - 320), pillY + 19, cw - 320, ar ? '+4.94 اليوم' : '+4.94 today', { name: 'Change', size: 30, weight: 500, font: wf(o.body), color: o.muted, align: al, dir, feed: '{change} today', feedAr: '{change} اليوم' }),
+    Rc(P, cardY, cw, cardH, o.card, { name: 'Range card', r: 28, stroke: o.line, sw: 2 }),
+    Tx(X(P + 36, cw - 72), cardY + 30, cw - 72, ar ? 'نطاق اليوم' : 'DAY RANGE', { name: 'Range label', size: 22, weight: 600, font: wf(o.body), color: o.muted, align: al, ls: ar ? 0 : 3, dir, feed: 'DAY RANGE', feedAr: 'نطاق اليوم' }),
+    Tx(P + 36, cardY + cardH - 92, 300, '4,106.35', { name: 'Low', size: 30, weight: 600, font: o.body, color: o.fg, dir: 'ltr', feed: '{low}' }),
+    Tx(w - P - 36 - 300, cardY + cardH - 92, 300, '4,141.99', { name: 'High', size: 30, weight: 600, font: o.body, color: o.fg, align: 'right', dir: 'ltr', feed: '{high}' }),
+    Rc(P + 36, cardY + cardH - 42, cw - 72, 10, o.line, { name: 'Range track', r: 5 }),
+    El(P + 36 + Math.round((cw - 72) * 0.68) - 15, cardY + cardH - 52, 30, 30, o.accent, { name: 'Range marker', stroke: o.fg, sw: 4, feed: '@pos' }),
+    Tx(X(P, cw), cardY + cardH + (compact ? 34 : 56), cw, ar ? 'آخر تحديث 14:05 · 21 أكتوبر 2026' : 'Updated 14:05 · 21 Oct 2026', { name: 'Updated', size: 26, weight: 400, font: wf(o.body), color: o.muted, align: al, dir, feed: 'Updated {time} {tz} · {date}', feedAr: 'آخر تحديث {time} {tz} · {date}' }),
+    Tx(0, h - (compact ? 80 : 110), w, o.site, { name: 'Footer', size: 26, weight: 500, font: o.body, color: o.muted, align: 'center' }),
+  ];
+}
+export function tplNews(w, h, o = {}) {
+  o = { ...FEED_LOOK, ...o };
+  const ar = o.lang === 'ar', al = ar ? 'right' : 'left', dir = ar ? 'rtl' : 'ltr', P = 72, X = (x, wd) => (ar ? w - x - wd : x);
+  const wf = (f) => (ar ? o.ar || 'Cairo' : f), compact = h < 1200, ih = Math.round(h * (compact ? 0.42 : 0.46)), cw = w - P * 2;
+  const ts = compact ? 56 : 66, tY = ih + 52, tH = Math.round(ts * 1.12 * 4), sY = tY + tH + 22, metaY = h - (compact ? 150 : 190);
+  return [
+    BG(w, h, o.bg),
+    Im(0, 0, w, ih, 'linear-gradient(135deg,#334155 0%,#0b1220 100%)', { name: 'Headline photo', feed: '@image' }),
+    Rc(0, Math.round(ih * 0.45), w, ih - Math.round(ih * 0.45) + 2, `linear-gradient(180deg, rgba(11,18,32,0) 0%, ${o.base} 100%)`, { name: 'Photo fade' }),
+    Rc(X(P, 270), ih - 44, 270, 56, o.accent, { name: 'Kicker pill', r: 28 }),
+    Tx(X(P, 270), ih - 29, 270, ar ? 'أخبار الأسواق' : 'MARKET NEWS', { name: 'Kicker', size: 22, weight: 700, font: wf(o.body), color: o.onAccent, align: 'center', ls: ar ? 0 : 3, dir, feed: 'MARKET NEWS', feedAr: 'أخبار الأسواق' }),
+    Tx(X(P, cw), tY, cw, 'Gold slips as the dollar firms ahead of US inflation data', { name: 'Headline', size: ts, weight: 700, font: wf(o.head), color: o.fg, align: al, lh: 1.12, lines: 4, ls: ar ? 0 : -1.5, dir, feed: '{title}', fit: 1 }),
+    Tx(X(P, cw), sY, cw, 'Traders trimmed bets on a December rate cut after strong retail sales, lifting Treasury yields.', { name: 'Summary', size: 30, weight: 400, font: wf(o.body), color: o.muted, align: al, lh: 1.4, lines: compact ? 2 : 3, dir, feed: '{summary}', fit: 1, flow: 1 }),
+    Rc(X(P, 64), metaY - 26, 64, 6, o.accent, { name: 'Rule', r: 3 }),
+    Tx(X(P, cw), metaY, cw, 'FXStreet · 12 min ago', { name: 'Source', size: 26, weight: 600, font: wf(o.body), color: o.fg, align: al, dir, feed: '{source} · {ago}' }),
+    Tx(0, h - (compact ? 80 : 110), w, o.site, { name: 'Footer', size: 26, weight: 500, font: o.body, color: o.muted, align: 'center' }),
+  ];
+}
 export function tplQuote(w, h) {
   return [
     BG(w, h, '#fd0e35'),
@@ -133,6 +181,8 @@ export function tplEvent(w, h) {
 }
 export const TPL = {
   calendar: { name: 'Economic calendar', cat: 'Live data', fn: (w, h) => tplCalendar(w, h, 'en'), live: 1 },
+  price: { name: 'Price alert', cat: 'Live data', fn: (w, h) => tplPrice(w, h), live: 1 },
+  news: { name: 'News post', cat: 'Live data', fn: (w, h) => tplNews(w, h), live: 1 },
   article: { name: 'Blog article promo', cat: 'Blog', fn: tplArticle },
   quote: { name: 'Bold quote', cat: 'Quotes', fn: tplQuote },
   stat: { name: 'Big number', cat: 'Data', fn: tplStat },
