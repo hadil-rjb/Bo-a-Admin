@@ -5145,7 +5145,18 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   /** Weekly slides show Monday to Friday: on a Saturday or Sunday that's the coming week */
   const weekOf = (date) => { const wd = new Date(date + 'T12:00:00Z').getUTCDay(); return wd === 6 ? addDay(date, 2) : wd === 0 ? addDay(date, 1) : date; };
-  const isWeek = (cfg) => cfg.map && cfg.map.layout === 'week' && cfg.map.week;
+  /** Day blocks with country groups and event lists (rebuilt from the first block) */
+  const isBlocks = (cfg) => !!(cfg.map && cfg.map.layout === 'week' && cfg.map.week);
+  /** One day or Monday–Friday. Older mappings didn't say: one day heading on the slide is a day */
+  function periodOf(cfg) {
+    const wk = cfg.map.week; if (wk.period === 'day' || wk.period === 'week') return wk.period;
+    const DAY = /monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(mon|tue|wed|thu|fri)\b|الاثنين|الثلاثاء|الأربعاء|الخميس|الجمعة/i;
+    const heads = wk.slotLayerIds.filter((id) => { const t = String((cfg.orig[id] || {}).text || ''); return DAY.test(t) && !/[-–—]/.test(t) && t.split('\n').length === 1; }).length;
+    const range = (cfg.map.texts || []).some((t) => /\{week(Start|End)/.test(t.template || ''));
+    return (wk.period = range || heads >= 2 ? 'week' : 'day');
+  }
+  /** The slide shows a whole week (Mon–Fri): data, picker and labels by week */
+  const isWeek = (cfg) => isBlocks(cfg) && periodOf(cfg) === 'week';
   const weekDays = (date) => { const [y, m, d] = date.split('-').map(Number), at = new Date(Date.UTC(y, m - 1, d, 12)), mon = new Date(at.getTime() - ((at.getUTCDay() + 6) % 7) * 864e5); return [0, 1, 2, 3, 4].map((i) => new Date(mon.getTime() + i * 864e5).toISOString().slice(0, 10)); };
   /** What a page needs: the events of its day, or of the whole week for a weekly layout */
   async function dataFor(cfg, date) {
@@ -5298,18 +5309,22 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const gh2 = heads.find((h) => h.y > list.y && (nextDayTop == null || h.y < nextDayTop));
     const lastBefore = lists.filter((l) => nextDayTop == null || l.y < nextDayTop).pop() || list;
     const bottom = Math.max(...slots.map((l) => l.y + l.h)), lineH = (list.size || 18) * (list.lh || 1.2);
+    // the flag picture beside the first group heading: redrawn beside each group with that country's flag
+    const fl = gh && wk.groupFlag && byId.get(wk.groupFlag);
     return {
+      ...(fl ? { fdx: fl.x - gh.x, fdy: fl.y - gh.y } : {}),
       top, headEnd: headEnd - top, dhOff: dh.y - top, firstGap: (gh ? gh.y : list.y) - headEnd, ghToList: gh ? list.y - (gh.y + gh.h) : 0, ghH: gh ? gh.h : 0, lineH,
       groupGap: gh2 ? gh2.y - (list.y + list.h) : Math.round(lineH), dayGap: nextDayTop != null ? nextDayTop - (lastBefore.y + lastBefore.h) : Math.round(lineH * 1.6),
-      limit: box ? box.y + box.h - Math.max(16, box.y + box.h - bottom) : (pg.layers[0] ? pg.layers[0].h - 40 : 1300),
+      // events may fill the panel down to a bottom margin like its top one (the panel's own padding)
+      limit: box ? box.y + box.h - clamp(top - box.y, 16, 60) : (pg.layers[0] ? pg.layers[0].h - 40 : 1300),
       listW: box ? Math.round(box.x + box.w - list.x - 20) : list.w,
-      proto: { dh: JSON.parse(JSON.stringify(dh)), list: JSON.parse(JSON.stringify(list)), ...(gh ? { gh: JSON.parse(JSON.stringify(gh)) } : {}), ...(bar ? { bar: JSON.parse(JSON.stringify(bar)) } : {}) },
+      proto: { dh: JSON.parse(JSON.stringify(dh)), list: JSON.parse(JSON.stringify(list)), ...(gh ? { gh: JSON.parse(JSON.stringify(gh)) } : {}), ...(bar ? { bar: JSON.parse(JSON.stringify(bar)) } : {}), ...(fl ? { flag: JSON.parse(JSON.stringify(fl)) } : {}) },
       anchor: box ? box.id : wk.slotLayerIds[0],
     };
   }
   /** Rebuilds the day blocks with the week's events; returns true when the slide changed */
   function applyWeek(pg, byDay, cfg) {
-    const wk = cfg.map.week, m = cfg.wkm || (cfg.wkm = weekMetrics(pg, wk)), before = JSON.stringify(pg.layers.filter((l) => l.lvw));
+    const wk = cfg.map.week, m = cfg.wkm && cfg.wkm.v === 2 ? cfg.wkm : (cfg.wkm = { ...weekMetrics(pg, wk), v: 2 }), before = JSON.stringify(pg.layers.filter((l) => l.lvw));
     const keep = new Set(pg.live ? choose(Object.values(byDay || {}).flat(), cfg, 999).map((e) => e.id) : []);
     pg.layers = pg.layers.filter((l) => !l.lvw);
     wk.slotLayerIds.forEach((id) => { const l = pg.layers.find((x) => x.id === id); if (l) l.hidden = true; });
@@ -5352,6 +5367,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           // a flag at the start of the heading is drawn as a picture (emoji flags show as letters on Windows and on the export server)
           const fs = P.gh.size || 20, flag = ghFlag && flagOf(g.e), fw = Math.round(fs * 1.1), fh = Math.round(fs * 0.78), gap = Math.round(fs * 0.4);
           const vals = { flag: flagEmoji(g.e.country), country: g.e.country || '', countryName: countryName(g.e.country, cfg.lang), currency: g.e.currency || '' };
+          if (P.flag && m.fdx != null) add({ ...P.flag, fill: flagOf(g.e) || P.flag.fill }, `lvw-${n}-f${j}`, { x: Math.round(P.gh.x + m.fdx), y: Math.round(y + m.fdy) });
           if (flag) add({ type: 'image', name: 'Flag', x: P.gh.x, y: 0, w: fw, h: fh, rot: 0, op: 1, r: Math.max(2, Math.round(fs * 0.12)), fill: flag, stroke: 'rgba(255,255,255,0.35)', sw: 1 }, `lvw-${n}-f${j}`, { y: Math.round(y + (Math.min(P.gh.h, fs * (P.gh.lh || 1.2)) - fh) / 2) });
           const gx = flag ? P.gh.x + fw + gap : P.gh.x;
           add(flag ? { ...P.gh, x: gx } : P.gh, `lvw-${n}-g${j}`, { y, w: Math.max(P.gh.w - (gx - P.gh.x), m.listW - (gx - P.list.x)), text: fill(flag ? ghRest : ghTpl, vals) });
@@ -5372,7 +5388,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     }
     cfg.shown = shown; // what the slide actually lists (the panel's ticks and count)
     cfg.room = Math.max(0, Math.floor((m.limit - (n ? y - m.dayGap : m.top)) / m.lineH)); // event lines that still fit
-    if (!out.length) { add(P.dh, 'lvw-0-day', { y: m.top + m.dhOff, text: cfg.lang === 'ar' ? 'لا توجد أحداث هذا الأسبوع' : 'No events this week' }); }
+    if (!out.length) { add(P.dh, 'lvw-0-day', { y: m.top + m.dhOff, text: isWeek(cfg) ? (cfg.lang === 'ar' ? 'لا توجد أحداث هذا الأسبوع' : 'No events this week') : (cfg.lang === 'ar' ? 'لا توجد أحداث في هذا اليوم' : 'No events this day') }); }
     const at = pg.layers.findIndex((l) => l.id === m.anchor); pg.layers.splice(at >= 0 ? at + 1 : pg.layers.length, 0, ...out);
     return JSON.stringify(out) !== before;
   }
@@ -5383,7 +5399,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (!cfg.srcLang) cfg.srcLang = map.rows.some((r) => r.fields.some((f) => f.role === 'event' && AR_RE.test(String((cfg.orig[f.layerId] || {}).text || '')))) ? 'ar' : 'en';
     const set = (id, k, v) => { const l = byId.get(id); if (l && l[k] !== v) { l[k] = v; changed = true; } };
     const shown = (id) => !!(cfg.orig[id] && cfg.orig[id].hidden);
-    if (isWeek(cfg)) { changed = applyWeek(pg, byDay || { [date]: events }, cfg) || changed; byId = new Map(pg.layers.map((l) => [l.id, l])); }
+    if (isBlocks(cfg)) { changed = applyWeek(pg, byDay || { [date]: events }, cfg) || changed; byId = new Map(pg.layers.map((l) => [l.id, l])); }
     const list = choose(events, cfg, map.rows.length), pal = palette(pg, cfg);
     map.rows.forEach((row, i) => {
       const e = list[i];
@@ -5501,7 +5517,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     cfg.geo = (keep && keep.geo) || {};
     pg.layers.forEach((l) => { if (!cfg.geo[l.id]) cfg.geo[l.id] = { x: l.x, align: l.align, dir: l.dir, font: l.font }; });
     if (keep && keep.i18n) cfg.i18n = keep.i18n;
-    if (map.layout === 'week' && map.week) { cfg.wkm = weekMetrics(pg, map.week); cfg.pick = null; const ll = pg.layers.find((l) => l.id === map.week.list.layerId); if (ll && !map.timeFmt) map.timeFmt = timeFmt(ll.text); }
+    if (map.layout === 'week' && map.week) { cfg.wkm = { ...weekMetrics(pg, map.week), v: 2 }; cfg.pick = null; const ll = pg.layers.find((l) => l.id === map.week.list.layerId); if (ll && !map.timeFmt) map.timeFmt = timeFmt(ll.text); }
     pg.live = cfg;
   }
   /** Free space to the right of each left-aligned data text (up to the next element in its row, or its card's edge):
@@ -5746,7 +5762,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   function bound(pg) {
     const cfg = pg.live, map = cfg.map, events = cfg.events || [], tz = schedTz();
-    const list = choose(events, cfg, isWeek(cfg) ? 999 : map.rows.length), chosen = new Set(list.map((e) => e.id));
+    const bk = isBlocks(cfg), list = choose(events, cfg, bk ? 999 : map.rows.length), chosen = new Set(list.map((e) => e.id));
     const visible = events.filter((e) => cfg.impact.includes(e.impact) || chosen.has(e.id));
     const r1 = map.rows[0], byId = new Map(pg.layers.map((l) => [l.id, l]));
     const wk = isWeek(cfg), shownDate = (cfg.feed && cfg.feed.date) || dayFor(cfg, ED.d);
@@ -5758,7 +5774,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         <button class="lv-pd ${ED.lvCal && ED.lvCal.open ? 'on' : ''}" data-act="lvCal" title="Choose a ${unit}" aria-haspopup="dialog" aria-expanded="${!!(ED.lvCal && ED.lvCal.open)}">${ic('cal', 15)}<span>${esc(periodLabel(shownDate, wk))}</span>${ic('chevD', 14)}</button>
         <button class="lv-pa" data-act="lvShift" data-n="1" aria-label="Next ${unit}" title="Next ${unit}">${ic('chevR', 16)}</button>${ED.lvCal && ED.lvCal.open ? calPop(wk, shownDate) : ''}</div>`;
     const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>` : cfg.feed ? `<p class="lv-src">${cfg.feed.count} events ${wk ? 'this week' : 'that day'} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
-    const ctry = cfg.countries.length, onSlide = wk ? new Set(cfg.shown || []) : chosen;
+    const ctry = cfg.countries.length, onSlide = bk ? new Set(cfg.shown || []) : chosen;
     // the list: what's on the slide first in mind, grouped by day on weekly slides
     let evHtml = '';
     if (visible.length) {
@@ -5774,7 +5790,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           + (cfg.lang === 'ar' && (cfg.srcLang || 'en') !== 'ar' ? `<div class="lv-swr lv-rtl"><div class="grow"><b>Right-to-left</b><p>Mirror the layout for Arabic.</p></div>${sw(cfg.mirror !== false, 'lvMirror', '', 'Right-to-left layout')}</div>` : '')))
       + sec('Filters', field('Impact', `<div class="lv-imps">${['high', 'medium', 'low'].map((k) => `<button class="lv-impb i${IMP[k]} ${cfg.impact.includes(k) ? 'on' : ''}" data-act="lvImp" data-k="${k}" aria-pressed="${cfg.impact.includes(k)}"><span class="st">${'★'.repeat(IMP[k])}</span>${IMP_WORD.en[k]}</button>`).join('')}</div>`)
         + field(`Countries <em>${ctry}/${CTRY.length}</em>${ctry < CTRY.length ? '<button class="btn link sm lv-all" data-act="lvCtyAll">All</button>' : ''}`, `<div class="lv-ctys">${CTRY.map(([k, l]) => `<button class="lv-cty ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}" aria-pressed="${cfg.countries.includes(k)}" title="${esc(countryName(k, 'en'))} · ${l}">${k === 'GB' ? 'UK' : k}</button>`).join('')}</div>`))
-      + sec('Events', feedNote + (wk && cfg.room != null && cfg.room < 1 && visible.length > onSlide.size ? `<p class="lv-full">${ic('alert', 14)}<span>The slide is full. Untick an event to add another.</span></p>` : '') + `<div class="lv-evs ${wk && cfg.room != null && cfg.room < 1 ? 'full' : ''}">${evHtml}</div>`,
+      + sec('Events', feedNote + (bk && cfg.room != null && cfg.room < 1 && visible.length > onSlide.size ? `<p class="lv-full">${ic('alert', 14)}<span>The slide is full. Untick an event to add another.</span></p>` : '') + `<div class="lv-evs ${wk && cfg.room != null && cfg.room < 1 ? 'full' : ''}">${evHtml}</div>`,
         `<span class="lv-count" title="Events on the slide">${onSlide.size} on the slide</span>${cfg.pick ? '<button class="btn link sm lv-auto" data-act="lvAuto">Auto-pick</button>' : '<span class="lv-tag">Auto</span>'}`)
       + sec('Updates', `<div class="lv-sw">
           ${figSw(map, cfg)}
@@ -5787,7 +5803,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           ${map.needs && map.needs.note ? `<p class="lv-note">${ic('wand', 14)}<span>${esc(map.needs.note)}</span></p>` : ''}
           <div class="lv-maps" role="table" aria-label="Fields read on the slide">
             <div class="lv-map lv-map-h" role="row"><span role="columnheader">On the slide</span><span role="columnheader">Reads as</span></div>
-            ${isWeek(cfg) ? [['Day heading', map.week.dayHeader.layerId, 'Day'], ...(map.week.groupHeader ? [['Group heading', map.week.groupHeader.layerId, 'Country']] : []), ['Events list', map.week.list.layerId, 'Event lines']].map(([n2, id, lab]) => `<div class="lv-map" role="row"><span class="tx" title="${esc((cfg.orig[id] || {}).text || '')}">${esc(String((cfg.orig[id] || {}).text || n2).split('\n')[0].slice(0, 28))}</span><span class="lv-fixed live">${lab}</span></div>`).join('') + `<p class="lv-hint">Every day of the week is rebuilt from the first day block, one group per country, with the design's spacing. Each line: <code>${esc(map.week.list.lineTemplate)}</code></p>` : ''}
+            ${bk ? [['Day heading', map.week.dayHeader.layerId, 'Day'], ...(map.week.groupHeader ? [['Group heading', map.week.groupHeader.layerId, 'Country']] : []), ['Events list', map.week.list.layerId, 'Event lines']].map(([n2, id, lab]) => `<div class="lv-map" role="row"><span class="tx" title="${esc((cfg.orig[id] || {}).text || '')}">${esc(String((cfg.orig[id] || {}).text || n2).split('\n')[0].slice(0, 28))}</span><span class="lv-fixed live">${lab}</span></div>`).join('') + `<p class="lv-hint">${isWeek(cfg) ? 'Every day of the week is rebuilt from the first day block' : 'The day block is rebuilt with that day\'s events'}, one group per country, with the design's spacing. Each line: <code>${esc(map.week.list.lineTemplate)}</code></p>` : ''}
             ${r1 ? r1.fields.map((f, n) => `<div class="lv-map" role="row">${mapChip(f, cfg, byId)}<select class="field sm" data-lvrole="${n}" aria-label="Field type">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
             ${map.date ? `<div class="lv-map" role="row"><span class="tx" title="${esc((cfg.orig[map.date.layerId] || {}).text || '')}">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 28))}</span><span class="lv-fixed">Date</span></div>` : ''}
             ${map.tz ? `<div class="lv-map" role="row"><span class="tx">${esc(((cfg.orig[map.tz.layerId] || {}).text || '').split('\n')[0].slice(0, 28))}</span><span class="lv-fixed">Time zone</span></div>` : ''}
@@ -5812,7 +5828,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const r = peek.get(pageSig(d.pages[i])), found = r && !(r instanceof Promise) ? r : null; if (!found) peekPage(d, i);
     const feed = found && !found.isCalendar && FEEDS ? FEEDS.detect(d.pages[i]) : null;
     const card = !found ? '<div class="lv-card"><div class="skel" style="height:14px;width:55%"></div><div class="skel" style="height:12px;width:85%;margin-top:10px"></div></div>'
-      : found.isCalendar ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>${found.layout === 'week' ? 'Weekly calendar found' : 'Calendar design found'}</b><p>${found.layout === 'week' ? 'Day blocks with event lists. We keep your design and fill the whole week.' : `${found.rows.length} rows. We keep your design and make its text live.`}</p></div></div>`
+      : found.isCalendar ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>${found.layout === 'week' ? (found.week && found.week.period === 'day' ? 'Daily calendar found' : 'Weekly calendar found') : 'Calendar design found'}</b><p>${found.layout === 'week' ? (found.week && found.week.period === 'day' ? 'One day with events grouped by country. We keep your design and fill it with that day\'s events.' : 'Day blocks with event lists. We keep your design and fill the whole week.') : `${found.rows.length} rows. We keep your design and make its text live.`}</p></div></div>`
         : feed ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>${feed.kind === 'price' ? 'Price alert found' : 'News post found'}</b><p>We keep your design and make its ${esc(feed.found.join(', '))} live${feed.kind === 'news' ? ' with the latest headline' : ' with the market price'}.</p></div></div>`
         : `<div class="lv-card"><span class="lv-ic muted">${ic('chart', 16)}</span><div><b>No live layout found yet</b><p>Claude can still look for a calendar, or build a calendar, price alert or news template from your Brand Kit.</p></div></div>`;
     return `${card}<div class="lv-cta"><button class="btn primary lv-go" data-act="lvAnalyze">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Nothing is replaced. Only the text becomes live.</p></div>${FEEDS ? FEEDS.slideOffer() : ''}${importCard()}`;
@@ -6074,7 +6090,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     lvPick: async (a) => {
       if (ED.lvPicking) return; // one change at a time: each one re-renders the slide
       ED.lvAnchor = { id: a.dataset.id, top: a.getBoundingClientRect().top };
-      const c = cfgNow(), wk = isWeek(c), n = wk ? 999 : c.map.rows.length, cur = wk ? [...(c.shown || [])] : choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id, adding = !cur.includes(id);
+      const c = cfgNow(), wk = isBlocks(c), n = wk ? 999 : c.map.rows.length, cur = wk ? [...(c.shown || [])] : choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id, adding = !cur.includes(id);
       const next = adding ? [...cur, id] : cur.filter((x) => x !== id);
       if (next.length > n) { toast(`This design has ${n} rows: untick an event first`); return; }
       if (!next.length) { toast('Keep at least one event on the slide, or use Auto-pick'); return; }
@@ -6126,7 +6142,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       for (const p of S.posts.filter((x) => x.d === d.id && x.status === 'Scheduled' && x.publish && x.publish.state === 'pending')) {
         try {
           const sigs = [];
-          for (const pg of livePages(d)) { const r = await dataFor(pg.live, dayFor(pg.live, d, p)); sigs.push(sigOf(r.events, pg.live, isWeek(pg.live) ? 999 : pg.live.map.rows.length)); }
+          for (const pg of livePages(d)) { const r = await dataFor(pg.live, dayFor(pg.live, d, p)); sigs.push(sigOf(r.events, pg.live, isBlocks(pg.live) ? 999 : pg.live.map.rows.length)); }
           const sig = sigs.join('#'); if (p.liveSig !== sig) { const first = p.liveSig == null; p.liveSig = sig; save(); if (!first) PUB.prepare(p); }
         } catch (e) { /* next tick */ }
       }
