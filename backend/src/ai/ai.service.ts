@@ -9,7 +9,8 @@ import { GscService } from "../gsc/gsc.service";
 import { Actor, ActivityService } from "../share/activity.service";
 import { AiSettings, AiSettingsDocument } from "./ai-settings.schema";
 import { Idea, IdeaDocument } from "./idea.schema";
-import { GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto } from "./dto/ai.dto";
+import { AgentStepDto, GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto } from "./dto/ai.dto";
+import { AGENT_PROMPT, AGENT_TOOLS, AgentCall, cleanMessages, toAnthropic, toOpenAi } from "./agent";
 import { cleanHtml, words } from "./html";
 import { fetchImage, Img } from "./image";
 import { coverProfile } from "./cover-profile";
@@ -22,6 +23,8 @@ const BRAND = "UX Boğa";
 const FORMATS = ["guide", "how-to", "listicle", "comparison", "case-study", "checklist", "opinion", "news-analysis"];
 const INTENTS = ["informational", "commercial", "transactional", "navigational"];
 const HOURLY_LIMIT = 30;
+/** Agent turns per user and hour (one request can run several tools) */
+const AGENT_HOURLY_LIMIT = 400;
 
 const clip = (s: unknown, n: number) => String(s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
 const cut = (s: string, n: number) => (s.length <= n ? s : s.slice(0, n + 1).replace(/\s+\S*$/, "").trim());
@@ -54,6 +57,63 @@ export class AiService {
     private act: ActivityService,
     cfg: ConfigService,
   ) { this.secret = cfg.getOrThrow<string>("JWT_SECRET"); }
+
+  /* ───────────── Studio Agent ───────────── */
+  private agentHits = new Map<string, number[]>();
+  private modelCache = new Map<Provider, { at: number; models: { id: string; name: string }[] }>();
+
+  /** Models the agent can use: the providers with a key, and the workspace default */
+  async agentModels() {
+    const s = await this.load(), providers: { id: Provider; label: string; models: { id: string; name: string }[] }[] = [];
+    for (const p of ["anthropic", "groq"] as Provider[]) {
+      if (!this.key(s, p)) continue;
+      let hit = this.modelCache.get(p);
+      if (!hit || Date.now() - hit.at > 10 * 60_000) {
+        const models = await this.listModels(p).catch(() => hit?.models ?? []);
+        hit = { at: Date.now(), models }; this.modelCache.set(p, hit);
+      }
+      providers.push({ id: p, label: LABEL[p], models: hit.models });
+    }
+    return { default: { provider: s.provider, model: s.provider === "anthropic" ? s.anthropicModel : s.groqModel }, providers };
+  }
+
+  /** One turn of the agent: the model answers with text and/or tool calls the studio then runs */
+  async agentStep(d: AgentStepDto, actor: Actor) {
+    const now = Date.now(), uid = actor.id ?? "anon", h = (this.agentHits.get(uid) ?? []).filter((t) => now - t < 3_600_000);
+    if (h.length >= AGENT_HOURLY_LIMIT) throw new HttpException("Hourly agent limit reached — try again later", 429);
+    h.push(now); this.agentHits.set(uid, h);
+
+    const s = await this.load(), p: Provider = d.provider ?? s.provider, key = this.key(s, p);
+    if (!key) throw new BadRequestException(`Add a ${LABEL[p]} API key in Settings → AI first`);
+    const model = d.model || (p === "anthropic" ? s.anthropicModel : s.groqModel);
+    const msgs = cleanMessages(d.messages);
+    const system = `${AGENT_PROMPT}\n\nWorkspace brief (audience, tone, goals): ${clip(s.brief, 1500) || "none"}\nDefault language for copy: ${s.language || "English"}\n\nThe editor right now (JSON):\n${d.context}`;
+
+    if (p === "anthropic") {
+      const res = await this.http("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({ model, max_tokens: 4096, system, tools: AGENT_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })), messages: toAnthropic(msgs) }),
+      });
+      if (!res.ok) await this.fail(res, p);
+      const j: any = await res.json();
+      const blocks: any[] = j.content ?? [];
+      const calls: AgentCall[] = blocks.filter((b) => b.type === "tool_use").map((b) => ({ id: b.id, name: b.name, input: b.input ?? {} }));
+      return { text: blocks.filter((b) => b.type === "text").map((b) => b.text).join("").trim(), calls, provider: p, model, stop: j.stop_reason };
+    }
+    const vision = /llama-4|vision|scout|maverick/i.test(model);
+    const res = await this.http("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST", headers: { Authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ model, max_tokens: 4096, temperature: 0.4, messages: toOpenAi(system, msgs, vision), tools: AGENT_TOOLS.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })), tool_choice: "auto" }),
+    });
+    if (!res.ok) await this.fail(res, p);
+    const j: any = await res.json(), m = j.choices?.[0]?.message ?? {};
+    const calls: AgentCall[] = (m.tool_calls ?? []).map((c: any) => {
+      let input: Record<string, unknown> = {};
+      try { input = JSON.parse(c.function?.arguments || "{}"); } catch { input = { _error: "The arguments were not valid JSON" }; }
+      return { id: String(c.id).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || `call_${Math.random().toString(36).slice(2, 10)}`, name: c.function?.name, input };
+    });
+    return { text: String(m.content ?? "").trim(), calls, provider: p, model, stop: j.choices?.[0]?.finish_reason };
+  }
 
   /* ───────────── Réglages ───────────── */
   private async load() {

@@ -52,3 +52,13 @@ export class CoverImageDto {
   @IsOptional() @Matches(/^\d{1,2}:\d{1,2}$/) ratio?: string;
   @IsOptional() @IsInt() @Min(0) @Max(2147483647) seed?: number;
 }
+
+/** One turn of the Studio Agent (see agent.ts): the conversation so far and the editor's state */
+export class AgentStepDto {
+  @IsOptional() @IsIn(["anthropic", "groq"]) provider?: "anthropic" | "groq";
+  @IsOptional() @IsString() @Matches(/^[\w.:\/-]{1,120}$/, { message: "invalid model id" }) model?: string;
+  /** The design, the selection and the brand kit as JSON, built by the studio */
+  @IsString() @MaxLength(120_000) context: string;
+  /** Provider-neutral messages: user / assistant (text, tool calls) / tool (results); checked in agent.ts */
+  @IsArray() @ArrayMaxSize(80) messages: unknown[];
+}

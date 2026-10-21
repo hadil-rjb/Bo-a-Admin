@@ -1,8 +1,8 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Query, Req } from "@nestjs/common";
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, Put, Query, Req } from "@nestjs/common";
 import { Roles } from "../common/roles.decorator";
 import { AiService, Provider } from "./ai.service";
 import { CoverImageService } from "./cover-image.service";
-import { CoverImageDto, CoverPromptDto, GenerateArticleDto, GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto } from "./dto/ai.dto";
+import { AgentStepDto, CoverImageDto, CoverPromptDto, GenerateArticleDto, GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto } from "./dto/ai.dto";
 
 const actor = (r: any) => ({ id: r.user.sub as string, name: r.user.name as string });
 
@@ -20,5 +20,8 @@ export class AiController {
   @Roles("admin") @Post("cover-style/analyze") analyzeCover() { return this.s.analyzeCoverStyle(); }
   @Roles("admin", "editor") @Post("cover-prompt") cover(@Req() r: any, @Body() d: CoverPromptDto) { return this.s.coverPrompt(d, actor(r)); }
   @Roles("admin", "editor") @Post("social-caption") caption(@Req() r: any, @Body() d: SocialCaptionDto) { return this.s.socialCaption(d, actor(r)); }
+  /** Studio Agent: models to choose from, and one turn of the agent */
+  @Roles("admin", "editor") @Get("agent/models") agentModels() { return this.s.agentModels(); }
+  @Roles("admin", "editor") @Post("agent") @HttpCode(200) agent(@Req() r: any, @Body() d: AgentStepDto) { return this.s.agentStep(d, actor(r)); }
   @Roles("admin", "editor") @Delete("ideas/:id") dismiss(@Param("id") id: string) { return this.s.dismiss(id); }
 }

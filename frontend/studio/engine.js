@@ -2160,14 +2160,26 @@ function agEmpty() {
 }
 function agMsg(m, i, last) {
   if (m.r === 'u') return `<div class="ag-u">${esc(m.t)}</div>`;
-  const steps = (m.steps || []).map((s) => `<div class="ag-step ${s.done ? 'done' : ''}">${s.done ? ic('check', 14, 'ck') : '<i class="spin"></i>'}<span>${esc(s.l)}</span></div>`).join('');
-  const acts = [];
-  if (m.after != null && !m.undone) acts.push(`<button class="btn secondary sm" data-act="agUndo" data-i="${i}">${ic('undo', 14)}Undo</button>`);
-  if (m.undone) acts.push('<span class="xs-t muted">Undone</span>');
-  if (m.caption) { acts.push(`<button class="btn secondary sm" data-act="agCopy" data-i="${i}">${ic('copy', 14)}Copy</button>`); if (/Here is/.test(m.t)) acts.push(`<button class="btn secondary sm" data-act="agSched" data-i="${i}">${ic('clock', 14)}Schedule with it</button>`); }
+  const steps = m.steps || [], n = steps.length, fails = steps.filter((s) => s.err).length, cur = steps.find((s) => !s.done), running = !m.done;
+  const head = `<div class="ag-who"><span class="ag-av">${ic('studio', 12)}</span><b>Agent</b>${m.model ? `<span class="ag-mdl">${esc(m.model)}</span>` : ''}${running ? '<span class="ag-live"><i></i>Working</span>' : ''}</div>`;
+  // the work log: one live line while it runs, then a summary that opens on the full list
+  let log = '';
+  if (n) {
+    if (running) log = `<div class="ag-log live"><div class="ag-log-s"><i class="spin"></i><span>${esc(cur ? cur.l : 'Thinking')}…</span><em>${cur ? `Step ${steps.filter((s) => s.done).length + 1}` : `${n} done`}</em></div></div>`;
+    else {
+      const list = steps.map((s) => `<li class="${s.err ? 'err' : ''}">${ic(s.err ? 'alert' : 'check', 12)}<span>${esc(s.l)}</span></li>`).join('');
+      log = `<details class="ag-log${fails ? ' bad' : ''}" data-i="${i}"${m.logOpen ? ' open' : ''}><summary class="ag-log-s">${ic(fails ? 'alert' : 'check', 13)}<span>${fails ? `${n - fails} of ${n} actions done` : `${n} action${n === 1 ? '' : 's'} done`}</span>${ic('chevD', 13)}</summary><ol class="ag-log-l">${list}</ol></details>`;
+    }
+  }
+  const think = running && !n && !m.t ? '<div class="ag-dots"><i></i><i></i><i></i></div>' : '';
+  const text = m.t ? `<div class="ag-txt">${esc(m.t)}</div>` : '';
+  const cap = m.caption ? `<div class="ag-cap"><div class="ag-cap-h"><span>Caption</span><span class="grow"></span><button class="ag-mini" data-act="agCopy" data-i="${i}">${ic('copy', 13)}Copy</button>${m.ai || /Here is/.test(m.t) ? `<button class="ag-mini" data-act="agSched" data-i="${i}">${ic('clock', 13)}Schedule</button>` : ''}</div><p>${esc(m.caption)}</p></div>` : '';
+  const foot = m.after != null && !m.undone ? `<div class="ag-foot"><button class="ag-mini" data-act="agUndo" data-i="${i}">${ic('undo', 13)}Undo</button></div>` : m.undone ? `<div class="ag-foot"><span class="ag-undone">${ic('undo', 13)}Undone</span></div>` : '';
   const chips = last && m.done && m.chips && !m.undone ? `<div class="ag-sugs">${m.chips.map((k) => `<button class="ag-sug" data-act="agDo" data-k="${k}">${esc(AG_LABEL[k])}</button>`).join('')}</div>` : '';
-  return `<div class="ag-a"><span class="ag-av">${ic('studio', 14)}</span><div class="ag-body">${steps ? `<div class="ag-steps">${steps}</div>` : ''}${!m.done && !steps ? '<div class="ag-dots"><i></i><i></i><i></i></div>' : ''}${m.t ? `<p>${esc(m.t)}</p>` : ''}${m.caption ? `<div class="ag-quote">${esc(m.caption)}</div>` : ''}${acts.length ? `<div class="ag-acts">${acts.join('')}</div>` : ''}${chips}</div></div>`;
+  return `<div class="ag-a">${head}<div class="ag-body">${running ? log + think + text : text + log}${cap}${foot}${chips}</div></div>`;
 }
+// the work log stays open or closed across re-renders
+document.addEventListener('toggle', (e) => { const d = e.target; if (d && d.classList && d.classList.contains('ag-log') && ED.d && ED.d.chat) { const m = ED.d.chat[+d.dataset.i]; if (m) m.logOpen = d.open; } }, true);
 function agThread() {
   const th = $('#agTh'); if (!th) return; const ch = ED.d.chat || [];
   if (!ch.length && th.querySelector('.ag-empty')) ED._agTop = th.scrollTop; else if (ch.length) ED._agTop = 0;
@@ -6564,6 +6576,314 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 
   FEEDS = { panel, brandForm, slideOffer, attach, unbind, styleCards, look };
 })();
+
+/* ============ v25 · Studio Agent with AI: every editor action, any model ============ */
+/* With a Claude or Groq key in Settings → AI, the Agent panel talks to a real model (/api/ai/agent).
+   The design lives here, so the loop runs here: each turn sends the conversation and the editor's
+   state (current slide, selection, brand kit, a picture of the slide), the model answers with text
+   and tool calls, the tools below run on the design, their results go back, until the model is done.
+   One run is one Undo step. The model can be chosen in the composer (remembered in this browser).
+   Without any key, the rule-based actions above keep working. */
+{
+  const AGM = { list: null, loading: null, open: false };
+  const MODEL_KEY = 'boga.agentModel';
+  const ICON_NAMES = ['star', 'bell', 'check', 'x', 'plus', 'search', 'chat', 'globe', 'clock', 'send', 'trend', 'users', 'user', 'shield', 'alert', 'link', 'chart', 'cal', 'doc', 'image', 'layers', 'layout', 'palette', 'wand', 'studio', 'sun', 'moon', 'eye', 'lock', 'download', 'upload', 'refresh', 'history', 'settings', 'grid', 'frame', 'type', 'shapes', 'copy', 'arrowUp'];
+  const MAX_TURNS = 16;
+  const mem = new Map(); // design id → provider-neutral conversation
+
+  /* ---------- models ---------- */
+  function loadModels(force) {
+    if (AGM.loading && !force) return AGM.loading;
+    AGM.at = Date.now();
+    AGM.loading = api('/ai/agent/models').then((r) => { AGM.list = r; }).catch(() => { AGM.list = { default: null, providers: [] }; }).then(() => { if (ED.d && ED.tab === 'agent') { agModelChip(); agThread(); } });
+    return AGM.loading;
+  }
+  const saved = () => { try { return JSON.parse(localStorage.getItem(MODEL_KEY) || 'null'); } catch (e) { return null; } };
+  const remember = (v) => { try { v ? localStorage.setItem(MODEL_KEY, JSON.stringify(v)) : localStorage.removeItem(MODEL_KEY); } catch (e) { /* private mode */ } };
+  /** The model the agent uses: the one picked here, else the workspace default, else the first one available */
+  function current() {
+    const L = AGM.list; if (!L || !L.providers.length) return null;
+    const has = (v) => v && L.providers.some((p) => p.id === v.provider && (!p.models.length || p.models.some((m) => m.id === v.model)));
+    const pick = saved(); if (has(pick)) return pick;
+    if (L.default && L.providers.some((p) => p.id === L.default.provider)) return L.default;
+    const p = L.providers[0]; return p.models[0] ? { provider: p.id, model: p.models[0].id } : null;
+  }
+  const aiOn = () => !!current();
+  const modelName = (v) => { if (!v) return ''; const p = AGM.list.providers.find((x) => x.id === v.provider), m = p && p.models.find((x) => x.id === v.model); return (m && m.name !== m.id ? m.name : v.model).replace(/^claude-/i, 'Claude ').replace(/-/g, ' '); };
+  function agModelChip() {
+    const bar = $('.ag-bar'); if (!bar) return;
+    let c = $('#agModel'); if (!c) { c = document.createElement('span'); c.id = 'agModel'; c.className = 'ag-mw'; bar.insertBefore(c, $('#agSend')); }
+    const v = current();
+    c.innerHTML = !AGM.list ? '' : v
+      ? `<button class="ag-chip ag-model ${AGM.open ? 'on' : ''}" data-act="agModel" aria-haspopup="menu" aria-expanded="${AGM.open}" title="Model: ${esc(v.model)}">${ic('studio', 13)}<span>${esc(modelName(v))}</span>${ic('chevD', 12)}</button>${AGM.open ? modelMenu(v) : ''}`
+      : `<button class="ag-chip ag-model off" data-act="agModelSetup" title="Add a Claude or Groq key to use AI">${ic('alert', 13)}<span>No AI model</span></button>`;
+  }
+  function modelMenu(v) {
+    const L = AGM.list, def = L.default;
+    return `<div class="ag-mm" role="menu" aria-label="Choose the model">${L.providers.map((p) => `<div class="ag-mm-h">${esc(p.label)}</div>${(p.models.length ? p.models : [{ id: def && def.provider === p.id ? def.model : '', name: 'Default model' }]).filter((m) => m.id).map((m) => {
+      const on = v.provider === p.id && v.model === m.id, isDef = def && def.provider === p.id && def.model === m.id;
+      return `<button class="ag-mm-i ${on ? 'on' : ''}" role="menuitemradio" aria-checked="${on}" data-act="agPickModel" data-p="${esc(p.id)}" data-m="${esc(m.id)}"><span class="grow"><b>${esc(m.name)}</b>${m.name !== m.id ? `<small>${esc(m.id)}</small>` : ''}</span>${isDef ? '<em>Default</em>' : ''}${on ? ic('check', 14) : ''}</button>`;
+    }).join('')}`).join('')}${saved() ? '<button class="ag-mm-f" data-act="agPickModel" data-p="" data-m="">Use the workspace default</button>' : ''}</div>`;
+  }
+
+  /* ---------- what the model sees ---------- */
+  const r1 = (n) => Math.round((+n || 0) * 10) / 10;
+  const SAFE = (v) => typeof v === 'string' && !/[;"<>{}\\]|url\s*\(|expression|javascript:/i.test(v) && v.length <= 400;
+  function compact(l) {
+    const o = { id: l.id, type: l.icon ? 'icon' : l.type, name: l.name, x: r1(l.x), y: r1(l.y), w: r1(l.w), h: r1(l.h) };
+    if (l.rot) o.rot = l.rot; if (l.op != null && l.op !== 1) o.op = l.op; if (l.hidden) o.hidden = true; if (l.locked) o.locked = true;
+    if (l.type === 'text') Object.assign(o, { text: String(l.text || '').slice(0, 600), font: l.font, size: l.size, weight: l.weight, color: l.color, align: l.align, lh: l.lh }, l.ls ? { ls: l.ls } : {}, l.dir === 'rtl' ? { dir: 'rtl' } : {}, l.it ? { it: true } : {}, l.up ? { up: true } : {});
+    else if (l.icon) Object.assign(o, { icon: l.icon, fill: l.fill });
+    else Object.assign(o, { fill: /url\(/.test(String(l.fill || '')) ? 'picture' : l.fill }, l.r ? { r: l.r } : {}, l.stroke ? { stroke: l.stroke, sw: l.sw } : {});
+    if (l.shb || l.shy || l.shx) Object.assign(o, { shx: l.shx || 0, shy: l.shy || 0, shb: l.shb || 0, shc: l.shc || '#000000' });
+    if (l.feed) o.live = l.feed === '@image' ? 'live headline photo' : l.feed === '@pos' ? 'live range marker' : 'live text: ' + l.feed;
+    return o;
+  }
+  const slideOf = (pg, i) => ({ number: i + 1, background: pg.bg, live: pg.live ? (pg.live.kind || 'calendar') : undefined, layers: pg.layers.map(compact) });
+  function context() {
+    const d = ED.d, b = brand(), [W, H] = dim(), all = ED.agScope === 'all';
+    return JSON.stringify({
+      design: { name: d.name, format: d.ratio, width: W, height: H, slides: d.pages.length, currentSlide: ED.pi + 1, selectedLayer: ED.sel || null, scope: all ? 'all slides' : 'current slide' },
+      brand: {
+        name: b.name, website: b.website || '', handle: b.handle || '', industry: b.industry || '', language: b.lang || 'English',
+        voice: String(b.voice || '').slice(0, 800), dos: String(b.dos || '').slice(0, 400), donts: String(b.donts || '').slice(0, 400), cta: b.cta || '', hashtags: b.hashtags || '',
+        colors: b.colors.map((c) => ({ name: c.name, hex: c.hex })), fonts: b.fonts,
+        logos: (b.logos || []).filter((l) => l.src).map((l) => ({ id: l.id, kind: l.kind, name: l.name })), assets: (b.assets || []).map((a) => ({ id: a.id, name: a.name })),
+        templates: (b.templates || []).map((t) => ({ id: t.id, name: t.name, format: t.ratio, live: !!t.live })),
+      },
+      slides: all ? d.pages.map(slideOf) : [slideOf(curP(), ED.pi)],
+      otherSlides: all ? undefined : d.pages.map((pg, i) => (i === ED.pi ? null : { number: i + 1, texts: pg.layers.filter((l) => l.type === 'text' && !l.hidden).slice(0, 4).map((l) => String(l.text).slice(0, 80)) })).filter(Boolean),
+    });
+  }
+  /** A picture of a slide for the model (JPEG, long side ≤ 1000 px) */
+  async function picture(i) {
+    if (!renderSlide) return null;
+    const [w, h] = dim(), s = Math.min(1, 1000 / Math.max(w, h));
+    try { const blob = await renderSlide(ED.d, i, s, 'jpeg'); return await new Promise((ok) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => ok(null); f.readAsDataURL(blob); }); } catch (e) { return null; }
+  }
+
+  /* ---------- tools: the editor's actions ---------- */
+  const NUM = ['x', 'y', 'w', 'h', 'rot', 'op', 'size', 'weight', 'lh', 'ls', 'sw', 'r', 'shx', 'shy', 'shb', 'sha', 'bl', 'bbl'];
+  const STR = ['name', 'text', 'color', 'fill', 'stroke', 'shc'];
+  const BOOL = ['hidden', 'locked', 'it', 'ul', 'up', 'fx', 'fy'];
+  const pageIx = (n) => { const i = n == null ? ED.pi : Math.round(+n) - 1; if (!(i >= 0 && i < ED.d.pages.length)) throw new Error(`There is no slide ${n}`); return i; };
+  const layerIn = (pg, id) => { const l = pg.layers.find((x) => x.id === id); if (!l) throw new Error(`No layer ${id} on this slide`); return l; };
+  /** Copies only known, well-formed properties (styles end up in an HTML attribute: no quotes, url() or ;) */
+  function setProps(l, p) {
+    if (!p || typeof p !== 'object') return [];
+    const bad = [];
+    NUM.forEach((k) => { if (p[k] == null) return; const v = +p[k]; if (Number.isFinite(v) && Math.abs(v) < 20000) l[k] = k === 'op' || k === 'sha' ? clamp(v, 0, 1) : k === 'size' ? clamp(Math.round(v), 6, 600) : k === 'weight' ? clamp(Math.round(v / 100) * 100, 100, 900) : v; else bad.push(k); });
+    STR.forEach((k) => { if (p[k] == null) return; const v = String(p[k]); if (k === 'text' || k === 'name') l[k] = v.slice(0, k === 'text' ? 3000 : 80); else if (SAFE(v)) l[k] = v; else bad.push(k); });
+    BOOL.forEach((k) => { if (p[k] != null) { if (p[k]) l[k] = true; else delete l[k]; } });
+    if (p.font != null) { if (/^[A-Za-z0-9 \-]{1,60}$/.test(String(p.font))) l.font = String(p.font); else bad.push('font'); }
+    if (p.align != null) { if (['left', 'center', 'right'].includes(p.align)) l.align = p.align; else bad.push('align'); }
+    if (p.dir != null) { if (['ltr', 'rtl'].includes(p.dir)) l.dir = p.dir; else bad.push('dir'); }
+    if (l.w != null && l.w < 1) l.w = 1; if (l.h != null && l.h < 1) l.h = 1;
+    return bad;
+  }
+  /** Texts on the shown slide take the height of their content */
+  const refit = (pi, ls) => { if (pi !== ED.pi) return; requestAnimationFrame(() => ls.forEach((l) => l.type === 'text' && fitText(l))); };
+  const loadSize = (src) => new Promise((ok) => { const i = new Image(); i.onload = () => ok(i.naturalWidth && i.naturalHeight ? i.naturalHeight / i.naturalWidth : 1); i.onerror = () => ok(1); i.src = src; });
+  async function imageSrc(ref) {
+    const b = brand(), s = String(ref || '');
+    if (s.startsWith('logo:')) { const l = (b.logos || []).find((x) => x.id === s.slice(5) && x.src); if (!l) throw new Error('No such logo in the brand kit'); return { src: l.src, name: l.name, fit: 'contain' }; }
+    if (s.startsWith('asset:')) { const a = (b.assets || []).find((x) => x.id === s.slice(6)); if (!a) throw new Error('No such asset in the brand kit'); return { src: a.src, name: a.name, fit: 'cover' }; }
+    if (/^https:\/\//.test(s)) { const r = await api('/social/markets/photo?' + new URLSearchParams({ url: s })); return { src: r.dataUrl, name: 'Picture', fit: 'cover' }; }
+    throw new Error("image must be 'logo:<id>', 'asset:<id>' or an https URL");
+  }
+  const T = {
+    async update_layers(a) {
+      const pi = pageIx(a.page), pg = ED.d.pages[pi], done = [], notes = [];
+      mutate(() => (a.updates || []).forEach((u) => { try { const l = layerIn(pg, u.id), bad = setProps(l, u.props); done.push(l); if (bad.length) notes.push(`${u.id}: ignored ${bad.join(', ')}`); } catch (e) { notes.push(e.message); } }));
+      refit(pi, done);
+      return `Updated ${done.length} layer(s).${notes.length ? ' ' + notes.join('; ') : ''}`;
+    },
+    async add_layers(a) {
+      const pi = pageIx(a.page), pg = ED.d.pages[pi], [W, H] = dim(), b = brand(), made = [], notes = [];
+      const primary = (b.colors[0] || {}).hex || '#FD0E35';
+      for (const it of (a.layers || []).slice(0, 30)) {
+        const p = it.props || {}, x = +p.x || 80, y = +p.y || 80; let l;
+        try {
+          if (it.kind === 'text') { const size = +p.size || 48; l = Tx(x, y, +p.w || W - x - 80, String(p.text || 'Text'), { name: p.name || 'Text', size, weight: 600, font: size >= 56 ? b.fonts.heading : b.fonts.body, color: autoColor() }); }
+          else if (it.kind === 'rect') l = Rc(x, y, +p.w || 400, +p.h || 240, primary, { name: 'Shape' });
+          else if (it.kind === 'ellipse') l = El(x, y, +p.w || 240, +p.h || +p.w || 240, primary, { name: 'Circle' });
+          else if (it.kind === 'line') l = Rc(x, y, +p.w || 400, +p.h || 6, autoColor(), { name: 'Line', r: 3 });
+          else if (it.kind === 'icon') { const k = ICON_NAMES.includes(it.icon) ? it.icon : 'star', s = +p.w || 160; l = Im(x, y, s, +p.h || s, autoColor(), { name: 'Icon · ' + k, icon: k }); }
+          else if (it.kind === 'image') { const im = await imageSrc(it.image), fit = it.fit === 'cover' || it.fit === 'contain' ? it.fit : im.fit, w = +p.w || 400, k = p.h ? null : await loadSize(im.src); l = Im(x, y, w, +p.h || Math.round(w * k), `url(${im.src}) center/${fit} no-repeat`, { name: im.name.slice(0, 30) }); }
+          else { notes.push(`unknown kind ${it.kind}`); continue; }
+          const bad = setProps(l, { ...p, ...(it.kind === 'image' ? { fill: undefined } : {}) }); if (bad.length) notes.push(`ignored ${bad.join(', ')}`);
+          made.push(l);
+        } catch (e) { notes.push(e.message); }
+      }
+      if (made.length) { mutate(() => { pg.layers.push(...made); if (pi === ED.pi) ED.sel = made[made.length - 1].id; }); refit(pi, made); }
+      return `Added ${made.length} layer(s): ${made.map((l) => `${l.id} (${l.name})`).join(', ') || 'none'}.${notes.length ? ' ' + notes.join('; ') : ''}`;
+    },
+    async delete_layers(a) {
+      const pg = ED.d.pages[pageIx(a.page)], set = new Set(a.ids || []), n = pg.layers.filter((l) => set.has(l.id)).length;
+      mutate(() => { pg.layers = pg.layers.filter((l) => !set.has(l.id)); if (set.has(ED.sel)) ED.sel = null; });
+      return `Deleted ${n} layer(s).`;
+    },
+    async duplicate_layers(a) {
+      const pi = pageIx(a.page), pg = ED.d.pages[pi], dx = a.dx == null ? 30 : +a.dx || 0, dy = a.dy == null ? 30 : +a.dy || 0, out = [];
+      mutate(() => (a.ids || []).forEach((id) => { const l = pg.layers.find((x) => x.id === id); if (!l) return; const c = { ...JSON.parse(JSON.stringify(l)), id: uid(), x: l.x + dx, y: l.y + dy, locked: false }; delete c.feed; pg.layers.splice(pg.layers.indexOf(l) + 1, 0, c); out.push(c.id); }));
+      return `Duplicated: ${out.join(', ') || 'nothing'}.`;
+    },
+    async arrange_layers(a) {
+      const pg = ED.d.pages[pageIx(a.page)], ids = new Set(a.ids || []), bgLocked = pg.layers[0] && pg.layers[0].locked && pg.layers[0].name === 'Background';
+      mutate(() => {
+        const L = pg.layers, mv = L.filter((l) => ids.has(l.id)), rest = L.filter((l) => !ids.has(l.id));
+        if (a.to === 'front') pg.layers = [...rest, ...mv];
+        else if (a.to === 'back') pg.layers = bgLocked && !ids.has(L[0].id) ? [L[0], ...mv, ...rest.slice(1)] : [...mv, ...rest];
+        else { const dir = a.to === 'forward' ? 1 : -1, arr = [...L]; (dir > 0 ? [...mv].reverse() : mv).forEach((l) => { const i = arr.indexOf(l), j = i + dir; if (j < (bgLocked ? 1 : 0) || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; }); pg.layers = arr; }
+      });
+      return `Moved ${ids.size} layer(s) ${a.to}.`;
+    },
+    async align_layers(a) {
+      const pg = ED.d.pages[pageIx(a.page)], [W, H] = dim(), ls = pg.layers.filter((l) => (a.ids || []).includes(l.id)), m = +a.margin || 0;
+      if (!ls.length) throw new Error('None of these layers is on the slide');
+      const sel = a.to === 'selection' && ls.length > 1, bx = sel ? { x0: Math.min(...ls.map((l) => l.x)), y0: Math.min(...ls.map((l) => l.y)), x1: Math.max(...ls.map((l) => l.x + l.w)), y1: Math.max(...ls.map((l) => l.y + l.h)) } : { x0: m, y0: m, x1: W - m, y1: H - m };
+      mutate(() => {
+        if (a.align === 'distribute-x' || a.align === 'distribute-y') {
+          const X = a.align === 'distribute-x', s = [...ls].sort((p, q) => (X ? p.x - q.x : p.y - q.y)); if (s.length < 3) return;
+          const span = X ? s[s.length - 1].x + s[s.length - 1].w - s[0].x : s[s.length - 1].y + s[s.length - 1].h - s[0].y, total = s.reduce((n, l) => n + (X ? l.w : l.h), 0), gap = (span - total) / (s.length - 1);
+          let at = X ? s[0].x : s[0].y; s.forEach((l) => { if (X) l.x = r1(at); else l.y = r1(at); at += (X ? l.w : l.h) + gap; }); return;
+        }
+        ls.forEach((l) => { const o = a.align; if (o === 'left') l.x = bx.x0; if (o === 'right') l.x = r1(bx.x1 - l.w); if (o === 'center') l.x = r1((bx.x0 + bx.x1 - l.w) / 2); if (o === 'top') l.y = bx.y0; if (o === 'bottom') l.y = r1(bx.y1 - l.h); if (o === 'middle') l.y = r1((bx.y0 + bx.y1 - l.h) / 2); });
+      });
+      return `Aligned ${ls.length} layer(s): ${a.align}.`;
+    },
+    async set_background(a) {
+      const pg = ED.d.pages[pageIx(a.page)], f = String(a.fill || ''); if (!SAFE(f)) throw new Error('Use a colour or a CSS gradient');
+      const [W, H] = dim();
+      mutate(() => { const bg = pg.layers.find((l) => l.locked && l.name === 'Background'); if (bg) bg.fill = f; else pg.layers.unshift(BG(W, H, f)); pg.bg = f; });
+      return 'Background set.';
+    },
+    async manage_slides(a) {
+      const d = ED.d, i = a.index == null ? ED.pi : pageIx(a.index), [W, H] = dim();
+      if (a.action === 'go') { ED.pi = i; ED.sel = null; edAll(); return `Showing slide ${i + 1}.`; }
+      if (a.action === 'delete') { if (d.pages.length < 2) throw new Error('A design keeps at least one slide'); mutate(() => { d.pages.splice(i, 1); ED.pi = Math.min(ED.pi, d.pages.length - 1); ED.sel = null; }); return `Deleted slide ${i + 1}. ${d.pages.length} left.`; }
+      if (a.action === 'move') { const to = pageIx(a.to); mutate(() => { const [p] = d.pages.splice(i, 1); d.pages.splice(to, 0, p); ED.pi = to; }); return `Moved slide ${i + 1} to position ${to + 1}.`; }
+      if (a.action === 'add' || a.action === 'duplicate') {
+        if (d.pages.length >= 20) throw new Error('20 slides at most');
+        mutate(() => { const pg = a.action === 'add' ? { id: uid(), bg: '#ffffff', layers: TPL.blank.fn(W, H) } : Object.assign(reIdPage(JSON.parse(JSON.stringify(d.pages[i]))), { id: uid() }); d.pages.splice(i + 1, 0, pg); ED.pi = i + 1; ED.sel = null; });
+        return `${a.action === 'add' ? 'Added a blank slide' : `Duplicated slide ${i + 1}`} as slide ${i + 2}; it is now the current slide.`;
+      }
+      throw new Error('Unknown action');
+    },
+    async resize_canvas(a) {
+      if (!['1:1', '4:5', '9:16'].includes(a.ratio)) throw new Error('Use 1:1, 4:5 or 9:16'); if (ED.d.ratio === a.ratio) return `Already ${a.ratio}.`;
+      magicResize(a.ratio); fitZoom(); return `Resized every slide to ${a.ratio} (${dim().join('×')}).`;
+    },
+    async rename_design(a) { const n = String(a.name || '').trim().slice(0, 80); if (!n) throw new Error('Give a name'); ED.d.name = n; touch(); save(); const f = $('#edName'); if (f) f.value = n; return `Renamed to “${n}”.`; },
+    async apply_brand_template(a) { const t = (brand().templates || []).find((x) => x.id === a.id); if (!t) throw new Error('No such template'); ACT.edBTpl({ dataset: { id: t.id } }); return `Applied the template “${t.name}”.`; },
+    async build_live_slide(a) {
+      const st = ['dark', 'light', 'brand'].includes(a.style) ? a.style : 'dark', lang = a.lang === 'ar' ? 'ar' : 'en';
+      ED.liveStyle = st;
+      if (a.kind === 'calendar') { const l0 = ED.lang; ED.lang = lang; try { await ACT.lvBuild(); } finally { ED.lang = l0; } }
+      else if (a.kind === 'price' || a.kind === 'news') {
+        ED.liveKind = a.kind; ED.fdLang = lang;
+        if (a.symbol) { if (!/^[A-Z0-9_.]{1,20}:[A-Z0-9_.!&-]{1,30}$/.test(String(a.symbol).toUpperCase())) throw new Error('symbol must look like OANDA:XAUUSD'); ED.fdSym = String(a.symbol).toUpperCase(); }
+        if (a.source) ED.fdSrc = a.source;
+        await ACT.fdBuild();
+      } else throw new Error('kind must be calendar, price or news');
+      return `Built a live ${a.kind} slide (${st}, ${lang}). It now shows: ${curP().layers.filter((l) => l.type === 'text' && !l.hidden).slice(0, 6).map((l) => String(l.text).slice(0, 50)).join(' | ')}`;
+    },
+    async write_caption(a, run) { run.msg.caption = String(a.caption || '').slice(0, 3000); return 'The caption is shown to the user with Copy and Schedule buttons.'; },
+    async select_layer(a) { ED.sel = a.id && curP().layers.some((l) => l.id === a.id) ? a.id : null; drawSel(); edProps(); return ED.sel ? `Selected ${ED.sel}.` : 'Nothing selected.'; },
+    async get_slide(a) { const i = pageIx(a.index); return JSON.stringify(slideOf(ED.d.pages[i], i)); },
+    async view_slide(a) { const i = a.index == null ? ED.pi : pageIx(a.index), img = await picture(i); return img ? { text: `Picture of slide ${i + 1} attached.`, image: img } : 'The slide could not be rendered.'; },
+  };
+  const n = (a, k) => ((a && a[k]) || []).length;
+  const STEP = {
+    update_layers: (a) => `Editing ${n(a, 'updates')} layer${n(a, 'updates') === 1 ? '' : 's'}`, add_layers: (a) => `Adding ${n(a, 'layers')} layer${n(a, 'layers') === 1 ? '' : 's'}`,
+    delete_layers: (a) => `Deleting ${n(a, 'ids')} layer${n(a, 'ids') === 1 ? '' : 's'}`, duplicate_layers: () => 'Duplicating layers', arrange_layers: (a) => `Moving layers ${a.to || ''}`,
+    align_layers: (a) => `Aligning: ${a.align || ''}`, set_background: () => 'Changing the background', manage_slides: (a) => ({ add: 'Adding a slide', duplicate: 'Duplicating a slide', delete: 'Deleting a slide', move: 'Moving a slide', go: 'Opening a slide' }[a.action] || 'Slides'),
+    resize_canvas: (a) => `Resizing to ${a.ratio}`, rename_design: () => 'Renaming the design', apply_brand_template: () => 'Applying a brand template', build_live_slide: (a) => `Building a live ${a.kind || ''} slide`,
+    write_caption: () => 'Writing the caption', select_layer: () => 'Selecting a layer', get_slide: (a) => `Reading slide ${a.index}`, view_slide: () => 'Looking at the slide',
+  };
+
+  /* ---------- the loop ---------- */
+  let RUN = null;
+  const conv = () => { const k = ED.d.id; if (!mem.has(k)) mem.set(k, []); return mem.get(k); };
+  /** Keeps the conversation short: older exchanges go, whole (a tool result never loses its call) */
+  function trim(c) { while (c.length > 40) { const i = c.findIndex((m, j) => j > 0 && m.role === 'user'); if (i <= 0) break; c.splice(0, i); } }
+  function finishUndo(run) {
+    if (snap() === run.pre) return;
+    ED.undo.length = Math.min(run.startLen, ED.undo.length); ED.undo.push(run.pre); ED.redo = []; run.msg.after = ED.undo.length; touch(); edTop();
+  }
+  async function agAI(text) {
+    const d = ED.d, model = current(); if (!d || !model) return;
+    d.chat = d.chat || [];
+    const msg = { r: 'a', steps: [], done: false, t: '', ai: true, model: modelName(model) };
+    d.chat.push({ r: 'u', t: text }, msg); ED.agBusy = true; const id = ED.agRun = (ED.agRun || 0) + 1; agThread();
+    const run = RUN = { id, msg, pre: snap(), startLen: ED.undo.length };
+    const alive = () => id === ED.agRun && ED.d === d;
+    const c = conv(); trim(c);
+    try {
+      c.push({ role: 'user', text: ED.sel ? `${text}\n\n(Selected layer: ${ED.sel})` : text, image: await picture(ED.pi) || undefined });
+      for (let turn = 0; turn < MAX_TURNS; turn++) {
+        if (!alive()) return;
+        const r = await api('/ai/agent', { method: 'POST', body: { provider: model.provider, model: model.model, context: context(), messages: c } });
+        if (!alive()) return;
+        c.push({ role: 'assistant', text: r.text || '', calls: r.calls || [] });
+        if (r.text) { msg.t = r.text; agThread(); }
+        if (!(r.calls || []).length) break;
+        const results = [];
+        for (const call of r.calls) {
+          const st = { l: (STEP[call.name] || (() => call.name))(call.input || {}), done: false }; msg.steps.push(st); agThread();
+          let out;
+          try { if (!T[call.name]) throw new Error('Unknown tool'); if (call.input && call.input._error) throw new Error(call.input._error); out = await T[call.name](call.input || {}, run); }
+          catch (e) { out = 'Error: ' + e.message; st.err = true; }
+          if (!alive()) return;
+          st.done = true; agThread();
+          results.push(typeof out === 'string' ? { id: call.id, text: out } : { id: call.id, text: out.text, image: out.image });
+        }
+        c.push({ role: 'tool', results });
+        if (turn === MAX_TURNS - 1) msg.t = (msg.t ? msg.t + ' ' : '') + 'I stopped after many steps: tell me if you want me to continue.';
+      }
+      if (!msg.t) msg.t = msg.steps.length ? 'Done.' : 'I had nothing to change.';
+    } catch (e) {
+      msg.t = `The AI request failed: ${e.message}${snap() !== run.pre ? ' The changes made before are kept: use Undo to revert them.' : ''}`;
+      // a turn without its tool results would break the next request
+      while (c.length && c[c.length - 1].role === 'assistant' && (c[c.length - 1].calls || []).length) c.pop();
+    } finally {
+      if (RUN === run) { finishUndo(run); RUN = null; }
+      if (alive()) { msg.done = true; ED.agBusy = false; agThread(); }
+    }
+  }
+  // a stopped run keeps what it already did, as one Undo step
+  const _stop = agStop;
+  agStop = function () {
+    const run = RUN; _stop();
+    if (run) { RUN = null; finishUndo(run); if (run.msg.after) { run.msg.t = 'Stopped. The changes made so far are kept: use Undo to revert them.'; agThread(); } const c = conv(); while (c.length && c[c.length - 1].role !== 'tool' && c[c.length - 1].role !== 'assistant') c.pop(); if (c.length && c[c.length - 1].role === 'assistant' && (c[c.length - 1].calls || []).length) c.pop(); }
+  };
+
+  /* ---------- wiring into the panel ---------- */
+  const PROMPTS = { headline: 'Write a stronger, punchier headline for this slide in our brand voice', carousel: 'Turn this slide into a 3-slide carousel that tells a short story, with consistent design and page numbers', caption: 'Write a caption for this post in our brand voice, with a few relevant hashtags', story: 'Adapt this design to a Story (9:16) and fix the layout so everything sits well' };
+  const _run = agRun;
+  agRun = function (text, key) {
+    if (!AGM.list) { loadModels(); }
+    if (aiOn()) return agAI(key && PROMPTS[key] ? PROMPTS[key] : text);
+    return _run(text, key);
+  };
+  const _empty = agEmpty;
+  agEmpty = function () {
+    const h = _empty(); if (!aiOn()) return h;
+    return h.replace('Pick an action, or describe the change you want.', 'Describe any change: layout, copy, colours, new slides, live data… I edit the design for you.');
+  };
+  const _panel = agPanel;
+  // keys or models may change in Settings → AI: the list is read again when the panel opens after a while
+  agPanel = function (p) { _panel(p); agModelChip(); if (!AGM.list || Date.now() - (AGM.at || 0) > 120_000) loadModels(true); };
+  const _nw = ACT.agNew;
+  Object.assign(ACT, {
+    agNew: (a) => { if (ED.d) mem.delete(ED.d.id); RUN = null; _nw(a); },
+    agModel: () => { AGM.open = !AGM.open; agModelChip(); if (AGM.open) { const on = $('.ag-mm-i.on'); on && on.scrollIntoView({ block: 'nearest' }); } },
+    agPickModel: (a) => { remember(a.dataset.p ? { provider: a.dataset.p, model: a.dataset.m } : null); AGM.open = false; agModelChip(); const v = current(); toast(`The agent now uses ${modelName(v)}`); },
+    agModelSetup: () => { S.set.sec = 'ai'; save(); location.hash = '#/settings'; },
+  });
+  document.addEventListener('click', (e) => { if (AGM.open && e.target.isConnected && !e.target.closest('.ag-mw')) { AGM.open = false; agModelChip(); } });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && AGM.open) { AGM.open = false; agModelChip(); } });
+}
 
 /* ============ headless: slides rendered by the API (live posts with no studio tab open) ============ */
 /* The server opens /social-media/render in a headless browser, boots this engine with that post's brand,
