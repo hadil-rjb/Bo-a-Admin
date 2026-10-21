@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { AutomationsService } from "../automations/automations.service";
+import { NotionService } from "../notion/notion.service";
 import { LiveRenderService } from "./live-render.service";
 import { PublisherService } from "./publisher.service";
 
@@ -16,7 +17,7 @@ export class PublishScheduler implements OnModuleInit, OnModuleDestroy {
   private timer?: NodeJS.Timeout;
   private busy = false;
 
-  constructor(private publisher: PublisherService, private live: LiveRenderService, private automations: AutomationsService) {}
+  constructor(private publisher: PublisherService, private live: LiveRenderService, private automations: AutomationsService, private notion: NotionService) {}
 
   onModuleInit() { this.timer = setInterval(() => void this.tick(), TICK_MS); setTimeout(() => void this.tick(), 5_000); }
   onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
@@ -30,6 +31,7 @@ export class PublishScheduler implements OnModuleInit, OnModuleDestroy {
       for (const p of await this.publisher.due()) {
         await this.live.refresh(p.brandId, p.id).catch((e) => this.log.warn(`Live data refresh of ${p.brandId}/${p.id} failed, publishing the last rendered slides: ${e?.message || e}`));
         await this.publisher.publish(p.brandId, p.id).catch((e) => this.log.warn(`${p.brandId}/${p.id}: ${e.message}`));
+        this.notion.reconcileSoon(); // the published status and link show in Notion Calendar
       }
     } catch (e: any) {
       this.log.error(e?.message ?? e);

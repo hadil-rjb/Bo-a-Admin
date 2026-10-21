@@ -25,6 +25,8 @@ export class SocialAutomation {
   @Prop() endDate?: string;
   /** Dates (YYYY-MM-DD) skipped by hand in the planner */
   @Prop({ type: [String], default: [] }) skip!: string[];
+  /** Also shown in Notion Calendar (when Notion is connected) */
+  @Prop({ default: true }) notion!: boolean;
   /** Why it stopped by itself (e.g. its design was deleted) */
   @Prop() note?: string;
   @Prop() createdBy?: string;

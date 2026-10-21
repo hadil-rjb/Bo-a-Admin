@@ -12,6 +12,7 @@ import { SocialBrand } from "../schemas/brand.schema";
 import { SocialDesign } from "../schemas/design.schema";
 import { SocialPost } from "../schemas/post.schema";
 import { SocialWorkspace, WORKSPACE_ID } from "../schemas/workspace.schema";
+import { NotionService } from "../notion/notion.service";
 import { strip } from "../social.util";
 import { fillCaption, localDate, occurrences } from "./schedule";
 
@@ -25,7 +26,7 @@ const ARM_TRIES = 3;
 const DONE = ["publishing", "published", "partial"];
 
 export type AutomationInput = {
-  name?: string; d?: string; active?: boolean; tz?: string; pf?: string[];
+  name?: string; d?: string; active?: boolean; notion?: boolean; tz?: string; pf?: string[];
   cadence?: { kind: "daily" | "weekdays" | "weekly"; days: number[]; time: string };
   caption?: { mode: "fixed" | "ai"; text: string; fc?: string };
   startDate?: string | null; endDate?: string | null;
@@ -52,6 +53,7 @@ export class AutomationsService {
     private render: LiveRenderService,
     private publisher: PublisherService,
     private ai: AiService,
+    private notion: NotionService,
   ) {}
 
   /* ---------- CRUD ---------- */
@@ -90,7 +92,7 @@ export class AutomationsService {
     if (!(await this.brands.exists({ _id: brandId }))) throw new NotFoundException("Brand not found");
     const a = this.check({ active: true, caption: { mode: "fixed", text: "" }, pf: [], ...input }, true);
     if (!(await this.designs.exists({ brandId, id: a.d }))) throw new BadRequestException("Choose a design for this automation");
-    const doc = await this.autos.create({ ...a, tz: a.tz || (await this.tzDefault()), skip: [], brandId, id: "a" + randomBytes(5).toString("hex"), createdBy: by });
+    const doc = await this.autos.create({ ...a, notion: a.notion ?? true, tz: a.tz || (await this.tzDefault()), skip: [], brandId, id: "a" + randomBytes(5).toString("hex"), createdBy: by });
     await this.sync(doc.toObject());
     return (await this.list(brandId)).automations.find((x) => x.id === doc.id);
   }
@@ -110,6 +112,7 @@ export class AutomationsService {
     if (!cur) throw new NotFoundException("Automation not found");
     await this.dropFuture(brandId, id, new Set());
     await this.autos.deleteOne({ brandId, id });
+    this.notion.reconcileSoon();
     return { ok: true };
   }
 
@@ -140,6 +143,7 @@ export class AutomationsService {
     if (a.name != null) out.name = String(a.name).trim().slice(0, 80) || "Automation";
     if (a.d != null) out.d = String(a.d);
     if (a.active != null) out.active = !!a.active;
+    if (a.notion != null) out.notion = !!a.notion;
     if (a.tz != null) { if (!validTz(a.tz)) throw new BadRequestException("Unknown time zone"); out.tz = a.tz; }
     if (a.pf != null) out.pf = [...new Set(a.pf)];
     if (a.cadence != null) {
@@ -178,6 +182,7 @@ export class AutomationsService {
       }
     }
     await this.dropFuture(a.brandId, a.id, keep);
+    this.notion.reconcileSoon(); // Notion Calendar follows
   }
 
   private async dropFuture(brandId: string, autoId: string, keep: Set<string>) {
@@ -220,6 +225,7 @@ export class AutomationsService {
   private async fail(p: Record<string, any>, error: string) {
     await this.posts.updateOne({ brandId: p.brandId, id: p.id }, { $set: { status: "Failed", autoError: error, publish: { state: "failed", results: {}, attempts: 0, lastError: error, at: new Date() } } });
     this.log.warn(`Run ${p.id} (${p.brandId}): ${error}`);
+    this.notion.reconcileSoon();
   }
 
   /** Renders a run with fresh data, writes its caption and hands it to the publisher */
@@ -231,6 +237,7 @@ export class AutomationsService {
       const caption = await this.caption(a, p, r);
       await this.publisher.arm(p.brandId, p.id, r.images, { by: "automation", at: new Date(), pages: r.live }, caption);
       this.log.log(`Armed run ${p.id} (${p.brandId}) of “${a.name}” for ${p.date} ${p.time}`);
+      this.notion.reconcileSoon();
     } catch (e: any) {
       const tries = (p.autoTries || 0) + 1, msg = String(e?.message || e).slice(0, 300);
       if (tries >= ARM_TRIES) await this.fail(p, `Couldn't prepare the post: ${msg}`);

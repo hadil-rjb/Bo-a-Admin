@@ -26,6 +26,8 @@ import { BrandGuideController } from "./brand-guide/guide.controller";
 import { MarketsController } from "./markets/markets.controller";
 import { AutomationsController } from "./automations/automations.controller";
 import { AutomationsService } from "./automations/automations.service";
+import { NotionController } from "./notion/notion.controller";
+import { NotionService, SocialNotionPage, SocialNotionPageSchema } from "./notion/notion.service";
 import { SocialAutomation, SocialAutomationSchema } from "./schemas/automation.schema";
 import { MarketsService } from "./markets/markets.service";
 
@@ -44,9 +46,10 @@ import { MarketsService } from "./markets/markets.service";
       { name: SocialMedia.name, schema: SocialMediaSchema },
       { name: SocialIntegration.name, schema: SocialIntegrationSchema },
       { name: SocialAutomation.name, schema: SocialAutomationSchema },
+      { name: SocialNotionPage.name, schema: SocialNotionPageSchema },
     ]),
   ],
-  controllers: [SocialWorkspaceController, SocialBrandsController, PublishingController, FigmaController, CalendarController, MarketsController, AutomationsController, BrandGuideController],
-  providers: [WorkspaceService, BrandsService, ConnectionsService, PublisherService, PublishScheduler, LiveRenderService, FigmaService, CalendarService, MarketsService, AutomationsService],
+  controllers: [SocialWorkspaceController, SocialBrandsController, PublishingController, FigmaController, CalendarController, MarketsController, AutomationsController, NotionController, BrandGuideController],
+  providers: [WorkspaceService, BrandsService, ConnectionsService, PublisherService, PublishScheduler, LiveRenderService, FigmaService, CalendarService, MarketsService, AutomationsService, NotionService],
 })
 export class SocialModule {}

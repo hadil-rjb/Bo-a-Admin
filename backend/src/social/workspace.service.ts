@@ -10,6 +10,7 @@ import { SocialWorkspace, WORKSPACE_ID } from "./schemas/workspace.schema";
 import { hashOf, strip } from "./social.util";
 import { mergePost } from "./publishing/post-state";
 import { ConnectionsService } from "./publishing/connections.service";
+import { NotionService } from "./notion/notion.service";
 import { PublisherService } from "./publishing/publisher.service";
 
 type Item = Record<string, any> & { id: string };
@@ -28,6 +29,7 @@ export class WorkspaceService {
     @InjectModel(SocialWorkspace.name) private readonly workspaces: Model<SocialWorkspace>,
     private readonly conns: ConnectionsService,
     private readonly publisher: PublisherService,
+    private readonly notion: NotionService,
   ) {}
 
   /** Rebuilds the snapshot the client expects, or null when nothing was saved yet. */
@@ -143,6 +145,7 @@ export class WorkspaceService {
 
     await this.applyItems(this.designs, dto.designs, dto.designOrder, del.designs);
     await this.applyItems(this.posts, dto.posts, dto.postOrder, del.posts);
+    if (dto.posts?.length || del.posts?.length) this.notion.reconcileSoon(); // Notion Calendar, when it shows every post
 
     const $set: Record<string, unknown> = {};
     if (dto.active !== undefined) $set.active = dto.active;

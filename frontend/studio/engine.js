@@ -78,6 +78,8 @@ let renderSlide = null;
 let LIVE = null;
 /** Price alert and news templates (set by the market data section): panel, attach, build */
 let FEEDS = null;
+/** Notion Calendar connection (set by the Notion section): state(), ready(), load() */
+let NOTION = null;
 /** Waits until the adjusted images of a page are rendered at full size (set by the image adjustments section) */
 let fxReady = async () => {};
 /** Text of a text layer as HTML (plain, or spans for mixed styles: set by the mixed text section) */
@@ -1283,7 +1285,7 @@ const SP = {
 };
 PAGES.settings = {
   t: 'Social Media Settings', s: 'Integrations and data.',
-  view: () => `<div class="split"><div class="splitnav"><div class="cap">Select menu</div>${SETS.map(([k, l, i]) => `<button class="${S.set.sec === k ? 'on' : ''}" data-act="setSec" data-k="${k}">${ic(i, 20)}<span>${l}</span></button>`).join('')}</div><div class="panel">${SP[S.set.sec]()}</div></div>`,
+  view: () => `<div class="split"><div class="splitnav"><div class="cap">Select menu</div>${SETS.map(([k, l, i]) => `<button class="${S.set.sec === k ? 'on' : ''}" data-act="setSec" data-k="${k}">${ic(i, 20)}<span>${l}</span></button>`).join('')}</div><div class="panel">${(SP[S.set.sec] || SP.accounts)() /* a section added later in boot (e.g. Notion) isn't there on the first paint */}</div></div>`,
 };
 const rerender = () => { const y = scrollY; route(); scrollTo(0, y); };
 /* phones: the section menu is a horizontal strip, keep the chosen section in view */
@@ -7105,7 +7107,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       <div class="au-main">
         <div class="au-top"><b class="au-name">${esc(a.name)}</b>${sw(a.active, 'auToggle', `data-id="${esc(a.id)}"`, a.active ? 'Pause this automation' : 'Turn this automation on')}</div>
         <p class="au-rh">${ic('refresh', 14)}<span>${esc(rhythm(a.cadence))}</span></p>
-        <div class="au-nets">${(a.pf || []).map((k) => `<span class="au-net ${S.platforms[k] ? '' : 'off'}" title="${esc((PLATFORMS[k] || {}).n || k)}${S.platforms[k] ? '' : ' · not connected'}" style="--c:${(PLATFORMS[k] || {}).c}">${ic('net_' + k, 14)}</span>`).join('')}${liveOf(d).length ? `<span class="au-live">${ic('chart', 12)}${esc(KIND[liveOf(d)[0]] || 'Live data')}</span>` : ''}</div>
+        <div class="au-nets">${(a.pf || []).map((k) => `<span class="au-net ${S.platforms[k] ? '' : 'off'}" title="${esc((PLATFORMS[k] || {}).n || k)}${S.platforms[k] ? '' : ' · not connected'}" style="--c:${(PLATFORMS[k] || {}).c}">${ic('net_' + k, 14)}</span>`).join('')}${liveOf(d).length ? `<span class="au-live">${ic('chart', 12)}${esc(KIND[liveOf(d)[0]] || 'Live data')}</span>` : ''}${NOTION && NOTION.ready() && a.notion !== false ? '<span class="au-nt" title="Shown in Notion Calendar"><i>N</i>Notion Calendar</span>' : ''}</div>
         ${a.note ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(a.note)}</span></p>` : off.length ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(listWords(off.map((k) => PLATFORMS[k].n)))} ${off.length > 1 ? 'aren’t' : 'isn’t'} connected. <a href="#/settings" data-act="goAccounts">Connect</a></span></p>` : ''}
         <div class="au-foot">
           <span class="au-next">${a.active && next ? `<em>Next</em>${esc(whenLabel(next.date, next.time))}` : a.active ? 'No upcoming post' : 'Paused'}</span>${stateBadge(a)}
@@ -7138,7 +7140,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       if (!list.length) return `${warn}${err}<div class="au-empty"><span class="au-orb">${ic('refresh', 26)}</span><h2>Put your posting on autopilot</h2>
         <p>Pick a ready-made automation or start from one of your designs. Each post is filled with fresh data just before it goes out.</p>${presetCards(false)}
         <button class="btn secondary" data-act="auNew">${ic('layout', 16)}Start from one of my designs</button></div>`;
-      return `${warn}${err}<div class="au-wrap"><div class="au-list">${list.map(card).join('')}
+      const nt = NOTION && NOTION.state(), tip = nt && !NOTION.ready() ? `<div class="au-tip"><span class="nt-logo sm">N</span><span class="grow">Want these in <b>Notion Calendar</b>? Connect Notion and every automation post shows up there too.</span><button class="btn secondary sm" data-act="ntGo">${nt.connected ? 'Choose the database' : 'Connect Notion'}</button></div>` : '';
+      return `${warn}${err}${tip}<div class="au-wrap"><div class="au-list">${list.map(card).join('')}
         <div class="au-more"><span>Add another</span>${presetCards(true)}</div></div>${upcoming(list)}</div>`;
     },
   };
@@ -7150,9 +7153,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /* ---------- editor ---------- */
   function openAuto(a, preset) {
     const tz = schedTz(), b = brand();
-    const st = a ? { id: a.id, name: a.name, d: a.d, build: null, cadence: { ...a.cadence, days: [...(a.cadence.days || [])] }, pf: new Set(a.pf || []), caption: { ...a.caption }, startDate: a.startDate || '', endDate: a.endDate || '', active: a.active, tz: a.tz || tz }
+    const st = a ? { id: a.id, name: a.name, d: a.d, build: null, cadence: { ...a.cadence, days: [...(a.cadence.days || [])] }, pf: new Set(a.pf || []), caption: { ...a.caption }, startDate: a.startDate || '', endDate: a.endDate || '', active: a.active, tz: a.tz || tz, notion: a.notion !== false }
       : { id: null, name: preset ? preset.t : '', d: null, build: preset ? preset.build : null, cadence: preset ? { ...preset.cadence, days: [...preset.cadence.days] } : { kind: 'weekly', days: [1], time: '09:00' },
-          pf: new Set(Object.keys(PLATFORMS).filter((k) => S.platforms[k]).slice(0, 2)), caption: preset ? { ...preset.caption, mode: preset.caption.mode === 'ai' && !aiReady() ? 'fixed' : preset.caption.mode } : { mode: 'fixed', text: '' }, startDate: '', endDate: '', active: true, tz };
+          pf: new Set(Object.keys(PLATFORMS).filter((k) => S.platforms[k]).slice(0, 2)), caption: preset ? { ...preset.caption, mode: preset.caption.mode === 'ai' && !aiReady() ? 'fixed' : preset.caption.mode } : { mode: 'fixed', text: '' }, startDate: '', endDate: '', active: true, tz, notion: true };
     const designs = () => [...S.designs].sort((x, y) => (liveOf(y).length ? 1 : 0) - (liveOf(x).length ? 1 : 0)).slice(0, 12);
     const FIELDS = [['{date}', 'Date'], ['{weekday}', 'Weekday'], ['{week}', 'Week'], ['{headline}', 'Headline'], ['{price}', 'Price'], ['{website}', 'Website'], ['{hashtags}', 'Hashtags']];
     let close = () => {}, root = null;
@@ -7171,6 +7174,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         <label class="au-f"><span>Ends</span><input type="date" class="field" id="auEnd" value="${esc(st.endDate)}"></label></div>
       <p class="au-hint">${ic('globe', 13)}Times are in ${esc(tzLabel(st.tz))}. Change it in Settings → Export &amp; publishing.</p>`;
     const nets = () => `<div class="au-nw">${Object.entries(PLATFORMS).map(([k, v]) => { const on = st.pf.has(k), c = S.platforms[k]; return `<button class="au-nb ${on ? 'on' : ''} ${c ? '' : 'off'}" style="--c:${v.c}" data-c="net" data-k="${k}" aria-pressed="${on}" title="${esc(v.n)}${c ? '' : ' · not connected yet'}">${ic('net_' + k, 18)}<span>${esc(v.n)}</span>${on ? ic('check', 13) : ''}</button>`; }).join('')}</div>
+      ${NOTION && NOTION.ready() ? `<div class="lv-swr au-ntsw"><span class="nt-logo sm">N</span><div class="grow"><b>Show in Notion Calendar</b><p>Each post appears in “${esc(NOTION.state().database.title)}” with its time, caption and status.</p></div>${sw(st.notion, '', 'data-c="notion"', 'Show in Notion Calendar')}</div>` : ''}
       ${[...st.pf].some((k) => !S.platforms[k]) ? `<p class="au-hint warn">${ic('alert', 13)}Connect ${esc(listWords([...st.pf].filter((k) => !S.platforms[k]).map((k) => PLATFORMS[k].n)))} in Settings before the first post, or it will be skipped there.</p>` : ''}`;
     const cap = () => `<div class="seg au-seg">${[['fixed', 'My caption'], ['ai', 'Written by AI']].map(([k, l]) => `<button class="${st.caption.mode === k ? 'on' : ''}" data-c="mode" data-k="${k}" aria-pressed="${st.caption.mode === k}" ${k === 'ai' && !aiReady() ? 'title="Add a Claude or Groq key in Settings → AI to use this"' : ''}>${k === 'ai' ? ic('wand', 14) : ''}${l}</button>`).join('')}</div>
       ${st.caption.mode === 'ai' ? `<p class="au-hint">${ic('wand', 13)}${aiReady() ? `AI writes a fresh caption for every post, from what the slide shows, in ${esc(b.name)}’s voice. If it can’t, the caption below is used.` : 'No AI key yet (Settings → AI): the caption below is used until you add one.'}</p>` : ''}
@@ -7210,6 +7214,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           else if (k === 'day') { const n = +el.dataset.n, ds = st.cadence.days; st.cadence.days = ds.includes(n) ? ds.filter((x) => x !== n) : [...ds, n].sort(); draw('auWhen', when); }
           else if (k === 'net') { const n = el.dataset.k; st.pf.has(n) ? st.pf.delete(n) : st.pf.add(n); draw('auNets', nets); }
           else if (k === 'mode') { st.caption.mode = el.dataset.k; draw('auCap0', cap); }
+          else if (k === 'notion') { st.notion = !st.notion; draw('auNets', nets); }
           else if (k === 'field') { const ta = R('auCap'), f = el.dataset.f, s0 = ta.selectionStart ?? ta.value.length, s1 = ta.selectionEnd ?? s0; ta.value = ta.value.slice(0, s0) + f + ta.value.slice(s1); st.caption.text = ta.value; ta.focus(); ta.setSelectionRange(s0 + f.length, s0 + f.length); }
           else if (k === 'del') { c(); confirmDelete(a); return; }
           else if (k === 'save') { await submit(el); return; }
@@ -7222,7 +7227,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       busy(btn, true, a ? 'Saving…' : 'Creating…');
       try {
         if (st.build) { const d = await makeDesign(st.build); st.d = d.id; st.build = null; }
-        const body = { name: (st.name || '').trim() || getD(st.d).name, d: st.d, cadence: { kind: st.cadence.kind, days: st.cadence.kind === 'weekly' ? st.cadence.days : [], time: st.cadence.time }, pf: [...st.pf], caption: { mode: st.caption.mode, text: st.caption.text || '' }, startDate: st.startDate || '', endDate: st.endDate || '' };
+        const body = { name: (st.name || '').trim() || getD(st.d).name, d: st.d, cadence: { kind: st.cadence.kind, days: st.cadence.kind === 'weekly' ? st.cadence.days : [], time: st.cadence.time }, pf: [...st.pf], caption: { mode: st.caption.mode, text: st.caption.text || '' }, startDate: st.startDate || '', endDate: st.endDate || '', notion: st.notion };
         const r = a ? await api(path() + '/' + encodeURIComponent(a.id), { method: 'PATCH', body }) : await api(path(), { method: 'POST', body: { ...body, tz: st.tz } });
         close(); await load(true); pull();
         const n = r && r.next && r.next[0];
@@ -7314,6 +7319,85 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     catch (e) { toast('Couldn’t skip it: ' + e.message); }
   }
   ACT.pdel = (el) => { const p = S.posts.find((x) => x.id === el.dataset.id); if (p && p.auto && p.status === 'Scheduled') return skip(p); return _del(el); };
+}
+
+/* ============ v27 · Notion Calendar: the schedule as a Notion database ============ */
+/* Settings → Notion Calendar connects an internal integration, then picks or creates the calendar
+   database. The API keeps one Notion page per automation post (or per scheduled post): date and time,
+   status, networks, caption and link; Notion Calendar shows the database next to the other calendars. */
+{
+  const NT = { st: null, loading: null, targets: null, q: '', tLoading: false };
+  const NOTION_NEW = 'https://www.notion.so/profile/integrations';
+  const isAdmin = () => user.role === 'admin';
+  function load(force) {
+    if (NT.loading && !force) return NT.loading;
+    NT.loading = api('/social/notion').then((r) => { NT.st = r; }).catch(() => { NT.st = NT.st || { connected: false }; })
+      .then(() => { NT.loading = null; if (/^#\/settings/.test(location.hash) && S.set.sec === 'notion') rerender(); if (/^#\/automations/.test(location.hash)) route(); });
+    return NT.loading;
+  }
+  NOTION = { state: () => NT.st, load, ready: () => !!(NT.st && NT.st.connected && NT.st.database) };
+  async function findTargets() {
+    NT.tLoading = true; rerender();
+    try { NT.targets = await api('/social/notion/targets?' + new URLSearchParams({ q: NT.q })); } catch (e) { toast(e.message); NT.targets = []; }
+    NT.tLoading = false; rerender();
+  }
+  const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : fmt(new Date(iso), { day: 'numeric', month: 'short' }); };
+  SETS.splice(SETS.findIndex((x) => x[0] === 'export'), 0, ['notion', 'Notion Calendar', 'cal']);
+  SP.notion = () => {
+    const st = NT.st; if (!st) { load(); return phead('Notion Calendar', 'Loading…') + '<div class="skel" style="height:120px;border-radius:14px"></div>'; }
+    const head = phead('Notion Calendar', 'See your automations in Notion Calendar: every post becomes an event in a Notion database, with its time, networks, caption and status.', sbadge(st.connected && st.database, 'Syncing', st.connected ? 'Choose a database' : 'Not connected'));
+    if (!st.connected) {
+      if (!isAdmin()) return head + `<div class="note">${ic('lock', 16)}<span>An admin can connect Notion here.</span></div>`;
+      return head + `<div class="nt-card"><ol class="nt-steps">
+        <li><b>Create an integration</b><span>In Notion, open <a href="${NOTION_NEW}" target="_blank" rel="noopener">Integrations</a> → <i>New integration</i>, choose your workspace and type <i>Internal</i>. Copy its <i>Internal Integration Secret</i>.</span></li>
+        <li><b>Paste it here</b><span><span class="nt-tok"><input class="field" id="ntTok" type="password" autocomplete="off" spellcheck="false" placeholder="ntn_…"><button class="btn primary" data-act="ntConnect">Connect</button></span></span></li>
+        <li><b>Share a page with it</b><span>In Notion, open the page that should hold the calendar → <i>•••</i> → <i>Connections</i> → add your integration.</span></li></ol>
+        <p class="hint">${ic('lock', 13)} The secret is stored encrypted on the server. Boğa only sees the pages you share with the integration.</p></div>`;
+    }
+    const who = `<div class="nt-who"><span class="nt-logo">N</span><div class="grow"><b>${esc(st.workspace || 'Notion workspace')}</b><small>Connected as “${esc(st.bot)}”${st.connectedAt ? ' · ' + esc(fmt(new Date(st.connectedAt), { day: 'numeric', month: 'short', year: 'numeric' })) : ''}</small></div>${isAdmin() ? '<button class="btn ghost sm" data-act="ntDisconnect">Disconnect</button>' : ''}</div>`;
+    if (!st.database || NT.picking) {
+      if (!isAdmin()) return head + who + `<div class="note">${ic('alert', 16)}<span>An admin still has to choose the calendar database.</span></div>`;
+      if (NT.targets == null && !NT.tLoading) findTargets();
+      const rows = (NT.targets || []).map((t) => `<div class="nt-t"><span class="nt-ti">${t.icon ? esc(t.icon) : t.type === 'database' ? ic('grid', 16) : ic('doc', 16)}</span><div class="grow"><b>${esc(t.title)}</b><small>${t.type === 'database' ? 'Database' : 'Page'}</small></div>
+        ${t.type === 'database' ? `<button class="btn secondary sm" data-act="ntUse" data-id="${esc(t.id)}">Use this database</button>` : `<button class="btn primary sm" data-act="ntCreate" data-id="${esc(t.id)}">${ic('plus', 14)}Create the calendar here</button>`}</div>`).join('');
+      return head + who + `<div class="nt-card"><h3>Where should the calendar live?</h3><p class="sm-t muted">Create a new “Social calendar” database inside a page, or use a database you already have (the missing columns are added).</p>
+        <div class="nt-search"><input class="field" id="ntQ" placeholder="Search your shared pages…" value="${esc(NT.q)}"><button class="btn secondary" data-act="ntFind">${ic('refresh', 15)}Search</button></div>
+        <div class="nt-list">${NT.tLoading ? '<div class="skel" style="height:44px"></div><div class="skel" style="height:44px"></div>' : rows || `<p class="lv-empty">Nothing is shared with “${esc(st.bot)}” yet. In Notion, open a page → ••• → Connections → add it, then search again.</p>`}</div>
+        ${st.database ? '<button class="btn link sm" data-act="ntCancelPick">Keep the current database</button>' : ''}</div>`;
+    }
+    const db = st.database;
+    return head + who + `<div class="nt-card nt-db"><span class="nt-cal">${ic('cal', 22)}</span><div class="grow"><b>${esc(db.title)}</b><small>${st.lastSync ? `${st.synced} post${st.synced === 1 ? '' : 's'} synced · ${esc(ago(st.lastSync))}` : 'First sync in a moment…'}</small>
+        ${st.error ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(st.error)}</span></p>` : ''}</div>
+        <a class="btn secondary sm" href="${esc(db.url)}" target="_blank" rel="noopener">${ic('ext', 14)}Open in Notion</a></div>
+      <div class="nt-card"><h3>What goes to Notion Calendar</h3>
+        <div class="seg nt-seg">${[['auto', 'Automation posts'], ['all', 'Every scheduled post']].map(([k, l]) => `<button class="${st.scope === k ? 'on' : ''}" data-act="ntScope" data-k="${k}" ${isAdmin() ? '' : 'disabled'}>${l}</button>`).join('')}</div>
+        <p class="hint">Each automation also has its own “Show in Notion Calendar” switch. Posts update when their time, status or caption change; skipped or deleted posts are archived.</p>
+        <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn secondary sm" data-act="ntSync">${ic('refresh', 14)}Sync now</button>${isAdmin() ? '<button class="btn ghost sm" data-act="ntPick">Use another database</button>' : ''}</div></div>` +
+      how(['Open <b>Notion Calendar</b> (calendar.notion.so or the app).', `In the left sidebar, under your Notion workspace, add the <b>${esc(db.title)}</b> database.`, 'Automation posts show up with their time; click one to see its caption, status and link.']).replace('How to connect', 'See it in Notion Calendar');
+  };
+  Object.assign(ACT, {
+    ntConnect: async (a) => {
+      const t = ($('#ntTok') || {}).value || ''; if (!t.trim()) return toast('Paste the integration secret first');
+      busy(a, true, 'Checking…');
+      try { NT.st = await api('/social/notion/token', { method: 'PUT', body: { token: t.trim() } }); NT.targets = null; rerender(); toast(`Connected to ${NT.st.workspace || 'Notion'}`); }
+      catch (e) { busy(a, false); toast(e.message); }
+    },
+    ntFind: () => { NT.q = ($('#ntQ') || {}).value || ''; findTargets(); },
+    ntCreate: async (a) => { busy(a, true, 'Creating…'); try { NT.st = await api('/social/notion/setup', { method: 'POST', body: { pageId: a.dataset.id } }); NT.picking = false; rerender(); toast('Calendar database created in Notion. Your automation posts are on their way.'); setTimeout(() => load(true), 6000); } catch (e) { busy(a, false); toast(e.message); } },
+    ntUse: async (a) => { busy(a, true, 'Preparing…'); try { NT.st = await api('/social/notion/setup', { method: 'POST', body: { databaseId: a.dataset.id } }); NT.picking = false; rerender(); toast('Using this database. Your automation posts are on their way.'); setTimeout(() => load(true), 6000); } catch (e) { busy(a, false); toast(e.message); } },
+    ntPick: () => { NT.picking = true; NT.targets = null; rerender(); },
+    ntCancelPick: () => { NT.picking = false; rerender(); },
+    ntScope: async (a) => { try { NT.st = await api('/social/notion/options', { method: 'PATCH', body: { scope: a.dataset.k } }); rerender(); setTimeout(() => load(true), 6000); } catch (e) { toast(e.message); } },
+    ntSync: async (a) => { busy(a, true, 'Syncing…'); try { NT.st = await api('/social/notion/sync', { method: 'POST' }); rerender(); toast('Notion Calendar is up to date'); } catch (e) { busy(a, false); toast(e.message); load(true); } },
+    ntDisconnect: () => modal(`<div class="mh"><h2>Disconnect Notion?</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
+      <div class="mb"><p class="sm-t">Posts stop syncing to Notion Calendar. The database and its pages stay in Notion.</p></div>
+      <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn danger" id="ntOff">Disconnect</button></div>`, {
+      onMount: (bg, close) => bg.querySelector('#ntOff').addEventListener('click', async (e) => { busy(e.currentTarget, true, '…'); try { await api('/social/notion', { method: 'DELETE' }); NT.st = { connected: false }; NT.targets = null; close(); rerender(); toast('Notion disconnected'); } catch (err) { busy(e.currentTarget, false); toast(err.message); } }),
+    }),
+    ntGo: () => { S.set.sec = 'notion'; save(); location.hash = '#/settings'; },
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target && e.target.id === 'ntQ') ACT.ntFind(); if (e.key === 'Enter' && e.target && e.target.id === 'ntTok') ACT.ntConnect($('[data-act="ntConnect"]')); });
+  setTimeout(() => load(), 3000);
 }
 
 /* ============ headless: slides rendered by the API (live posts with no studio tab open) ============ */
