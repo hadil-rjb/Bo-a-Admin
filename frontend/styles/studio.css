@@ -1688,3 +1688,75 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .bp-sw button{width:26px;height:26px;border-radius:8px;box-shadow:inset 0 0 0 1px rgba(15,23,42,.15)}
 .bp-sw button.on{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--accent)}
 @media (max-width:560px){.bp{grid-template-columns:1fr}.br-mv{display:none}.br-tools{flex-wrap:wrap}}
+/* ---------- Planner: week as an hour grid (best times heatmap, posts at their time) ---------- */
+.pcal.week{display:block;overflow:hidden}
+.cal{--gut:58px;display:flex;flex-direction:column;width:100%;min-width:0;align-self:stretch}
+.cal-head{display:grid;grid-template-columns:var(--gut) repeat(var(--days),minmax(0,1fr));border-bottom:1px solid var(--border);background:var(--surface);position:relative;z-index:3}
+.cal-gut{display:flex;align-items:flex-end;justify-content:center;padding:0 4px 8px}
+.cal-gut small{font-size:10.5px;color:var(--text-3);white-space:nowrap}
+.cal-dh{display:flex;align-items:center;justify-content:center;gap:6px;height:54px;border-left:1px solid var(--border);font-size:13px;color:var(--text-2)}
+.cal-dh .wd{text-transform:uppercase;font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--text-3)}
+.cal-dh b{font:600 17px/1 var(--jak);min-width:30px;height:30px;display:grid;place-items:center;border-radius:50%;color:var(--text-1)}
+.cal-dh.today b{background:var(--accent);color:#fff}
+.cal-dh.today .wd{color:var(--accent)}
+.cal-dh.we{background:color-mix(in srgb,var(--pill) 55%,transparent)}
+.cal-dh em{font-style:normal;font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:99px;background:var(--pill);color:var(--text-2)}
+.cal-body{position:relative;height:min(calc(100vh - 300px),980px);min-height:420px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.cal-grid{display:grid;grid-template-columns:var(--gut) repeat(var(--days),minmax(0,1fr));position:relative}
+.cal-hours{display:grid;grid-template-rows:repeat(24,var(--hh))}
+.cal-hours span{position:relative;top:-7px;padding-right:8px;text-align:right;font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums}
+.cal-col{position:relative;display:grid;grid-template-rows:repeat(24,var(--hh));border-left:1px solid var(--border)}
+.cal-col.we{background:color-mix(in srgb,var(--pill) 40%,transparent)}
+.cal-col.today{background:color-mix(in srgb,var(--accent) 3%,transparent)}
+.cal-cell{position:relative;border-top:1px solid var(--border-soft,var(--border));background:rgba(59,130,246,calc(var(--s) * var(--s) * .34));cursor:pointer;transition:background-color .12s,box-shadow .12s}
+.cal-cell:first-child{border-top:0}
+.cal-cell.past{cursor:default;background-image:repeating-linear-gradient(135deg,transparent 0 6px,color-mix(in srgb,var(--text-3) 8%,transparent) 6px 7px);background-color:transparent}
+.cal-cell .pct{position:absolute;inset:0;display:grid;place-items:center;font-size:10.5px;font-style:italic;color:color-mix(in srgb,var(--text-2) 70%,transparent);pointer-events:none;transition:opacity .12s}
+.cal-cell .plus{position:absolute;inset:3px;display:flex;align-items:center;justify-content:center;gap:4px;border-radius:8px;border:1.5px dashed var(--accent);color:var(--accent);font-size:11.5px;font-weight:600;background:color-mix(in srgb,var(--surface) 75%,transparent);opacity:0;transition:opacity .12s;pointer-events:none}
+.cal-cell .plus i{font-style:normal}
+.cal-cell:not(.past):hover .plus,.cal-cell.over .plus{opacity:1}
+.cal-cell:not(.past):hover .pct,.cal-cell.over .pct{opacity:0}
+.cal-cell.over{box-shadow:inset 0 0 0 2px var(--accent)}
+.cal-post{position:absolute;z-index:2;height:50px;display:flex;align-items:center;gap:7px;padding:5px 7px 5px 9px;border-radius:9px;background:var(--surface);border:1px solid var(--border);box-shadow:0 2px 8px rgba(15,23,42,.1);cursor:pointer;overflow:hidden;transition:box-shadow .12s,transform .12s}
+.cal-post::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--text-3)}
+.cal-post.Scheduled::before{background:#3b82f6}.cal-post.Published::before{background:var(--pos)}.cal-post.Draft::before{background:#94a3b8}.cal-post.Approved::before{background:#8b5cf6}.cal-post.Failed::before{background:var(--neg)}
+.cal-post:hover{box-shadow:0 6px 18px rgba(15,23,42,.18);transform:translateY(-1px);z-index:4}
+.cal-post.dragging{opacity:.45}
+.cal-post .cp-th{flex:none;width:30px;height:30px;border-radius:6px;overflow:hidden;display:grid;place-items:center}
+.cal-post .cp-b{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.25}
+.cal-post .cp-b b{font-size:11px;font-weight:700;color:var(--text-1);font-variant-numeric:tabular-nums}
+.cal-post .cp-b span{font-size:11.5px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cal-post .cp-f{flex:none;display:flex}
+.cal-post.Published{opacity:.85}
+.cal-now{position:absolute;left:-1px;right:0;z-index:3;height:0;border-top:2px solid var(--accent);pointer-events:none}
+.cal-now i{position:absolute;left:-5px;top:-6px;width:10px;height:10px;border-radius:50%;background:var(--accent)}
+/* narrow columns: hide the % and the thumbnails before the text */
+/* phones: one day at a time, with a strip of the week's days */
+.cal-strip{display:none}
+@media (max-width:760px){
+  .cal-strip{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;padding:8px;border-bottom:1px solid var(--border)}
+  .cal-strip button{position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;border-radius:10px;color:var(--text-2)}
+  .cal-strip small{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3)}
+  .cal-strip b{font:600 15px var(--jak);color:var(--text-1)}
+  .cal-strip button.today b{color:var(--accent)}
+  .cal-strip button.on{background:var(--accent);}.cal-strip button.on b,.cal-strip button.on small{color:#fff}
+  .cal-strip i{position:absolute;bottom:3px;width:4px;height:4px;border-radius:50%;background:var(--accent)}.cal-strip button.on i{background:#fff}
+  .cal{--gut:48px}
+  .cal-body{height:calc(100vh - 330px);min-height:360px}
+}
+/* month: Notion-like cells */
+.pcal.month .mgrid{gap:0;border-top:1px solid var(--border);border-left:1px solid var(--border);border-radius:10px;overflow:hidden}
+.pcal.month .day.m7{min-height:118px;border:0;border-right:1px solid var(--border);border-bottom:1px solid var(--border);border-radius:0;background:var(--surface);transition:background .12s}
+.pcal.month .day.m7:hover{background:color-mix(in srgb,var(--pill) 60%,var(--surface))}
+.pcal.month .day.m7.today{border-color:var(--border)}
+.pcal.month .day.m7.today .dh b{background:var(--accent);color:#fff;border-radius:50%;min-width:24px;height:24px;display:inline-grid;place-items:center}
+.pcal.month .day.m7.other{opacity:1;background:color-mix(in srgb,var(--pill) 35%,var(--surface))}
+.pcal.month .day.m7.other .dh b{color:var(--text-3)}
+.pcal.month .mhead span{text-transform:uppercase;font-size:11px;letter-spacing:.06em;color:var(--text-3)}
+.pl7.noside{grid-template-columns:minmax(0,1fr)}
+.psidebtn.on{border-color:var(--accent);color:var(--text-1)}
+.cal-col{container-type:inline-size}
+.cal-cell{background:rgba(59,130,246,calc(var(--s) * var(--s) * .42))}
+@container (max-width:150px){.cal-post .cp-th{display:none}}
+@container (max-width:110px){.cal-post .cp-f{display:none}.cal-post{padding-left:7px;gap:4px}.cal-cell .pct{font-size:9.5px}.cal-cell .plus i{display:none}}
+.cal.one .cal-head{display:none}
