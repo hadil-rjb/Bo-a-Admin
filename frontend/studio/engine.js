@@ -6167,6 +6167,102 @@ if (headless) {
   ACT.kitBrand = (a) => { if (a.dataset.id === S.active) return; S.active = a.dataset.id; save(); route(); };
 }
 
+/* ============ Date and time pickers ============
+   Every <input type="date|time"> of the studio gets a picker in the studio's style instead of the browser's. The input
+   stays in the page (hidden) and keeps the value: code that sets .value, reads it, or listens to input / change works
+   as before. The popover opens under the field (above when there's no room), closes on Escape or a click outside. */
+{
+  const NATIVE = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  const p2 = (n) => String(n).padStart(2, '0');
+  const isoOf = (d) => `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+  const parse = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? new Date(v + 'T12:00') : null);
+  const label = (el) => {
+    const v = NATIVE.get.call(el);
+    if (el.type === 'date') { const d = parse(v); return d ? fmt(d, { day: 'numeric', month: 'short', year: 'numeric' }) : ''; }
+    return /^\d{2}:\d{2}/.test(v || '') ? v.slice(0, 5) : '';
+  };
+  const paintBtn = (el) => { const b = el._dtp; if (!b) return; const t = label(el); b.querySelector('.dtp-v').textContent = t || (el.type === 'date' ? 'Pick a date' : 'Pick a time'); b.classList.toggle('empty', !t); b.disabled = el.disabled; };
+  const setVal = (el, v) => { NATIVE.set.call(el, v); paintBtn(el); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); };
+  let open = null; // { el, pop, ym }
+  const close = (focus) => { if (!open) return; const { el, pop } = open; pop.remove(); el._dtp && el._dtp.setAttribute('aria-expanded', 'false'); open = null; focus && el._dtp && el._dtp.focus(); };
+  const place = () => {
+    if (!open) return; const { el, pop } = open, r = el._dtp.getBoundingClientRect(), w = pop.offsetWidth, h = pop.offsetHeight;
+    const below = innerHeight - r.bottom, top = below >= h + 12 || below > r.top ? r.bottom + 6 : r.top - h - 6;
+    pop.style.top = Math.max(8, Math.min(top, innerHeight - h - 8)) + 'px'; pop.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + 'px';
+  };
+  function dateHTML(el) {
+    const v = parse(NATIVE.get.call(el)), base = open.ym || v || new Date(), y = base.getFullYear(), m = base.getMonth();
+    const first = new Date(y, m, 1), start = new Date(y, m, 1 - ((first.getDay() + 6) % 7)), today = isoOf(new Date()), sel = v ? isoOf(v) : '', min = el.min || '', max = el.max || '';
+    const cells = [...Array(42)].map((_, i) => { const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i), k = isoOf(d), off = (min && k < min) || (max && k > max);
+      return `<button type="button" class="dtp-d ${d.getMonth() !== m ? 'out' : ''} ${k === today ? 'today' : ''} ${k === sel ? 'on' : ''}" data-dtp="day" data-v="${k}" ${off ? 'disabled' : ''} aria-label="${fmt(d, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}" aria-pressed="${k === sel}">${d.getDate()}</button>`; });
+    const last = cells.slice(35).every((c) => c.includes(' out ')) ? 35 : 42; // 5 rows when the 6th is all next month
+    const tOff = (min && today < min) || (max && today > max);
+    return `<div class="dtp-h"><button type="button" class="dtp-nav" data-dtp="mo" data-n="-1" aria-label="Previous month">${ic('chevL', 16)}</button><b>${fmt(first, { month: 'long', year: 'numeric' })}</b><button type="button" class="dtp-nav" data-dtp="mo" data-n="1" aria-label="Next month">${ic('chevR', 16)}</button></div>
+      <div class="dtp-wd">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((x) => `<span>${x}</span>`).join('')}</div><div class="dtp-g">${cells.slice(0, last).join('')}</div>
+      <div class="dtp-f"><button type="button" data-dtp="today" ${tOff ? 'disabled' : ''}>Today</button>${(() => { const t = isoOf(new Date(Date.now() + 864e5)); return (min && t < min) || (max && t > max) ? '' : `<button type="button" data-dtp="set" data-v="${t}">Tomorrow</button>`; })()}${el.required ? '' : '<button type="button" data-dtp="clear" class="ghost">Clear</button>'}</div>`;
+  }
+  function timeHTML(el) {
+    const v = NATIVE.get.call(el) || '', [h, mi] = /^\d{2}:\d{2}/.test(v) ? v.slice(0, 5).split(':').map(Number) : [-1, -1];
+    const step = Math.max(1, Math.round((+el.step || 300) / 60)), mins = []; for (let x = 0; x < 60; x += step >= 5 ? 5 : step) mins.push(x); if (mi >= 0 && !mins.includes(mi)) mins.push(mi), mins.sort((a, b) => a - b);
+    const quick = ['09:00', '12:00', '15:00', '18:00', '21:00'];
+    return `<div class="dtp-tq">${quick.map((q) => `<button type="button" data-dtp="set" data-v="${q}" class="${v.slice(0, 5) === q ? 'on' : ''}">${q}</button>`).join('')}</div>
+      <div class="dtp-tc"><div class="dtp-col" data-col="h"><small>Hour</small>${[...Array(24)].map((_, x) => `<button type="button" data-dtp="h" data-v="${x}" class="${x === h ? 'on' : ''}">${p2(x)}</button>`).join('')}</div>
+      <div class="dtp-col" data-col="m"><small>Min</small>${mins.map((x) => `<button type="button" data-dtp="m" data-v="${x}" class="${x === mi ? 'on' : ''}">${p2(x)}</button>`).join('')}</div></div>`;
+  }
+  const render = () => {
+    if (!open) return; const { el, pop } = open;
+    pop.innerHTML = el.type === 'date' ? dateHTML(el) : timeHTML(el); place();
+    if (el.type === 'time') pop.querySelectorAll('.dtp-col').forEach((c) => { const on = c.querySelector('.on') || c.querySelector('[data-v="9"]'); if (on) c.scrollTop = on.offsetTop - c.clientHeight / 2 + on.offsetHeight / 2; });
+  };
+  const show = (el) => {
+    if (open && open.el === el) return close();
+    close(); const pop = document.createElement('div'); pop.className = 'dtp-pop ' + el.type; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', el.type === 'date' ? 'Choose a date' : 'Choose a time');
+    document.body.append(pop); open = { el, pop, ym: null }; el._dtp.setAttribute('aria-expanded', 'true'); render();
+    const f = pop.querySelector('.on') || pop.querySelector('.today') || pop.querySelector('button:not([disabled])'); f && f.focus({ preventScroll: true });
+  };
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('.dtp-btn'); if (b) { e.preventDefault(); show(b._el); return; }
+    if (!open) return; const t = e.target.closest && e.target.closest('[data-dtp]');
+    if (!t || !open.pop.contains(t)) { if (!open.pop.contains(e.target)) close(); return; }
+    const { el } = open, k = t.dataset.dtp, v = t.dataset.v;
+    if (k === 'mo') { const b0 = open.ym || parse(NATIVE.get.call(el)) || new Date(); open.ym = new Date(b0.getFullYear(), b0.getMonth() + +t.dataset.n, 1); render(); return; }
+    if (k === 'day' || k === 'set') { setVal(el, v); close(true); return; }
+    if (k === 'today') { setVal(el, isoOf(new Date())); close(true); return; }
+    if (k === 'clear') { setVal(el, ''); close(true); return; }
+    if (k === 'h' || k === 'm') {
+      const cur = NATIVE.get.call(el) || '', [h, m] = /^\d{2}:\d{2}/.test(cur) ? cur.split(':').map(Number) : [9, 0];
+      const nv = k === 'h' ? `${p2(+v)}:${p2(m)}` : `${p2(h)}:${p2(+v)}`; setVal(el, nv);
+      if (k === 'm') close(true); else render();
+    }
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    if (!open) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); return; }
+    if (open.el.type === 'date' && /^Arrow/.test(e.key) && e.target.classList && e.target.classList.contains('dtp-d')) {
+      e.preventDefault(); const d = parse(e.target.dataset.v), n = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key]; d.setDate(d.getDate() + n);
+      const k = isoOf(d), btn = open.pop.querySelector(`[data-v="${k}"]`); if (btn) btn.focus(); else { open.ym = new Date(d.getFullYear(), d.getMonth(), 1); render(); const b2 = open.pop.querySelector(`[data-v="${k}"]`); b2 && b2.focus(); }
+    }
+  }, true);
+  addEventListener('resize', place); addEventListener('scroll', (e) => { if (open && !open.pop.contains(e.target)) place(); }, true);
+  /** Puts a picker on an input (once) */
+  function enhance(el) {
+    if (el._dtp || el.dataset.native != null || !['date', 'time'].includes(el.type)) return;
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'dtp-btn ' + (el.className || 'field'); b._el = el;
+    if (el.getAttribute('style')) b.setAttribute('style', el.getAttribute('style'));
+    b.setAttribute('aria-haspopup', 'dialog'); b.setAttribute('aria-expanded', 'false'); if (el.getAttribute('aria-label')) b.setAttribute('aria-label', el.getAttribute('aria-label'));
+    b.innerHTML = `<span class="dtp-v"></span>${ic(el.type === 'date' ? 'cal' : 'clock', 16)}`;
+    el._dtp = b; el.classList.add('dtp-native'); el.tabIndex = -1; el.setAttribute('aria-hidden', 'true'); el.after(b);
+    // code that sets .value directly (presets, "Today" chips, reloads) updates the button too
+    Object.defineProperty(el, 'value', { configurable: true, get() { return NATIVE.get.call(this); }, set(v) { NATIVE.set.call(this, v); paintBtn(this); } });
+    const lab = el.closest('label'); if (lab) lab.addEventListener('click', (e) => { if (e.target === lab) { e.preventDefault(); b.focus(); } });
+    paintBtn(el);
+  }
+  const scan = (root) => { if (root.querySelectorAll) root.querySelectorAll('input[type="date"], input[type="time"]').forEach(enhance); };
+  scan(document);
+  new MutationObserver((ms) => { for (const m of ms) m.addedNodes.forEach((n) => { if (n.nodeType === 1) { if (n.matches && n.matches('input[type="date"], input[type="time"]')) enhance(n); else scan(n); } }); if (open && !open.el.isConnected) close(); })
+    .observe(document.body, { childList: true, subtree: true });
+}
+
 /* ============ first paint, with every renderer installed ============ */
 /* The page was first drawn halfway through boot, before the later sections replaced textHTML / lstyle
    (mixed text runs, text effects, image adjustments, Google Fonts…). Draw it again so the canvas,
