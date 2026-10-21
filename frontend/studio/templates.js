@@ -55,49 +55,76 @@ export function tplCalendar(w, h, lang = 'en', evs = EVENTS.filter((e) => e.on))
 /* Live market templates: a text layer's `feed` is what it shows ({price}, {title}…; `feedAr` in Arabic),
    `feed: '@image'` takes the headline photo, `feed: '@pos'` slides along the 'Range track', and
    `tone` ('fill' | 'color') follows the price direction. The live data section fills them. */
-const FEED_LOOK = { bg: 'radial-gradient(ellipse 110% 55% at 88% 0%, rgba(253,14,53,.32) 0%, rgba(11,18,32,0) 62%), #0b1220', base: '#0b1220', fg: '#ffffff', muted: 'rgba(255,255,255,.66)', card: 'rgba(255,255,255,.06)', line: 'rgba(255,255,255,.12)', accent: '#fd0e35', onAccent: '#ffffff', head: 'Plus Jakarta Sans', body: 'Inter', site: 'uxboga.com' };
+const FEED_LOOK = { bg: 'radial-gradient(ellipse 110% 55% at 88% 0%, rgba(253,14,53,.32) 0%, rgba(11,18,32,0) 62%), #0b1220', base: '#0b1220', fg: '#ffffff', muted: 'rgba(255,255,255,.66)', card: 'rgba(255,255,255,.06)', line: 'rgba(255,255,255,.12)', band: 'rgba(255,255,255,.04)', accent: '#fd0e35', onAccent: '#ffffff', head: 'Plus Jakarta Sans', body: 'Inter', site: 'uxboga.com', brand: 'Boğa', logo: null };
+/** The brand's logo (a picture from the Brand Kit), or its name set in the heading font */
+const logoLayer = (x, y, w, h, o, align) => (o.logo
+  ? Im(x, y, w, h, `url(${o.logo}) ${align} center/contain no-repeat`, { name: 'Logo' })
+  : Tx(x, y + Math.round((h - 40) / 2), w, o.brand, { name: 'Logo', size: 36, weight: 800, font: o.head, color: o.fg, align, ls: -1 }));
+/** A coloured label: pill, dot and text (mirrored in Arabic) */
+function pill(x, y, wd, o, en, arText, ar) {
+  const f = ar ? o.ar || 'Cairo' : o.body;
+  return [
+    Rc(x, y, wd, 52, o.accent, { name: 'Kicker pill', r: 26 }),
+    El(ar ? x + wd - 32 : x + 20, y + 20, 12, 12, o.onAccent, { name: 'Kicker dot' }),
+    Tx(ar ? x + 14 : x + 40, y + 15, wd - 54, ar ? arText : en, { name: 'Kicker', size: 21, weight: 700, font: f, color: o.onAccent, align: ar ? 'right' : 'left', ls: ar ? 0 : 2.5, dir: ar ? 'rtl' : 'ltr', feed: en, feedAr: arText }),
+  ];
+}
 export function tplPrice(w, h, o = {}) {
   o = { ...FEED_LOOK, ...o };
-  const ar = o.lang === 'ar', al = ar ? 'right' : 'left', dir = ar ? 'rtl' : 'ltr', P = 80, X = (x, wd) => (ar ? w - x - wd : x);
-  const wf = (f) => (ar ? o.ar || 'Cairo' : f), compact = h < 1200, ps = Math.round(Math.min(190, w * 0.17));
-  const nameY = Math.round(h * 0.19), priceY = Math.round(h * 0.35), pillY = priceY + Math.round(ps * 1.12) + 14;
-  const cardY = Math.round(h * (compact ? 0.6 : 0.62)), cardH = compact ? 160 : 200, cw = w - P * 2;
+  const ar = o.lang === 'ar', al = ar ? 'right' : 'left', dir = ar ? 'rtl' : 'ltr', P = 72, cw = w - P * 2, X = (x, wd) => (ar ? w - x - wd : x);
+  const wf = (f) => (ar ? o.ar || 'Cairo' : f), compact = h < 1200, ps = Math.round(Math.min(184, w * 0.17));
+  const footY = h - (compact ? 108 : 128), cardH = compact ? 184 : 214;
+  let nameY = Math.round(h * (compact ? 0.17 : 0.18)), priceY = nameY + 148, pillY = priceY + Math.round(ps * 1.1) + 18;
+  let cardY = Math.min(footY - cardH - 40, pillY + 72 + (compact ? 40 : 64));
+  // tall canvases: the block sits in the middle of the free space
+  const extra = footY - 40 - (cardY + cardH); if (extra > 80) { const k = Math.round((extra - 80) / 2); nameY += k; priceY += k; pillY += k; cardY += k; }
+  const ty = cardY + Math.round(cardH * 0.6), tw = cw - 72;
   return [
     BG(w, h, o.bg),
-    Rc(X(P, 270), P + 10, 270, 56, o.accent, { name: 'Kicker pill', r: 28 }),
-    Tx(X(P, 270), P + 25, 270, ar ? 'تنبيه السعر' : 'PRICE ALERT', { name: 'Kicker', size: 22, weight: 700, font: wf(o.body), color: o.onAccent, align: 'center', ls: ar ? 0 : 3, dir, feed: 'PRICE ALERT', feedAr: 'تنبيه السعر' }),
-    Tx(X(P, cw), nameY, cw, ar ? 'الذهب' : 'Gold', { name: 'Market', size: 84, weight: 700, font: wf(o.head), color: o.fg, align: al, ls: ar ? 0 : -2, dir, feed: '{name}' }),
-    Tx(X(P, cw), nameY + 104, cw, 'XAU/USD', { name: 'Ticker', size: 34, weight: 500, font: o.body, color: o.muted, align: al, ls: 1, dir, feed: '{ticker}' }),
-    Tx(X(P, cw), priceY, cw, '4,130.41', { name: 'Price', size: ps, weight: 700, font: o.head, color: o.fg, align: al, lh: 1.05, ls: -4, dir: 'ltr', feed: '{price}' }),
-    Rc(X(P, 290), pillY, 290, 72, '#16A34A', { name: 'Change pill', r: 36, tone: 'fill' }),
-    Tx(X(P, 290), pillY + 17, 290, '▲ +0.12%', { name: 'Change %', size: 32, weight: 700, font: o.body, color: '#ffffff', align: 'center', dir: 'ltr', feed: '{arrow} {changePct}' }),
-    Tx(X(P + 320, cw - 320), pillY + 19, cw - 320, ar ? '+4.94 اليوم' : '+4.94 today', { name: 'Change', size: 30, weight: 500, font: wf(o.body), color: o.muted, align: al, dir, feed: '{change} today', feedAr: '{change} اليوم' }),
+    logoLayer(X(P, 260), P - 4, 260, 64, o, al),
+    ...pill(X(w - P - 236, 236), P + 2, 236, o, 'PRICE ALERT', 'تنبيه السعر', ar),
+    Rc(P, P + 92, cw, 2, o.line, { name: 'Header rule' }),
+    Tx(X(P, cw), nameY, cw, ar ? 'الذهب' : 'Gold', { name: 'Market', size: 74, weight: 800, font: wf(o.head), color: o.fg, align: al, ls: ar ? 0 : -2, dir, feed: '{name}' }),
+    Tx(X(P, cw), nameY + 92, cw, 'XAU/USD', { name: 'Ticker', size: 30, weight: 500, font: o.body, color: o.muted, align: al, ls: 2, dir, feed: '{ticker}' }),
+    Tx(X(P, cw), priceY, cw, '4,130.41', { name: 'Price', size: ps, weight: 800, font: o.head, color: o.fg, align: al, lh: 1.05, ls: -5, dir: 'ltr', feed: '{price}' }),
+    Rc(X(P, 280), pillY, 280, 72, '#16A34A', { name: 'Change pill', r: 36, tone: 'fill' }),
+    Tx(X(P, 280), pillY + 18, 280, '▲ +0.12%', { name: 'Change %', size: 31, weight: 700, font: o.body, color: '#ffffff', align: 'center', dir: 'ltr', feed: '{arrow} {changePct}' }),
+    Tx(X(P + 304, cw - 304), pillY + 20, cw - 304, ar ? '+4.94 اليوم' : '+4.94 today', { name: 'Change', size: 29, weight: 500, font: wf(o.body), color: o.muted, align: al, dir, feed: '{change} today', feedAr: '{change} اليوم' }),
     Rc(P, cardY, cw, cardH, o.card, { name: 'Range card', r: 28, stroke: o.line, sw: 2 }),
-    Tx(X(P + 36, cw - 72), cardY + 30, cw - 72, ar ? 'نطاق اليوم' : 'DAY RANGE', { name: 'Range label', size: 22, weight: 600, font: wf(o.body), color: o.muted, align: al, ls: ar ? 0 : 3, dir, feed: 'DAY RANGE', feedAr: 'نطاق اليوم' }),
-    Tx(P + 36, cardY + cardH - 92, 300, '4,106.35', { name: 'Low', size: 30, weight: 600, font: o.body, color: o.fg, dir: 'ltr', feed: '{low}' }),
-    Tx(w - P - 36 - 300, cardY + cardH - 92, 300, '4,141.99', { name: 'High', size: 30, weight: 600, font: o.body, color: o.fg, align: 'right', dir: 'ltr', feed: '{high}' }),
-    Rc(P + 36, cardY + cardH - 42, cw - 72, 10, o.line, { name: 'Range track', r: 5 }),
-    El(P + 36 + Math.round((cw - 72) * 0.68) - 15, cardY + cardH - 52, 30, 30, o.accent, { name: 'Range marker', stroke: o.fg, sw: 4, feed: '@pos' }),
-    Tx(X(P, cw), cardY + cardH + (compact ? 34 : 56), cw, ar ? 'آخر تحديث 14:05 · 21 أكتوبر 2026' : 'Updated 14:05 · 21 Oct 2026', { name: 'Updated', size: 26, weight: 400, font: wf(o.body), color: o.muted, align: al, dir, feed: 'Updated {time} {tz} · {date}', feedAr: 'آخر تحديث {time} {tz} · {date}' }),
-    Tx(0, h - (compact ? 80 : 110), w, o.site, { name: 'Footer', size: 26, weight: 500, font: o.body, color: o.muted, align: 'center' }),
+    Tx(X(P + 36, tw), cardY + (compact ? 26 : 32), tw, ar ? 'نطاق اليوم' : 'DAY RANGE', { name: 'Range label', size: 21, weight: 700, font: wf(o.body), color: o.muted, align: al, ls: ar ? 0 : 3, dir, feed: 'DAY RANGE', feedAr: 'نطاق اليوم' }),
+    Tx(P + 36, ty - 58, 320, '4,106.35', { name: 'Low', size: 32, weight: 700, font: o.body, color: o.fg, dir: 'ltr', feed: '{low}' }),
+    Tx(w - P - 36 - 320, ty - 58, 320, '4,141.99', { name: 'High', size: 32, weight: 700, font: o.body, color: o.fg, align: 'right', dir: 'ltr', feed: '{high}' }),
+    Rc(P + 36, ty, tw, 10, o.line, { name: 'Range track', r: 5 }),
+    El(P + 36 + Math.round(tw * 0.68) - 15, ty - 10, 30, 30, o.accent, { name: 'Range marker', stroke: o.fg, sw: 4, feed: '@pos' }),
+    Tx(P + 36, ty + 26, 200, ar ? 'الأدنى' : 'LOW', { name: 'Low label', size: 19, weight: 600, font: wf(o.body), color: o.muted, ls: ar ? 0 : 2, dir, feed: 'LOW', feedAr: 'الأدنى' }),
+    Tx(w - P - 36 - 200, ty + 26, 200, ar ? 'الأعلى' : 'HIGH', { name: 'High label', size: 19, weight: 600, font: wf(o.body), color: o.muted, align: 'right', ls: ar ? 0 : 2, dir, feed: 'HIGH', feedAr: 'الأعلى' }),
+    Rc(0, footY, w, h - footY, o.band, { name: 'Footer band' }),
+    Rc(0, footY, w, 2, o.line, { name: 'Footer rule' }),
+    Tx(X(P, cw * 0.62), footY + Math.round((h - footY) / 2) - 15, Math.round(cw * 0.62), ar ? 'آخر تحديث 14:05 · 21 أكتوبر 2026' : 'Updated 14:05 · 21 Oct 2026', { name: 'Updated', size: 23, weight: 400, font: wf(o.body), color: o.muted, align: al, dir, feed: 'Updated {time} {tz} · {date}', feedAr: 'آخر تحديث {time} {tz} · {date}' }),
+    Tx(X(P + cw * 0.62, cw * 0.38), footY + Math.round((h - footY) / 2) - 15, Math.round(cw * 0.38), o.site, { name: 'Footer', size: 23, weight: 700, font: o.body, color: o.fg, align: ar ? 'left' : 'right' }),
   ];
 }
 export function tplNews(w, h, o = {}) {
   o = { ...FEED_LOOK, ...o };
   const ar = o.lang === 'ar', al = ar ? 'right' : 'left', dir = ar ? 'rtl' : 'ltr', P = 72, X = (x, wd) => (ar ? w - x - wd : x);
   const wf = (f) => (ar ? o.ar || 'Cairo' : f), compact = h < 1200, ih = Math.round(h * (compact ? 0.42 : 0.46)), cw = w - P * 2;
-  const ts = compact ? 56 : 66, tY = ih + 52, tH = Math.round(ts * 1.12 * 4), sY = tY + tH + 22, metaY = h - (compact ? 150 : 190);
+  const band = compact ? 84 : 100, ts = compact ? 56 : 66, tY = ih + 56, tH = Math.round(ts * 1.12 * 4), sY = tY + tH + 22, metaY = h - band - (compact ? 58 : 70);
   return [
     BG(w, h, o.bg),
     Im(0, 0, w, ih, 'linear-gradient(135deg,#334155 0%,#0b1220 100%)', { name: 'Headline photo', feed: '@image' }),
-    Rc(0, Math.round(ih * 0.45), w, ih - Math.round(ih * 0.45) + 2, `linear-gradient(180deg, rgba(11,18,32,0) 0%, ${o.base} 100%)`, { name: 'Photo fade' }),
-    Rc(X(P, 270), ih - 44, 270, 56, o.accent, { name: 'Kicker pill', r: 28 }),
-    Tx(X(P, 270), ih - 29, 270, ar ? 'أخبار الأسواق' : 'MARKET NEWS', { name: 'Kicker', size: 22, weight: 700, font: wf(o.body), color: o.onAccent, align: 'center', ls: ar ? 0 : 3, dir, feed: 'MARKET NEWS', feedAr: 'أخبار الأسواق' }),
-    Tx(X(P, cw), tY, cw, 'Gold slips as the dollar firms ahead of US inflation data', { name: 'Headline', size: ts, weight: 700, font: wf(o.head), color: o.fg, align: al, lh: 1.12, lines: 4, ls: ar ? 0 : -1.5, dir, feed: '{title}', fit: 1 }),
-    Tx(X(P, cw), sY, cw, 'Traders trimmed bets on a December rate cut after strong retail sales, lifting Treasury yields.', { name: 'Summary', size: 30, weight: 400, font: wf(o.body), color: o.muted, align: al, lh: 1.4, lines: compact ? 2 : 3, dir, feed: '{summary}', fit: 1, flow: 1 }),
-    Rc(X(P, 64), metaY - 26, 64, 6, o.accent, { name: 'Rule', r: 3 }),
-    Tx(X(P, cw), metaY, cw, 'FXStreet · 12 min ago', { name: 'Source', size: 26, weight: 600, font: wf(o.body), color: o.fg, align: al, dir, feed: '{source} · {ago}' }),
-    Tx(0, h - (compact ? 80 : 110), w, o.site, { name: 'Footer', size: 26, weight: 500, font: o.body, color: o.muted, align: 'center' }),
+    Rc(0, 0, w, 220, 'linear-gradient(180deg, rgba(0,0,0,.5) 0%, rgba(0,0,0,0) 100%)', { name: 'Top shade' }),
+    Rc(0, Math.round(ih * 0.42), w, ih - Math.round(ih * 0.42) + 2, `linear-gradient(180deg, rgba(0,0,0,0) 0%, ${o.base} 100%)`, { name: 'Photo fade' }),
+    Rc(X(P, 252), P - 10, 252, 76, o.base, { name: 'Logo plate', r: 20, op: 0.92 }),
+    logoLayer(X(P + 20, 212), P + 2, 212, 52, o, 'center'),
+    Rc(X(w - P - 250, 250), P - 2, 250, 60, 'rgba(0,0,0,.45)', { name: 'Date chip', r: 30 }),
+    Tx(X(w - P - 250, 250), P + 15, 250, ar ? '21 أكتوبر 2026' : '21 Oct 2026', { name: 'Date', size: 22, weight: 600, font: wf(o.body), color: '#ffffff', align: 'center', dir, feed: '{today}' }),
+    ...pill(X(P, 252), ih - 30, 252, o, 'MARKET NEWS', 'أخبار الأسواق', ar),
+    Tx(X(P, cw), tY, cw, 'Gold slips as the dollar firms ahead of US inflation data', { name: 'Headline', size: ts, weight: 800, font: wf(o.head), color: o.fg, align: al, lh: 1.12, lines: 4, ls: ar ? 0 : -1.5, dir, feed: '{title}', fit: 1 }),
+    Tx(X(P, cw), sY, cw, 'Traders trimmed bets on a December rate cut after strong retail sales, lifting Treasury yields.', { name: 'Summary', size: 29, weight: 400, font: wf(o.body), color: o.muted, align: al, lh: 1.42, lines: compact ? 2 : 3, dir, feed: '{summary}', fit: 1, flow: 1 }),
+    El(X(P, 14), metaY + 9, 14, 14, o.accent, { name: 'Source dot' }),
+    Tx(X(P + 28, cw - 28), metaY, cw - 28, 'FXStreet · 12 min ago', { name: 'Source', size: 25, weight: 600, font: wf(o.body), color: o.fg, align: al, dir, feed: '{source} · {ago}' }),
+    Rc(0, h - band, w, band, o.accent, { name: 'Footer band' }),
+    Tx(0, h - band + Math.round(band / 2) - 15, w, o.site, { name: 'Footer', size: 25, weight: 700, font: o.body, color: o.onAccent, align: 'center', ls: 1 }),
   ];
 }
 export function tplQuote(w, h) {

@@ -5546,6 +5546,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       else if (l.name !== 'Currency label') l.color = S7.fg;
       l.font = ar && l.name !== 'Time' ? ar : ['Kicker', 'Headline'].includes(l.name) ? head : body;
     });
+    // the Brand Kit logo signs the slide instead of the website, when there is one for this background
+    const logo = FEEDS && FEEDS.look(style, lang).logo, fi = L.findIndex((l) => l.name === 'Footer');
+    if (logo && fi >= 0) L[fi] = Im(Math.round(w / 2 - 150), L[fi].y - 18, 300, 64, `url(${logo}) center center/contain no-repeat`, { name: 'Logo' });
     return L;
   }
 
@@ -5805,7 +5808,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const pick = field('Template', seg('lvKind', kind, [['calendar', 'Calendar'], ['price', 'Price alert'], ['news', 'News']]));
     if (kind !== 'calendar' && FEEDS) return pick + FEEDS.brandForm(d) + importCard();
     return `${pick}<div class="lv-card"><span class="lv-dots">${b.colors.slice(0, 5).map((c) => `<i style="background:${esc(c.hex)}"></i>`).join('')}</span><div><b>${esc(b.name)} Brand Kit</b><p>${esc(b.fonts.heading)} · ${esc(b.fonts.body)}<br>${w}×${h} · up to 5 rows</p></div></div>
-      ${field('Style', seg('lvStyle', st, [['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']]))}
+      ${field('Style', FEEDS ? FEEDS.styleCards(d, (style) => brandCalendar(w, h, style, ED.lang === 'ar' ? 'ar' : 'en', rows)) : seg('lvStyle', st, [['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']]))}
       ${field('Rows', seg('lvRows', String(rows), [['3', '3'], ['4', '4'], ['5', '5']]))}
       <div class="lv-cta"><button class="btn primary lv-go" data-act="lvBuild">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Replaces this slide with a new template. You can undo it.</p></div>${importCard()}`;
   }
@@ -6133,7 +6136,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   ];
   const PRESET = new Map(MARKETS.flatMap(([, l]) => l.map(([s, en, ar, dec]) => [s, { en, ar, dec }])));
   const NEWS_SRC = [['fxstreet', 'FXStreet · forex & commodities'], ['cnbc', 'CNBC · markets'], ['marketwatch', 'MarketWatch · top stories'], ['google', 'Google News · any topic']];
-  const SRC_NAME = { fxstreet: 'FXStreet', cnbc: 'CNBC', marketwatch: 'MarketWatch', google: 'Google News', tradingview: 'TradingView', binance: 'Binance' };
+  const SRC_NAME = { fxstreet: 'FXStreet', cnbc: 'CNBC', marketwatch: 'MarketWatch', google: 'Google News', tradingview: 'TradingView', coinbase: 'Coinbase', binance: 'Binance' };
   const KEYS = {
     price: ['name', 'ticker', 'price', 'change', 'changePct', 'arrow', 'direction', 'high', 'low', 'time', 'date', 'tz'],
     news: ['title', 'summary', 'source', 'ago', 'time', 'date', 'today', 'tz'],
@@ -6168,10 +6171,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       while (cfg.symbols.length < n) cfg.symbols.push([...PRESET.keys()].find((s) => !cfg.symbols.includes(s)));
       const syms = cfg.symbols.slice(0, n), r = await get('/social/markets/quotes?' + new URLSearchParams({ symbols: syms.join(',') }), 30_000);
       const by = new Map(r.quotes.map((q) => [q.symbol, q]));
-      return { items: syms.map((s) => by.get(s) || null), source: (r.quotes[0] || {}).source, missing: r.missing || [] };
+      const st = r.quotes.find((q) => q.stale);
+      return { items: syms.map((s) => by.get(s) || null), source: (r.quotes[0] || {}).source, missing: r.missing || [], stale: st ? st.at : null };
     }
     const r = await get('/social/markets/news?' + new URLSearchParams({ source: cfg.src, q: cfg.q || '', lang: cfg.lang, limit: '20' }), 120_000);
-    return { items: r.items, source: r.source, missing: [] };
+    return { items: r.items, source: r.source, requested: r.requested, missing: [], stale: r.stale ? r.fetchedAt : null };
   }
   /** The headlines on the slide: the hand-picked ones, then the latest */
   function chooseNews(items, cfg, n) {
@@ -6302,9 +6306,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       try {
         const r = await dataFor(cfg, slots(pg)), items = await itemsFor(pg, cfg, r);
         cfg.events = r.items.filter(Boolean).map((x) => { const { photo, ...y } = x; return y; }); // the panel's list
-        cfg.feed = { source: r.source, missing: r.missing };
+        cfg.feed = { source: r.source, requested: r.requested, missing: r.missing, stale: r.stale };
         changed = apply(pg, items, cfg) || changed; cfg.at = Date.now(); cfg.err = '';
-      } catch (e) { err = e; cfg.err = e.message; } finally { busyPages.delete(cfg); }
+      } catch (e) { err = e; cfg.err = e.message; if (!cfg.at) cfg.events = cfg.events || []; } finally { busyPages.delete(cfg); }
     }
     if (changed) { d.upd = 'Just now'; save(); }
     if (ran && ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data' && curP().live && curP().live.kind) panel($('#edPanel')); }
@@ -6347,11 +6351,13 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const b = brand(), col = (n, f) => ((b.colors.find((c) => c.name === n) || {}).hex || f);
     const primary = col('Primary', '#FD0E35'), dark = col('Dark', '#0B1220'), light = col('Light', '#F8FAFC'), deep = shade(primary, -0.35);
     const st = {
-      dark: { bg: `radial-gradient(ellipse 110% 55% at 88% 0%, ${primary}55 0%, transparent 62%), ${dark}`, base: dark, fg: '#FFFFFF', muted: 'rgba(255,255,255,.68)', card: 'rgba(255,255,255,.06)', line: 'rgba(255,255,255,.12)', accent: primary, onAccent: '#FFFFFF' },
-      light: { bg: light, base: light, fg: dark, muted: 'rgba(15,23,42,.62)', card: 'rgba(15,23,42,.045)', line: 'rgba(15,23,42,.1)', accent: primary, onAccent: '#FFFFFF' },
-      brand: { bg: `linear-gradient(160deg, ${primary}, ${deep})`, base: deep, fg: '#FFFFFF', muted: 'rgba(255,255,255,.8)', card: 'rgba(0,0,0,.16)', line: 'rgba(255,255,255,.2)', accent: '#FFFFFF', onAccent: primary },
+      dark: { bg: `radial-gradient(ellipse 110% 55% at 88% 0%, ${primary}55 0%, transparent 62%), ${dark}`, base: dark, fg: '#FFFFFF', muted: 'rgba(255,255,255,.68)', card: 'rgba(255,255,255,.06)', line: 'rgba(255,255,255,.12)', band: 'rgba(255,255,255,.04)', accent: primary, onAccent: '#FFFFFF' },
+      light: { bg: `radial-gradient(ellipse 110% 55% at 88% 0%, ${primary}1F 0%, transparent 60%), ${light}`, base: light, fg: dark, muted: 'rgba(15,23,42,.62)', card: '#FFFFFF', line: 'rgba(15,23,42,.1)', band: 'rgba(15,23,42,.035)', accent: primary, onAccent: '#FFFFFF' },
+      brand: { bg: `radial-gradient(ellipse 90% 50% at 85% 0%, rgba(255,255,255,.18) 0%, transparent 60%), linear-gradient(160deg, ${primary}, ${deep})`, base: deep, fg: '#FFFFFF', muted: 'rgba(255,255,255,.8)', card: 'rgba(0,0,0,.16)', line: 'rgba(255,255,255,.2)', band: 'rgba(0,0,0,.14)', accent: '#FFFFFF', onAccent: primary },
     }[style] || {};
-    return { ...st, head: b.fonts.heading || 'Plus Jakarta Sans', body: b.fonts.body || 'Inter', ar: b.fonts.arabic || 'Cairo', site: b.website || b.handle || b.name, lang };
+    // the Brand Kit logo made for this background (a light logo on dark and brand styles), else the brand name
+    const L = (b.logos || []).filter((l) => l.src), logo = L.find((l) => l.kind === (style === 'light' ? 'Light background' : 'Dark background')) || L.find((l) => l.kind === 'Primary');
+    return { ...st, head: b.fonts.heading || 'Plus Jakarta Sans', body: b.fonts.body || 'Inter', ar: b.fonts.arabic || 'Cairo', site: b.website || b.handle || b.name, brand: b.name, logo: logo ? logo.src : null, lang };
   }
 
   /* ---------- panel ---------- */
@@ -6361,8 +6367,17 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const stamp = (cfg) => (cfg.at && !cfg.err ? `<span class="lv-ok" title="Data from ${esc(SRC_NAME[(cfg.feed || {}).source] || '')}"><i></i>Updated ${esc(hhmm(cfg.at))} ${esc(tzShort())}</span>` : '');
   const marketOpts = (cur) => MARKETS.map(([g, l]) => `<optgroup label="${esc(g)}">${l.map(([s, en]) => `<option value="${esc(s)}" ${s === cur ? 'selected' : ''}>${esc(en)}</option>`).join('')}</optgroup>`).join('');
   const srcOpts = (cur) => NEWS_SRC.map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`).join('');
+  /** What went wrong, in words: the slide keeps its last data and the studio tries again */
+  function statusNote(cfg) {
+    const f = cfg.feed || {}, what = cfg.kind === 'price' ? 'price' : 'news';
+    if (cfg.err) return `<p class="lv-note warn" title="${esc(cfg.err)}">${ic('alert', 14)}<span>The ${what} sources aren't answering right now. The slide keeps its last data and updates on its own when they're back.</span></p>`;
+    if (f.stale) return `<p class="lv-note warn">${ic('clock', 14)}<span>Live sources are busy: showing the ${what} from ${esc(hhmm(Date.parse(f.stale)))}. It updates on its own.</span></p>`;
+    if (cfg.kind === 'news' && f.requested && f.source && f.requested !== f.source) return `<p class="lv-note">${ic('alert', 14)}<span>${esc(SRC_NAME[f.requested] || f.requested)} isn't reachable from the server, so these headlines come from ${esc(SRC_NAME[f.source] || f.source)}.</span></p>`;
+    return '';
+  }
   function quoteCard(q, sym, cfg) {
-    if (!q) return `<p class="lv-note err">${ic('alert', 14)}<span>No price for ${esc(sym)}. Check the symbol (EXCHANGE:SYMBOL, as on TradingView).</span></p>`;
+    // a symbol is only wrong when the sources answered without it; when they're down, the header says so
+    if (!q) return cfg.feed && (cfg.feed.missing || []).includes(sym) && !cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>No price for ${esc(sym)}. Check the symbol (EXCHANGE:SYMBOL, as on TradingView).</span></p>` : '';
     const dec = decOf(sym, cfg, q), down = (q.change || q.changePct || 0) < 0;
     return `<div class="fd-quote"><div class="grow"><b>${esc(nameOf(sym, cfg, q))}</b><small>${esc(ticker(sym))} · ${esc(SRC_NAME[q.source] || q.source)}</small></div><div class="fd-q"><b>${num(q.price, dec)}</b><span class="${down ? 'dn' : 'up'}">${down ? '▼' : '▲'} ${signed(q.changePct, 2)}%</span></div></div>`;
   }
@@ -6413,7 +6428,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (!p) return; const d = ED.d, pg = curP(), cfg = pg.live;
     const word = cfg.kind === 'price' ? 'This slide is a price alert: its texts follow the market.' : 'This slide is a news post: it shows the latest headlines.';
     let h = `<header class="lv-head"><div class="row sp"><h3>Live data</h3>${stamp(cfg)}</div><p>${word}</p></header>`;
-    if (cfg.err) h += `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>`;
+    h += statusNote(cfg);
     h += cfg.kind === 'price' ? marketSec(pg, cfg) : newsSec(pg, cfg);
     h += fieldsSec(pg, cfg);
     h += sec('Updates', `<div class="lv-sw"><div class="lv-swr"><div class="grow"><b>Update automatically</b><p>While the studio is open, and right before each scheduled post.</p></div>${sw(!cfg.paused, 'fdPause', '', 'Update automatically')}</div></div>`
@@ -6428,10 +6443,18 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   function brandForm(d) {
     const b = brand(), [w, h] = RATIOS[d.ratio], kind = ED.liveKind, st = ED.liveStyle || 'dark';
     return `<div class="lv-card"><span class="lv-dots">${b.colors.slice(0, 5).map((c) => `<i style="background:${esc(c.hex)}"></i>`).join('')}</span><div><b>${esc(b.name)} Brand Kit</b><p>${esc(b.fonts.heading)} · ${esc(b.fonts.body)}<br>${w}×${h} · ${kind === 'price' ? 'live price, change and day range' : 'latest headline, photo and source'}</p></div></div>
-      ${field('Style', seg('lvStyle', st, [['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']]))}
+      ${field('Style', styleCards(d, (style) => (kind === 'price' ? tplPrice : tplNews)(w, h, look(style, ED.fdLang || 'en'))))}
       ${kind === 'price' ? field('Market', `<select class="field sm" id="fdBSym">${marketOpts(ED.fdSym || 'OANDA:XAUUSD')}</select>`) : field('Source', `<select class="field sm" id="fdBSrc">${srcOpts(ED.fdSrc || 'fxstreet')}</select>`)}
       ${field('Language', seg('fdBLang', ED.fdLang || 'en', [['en', 'English'], ['ar', 'العربية']]))}
       <div class="lv-cta"><button class="btn primary lv-go" data-act="fdBuild">${ic('wand', 18)}Build ${kind === 'price' ? 'price alert' : 'news post'}</button><p class="lv-hint c">Replaces this slide with a new template. You can undo it.</p></div>`;
+  }
+  /** The three Brand Kit styles as small previews of the real slide */
+  function styleCards(d, build) {
+    const cur = ED.liveStyle || 'dark';
+    return `<div class="fd-styles" role="group" aria-label="Style">${[['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']].map(([v, l]) => {
+      const layers = build(v);
+      return `<button class="fd-st ${cur === v ? 'on' : ''}" data-act="lvStyle" data-v="${v}" aria-pressed="${cur === v}">${thumb({ bg: layers[0].fill, layers }, d.ratio, 96, 120)}<span>${l}</span></button>`;
+    }).join('')}</div>`;
   }
   /** "This slide" tab: keep the design and choose which texts show market data */
   const slideOffer = () => `<div class="lv-or"><span>or show market data</span></div>
@@ -6441,6 +6464,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /* ---------- actions ---------- */
   const cfgNow = () => curP().live;
   const reapply = () => (ED.d ? refresh(ED.d, { force: true }) : Promise.resolve());
+  /** Another feed or language: the old list goes (the panel shows it loading) */
+  const fresh = (c) => { c.events = null; c.feed = null; c.err = ''; panel($('#edPanel')); };
   const layerOf = (id) => curP().layers.find((l) => l.id === id);
   Object.assign(ACT, {
     fdBuild: async () => {
@@ -6456,7 +6481,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     },
     fdRemove: () => { const pg = curP(); if (!pg.live) return; mutate(() => unbind(pg)); toast('Live data removed. The slide keeps what it shows now.'); },
     fdRefresh: async (a) => { busy(a, true, 'Checking…'); cache.clear(); await refresh(ED.d, { silent: false, force: true }); a.isConnected && busy(a, false); },
-    fdLang: (a) => { const c = cfgNow(); if (c.lang === a.dataset.v) return; c.lang = a.dataset.v; c.pick = null; save(); reapply(); },
+    fdLang: (a) => { const c = cfgNow(); if (c.lang === a.dataset.v) return; c.lang = a.dataset.v; c.pick = null; if (c.kind === 'news') fresh(c); save(); reapply(); },
     fdBLang: (a) => { ED.fdLang = a.dataset.v; edPanel(); },
     fdPhoto: () => { const c = cfgNow(); c.photo = !c.photo; save(); reapply(); },
     fdPause: () => { const c = cfgNow(); c.paused = !c.paused; save(); if (!c.paused) reapply(); else edPanel(); },
@@ -6509,8 +6534,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       if (!img) ED.fdFocus = { id: l.id }; return reapply();
     }
     if (t.id === 'fdUp' || t.id === 'fdDown') { c[t.id === 'fdUp' ? 'up' : 'down'] = t.value.toUpperCase(); save(); return reapply(); }
-    if (t.id === 'fdSrc') { c.src = t.value; c.pick = null; save(); return reapply(); }
-    if (t.id === 'fdQ') { c.q = t.value.trim().slice(0, 120); c.pick = null; save(); return reapply(); }
+    if (t.id === 'fdSrc') { c.src = t.value; c.pick = null; fresh(c); save(); return reapply(); }
+    if (t.id === 'fdQ') { c.q = t.value.trim().slice(0, 120); c.pick = null; fresh(c); save(); return reapply(); }
     if (t.id === 'fdEvery') { c.every = +t.value; save(); }
   });
 
@@ -6537,7 +6562,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const _oe24 = openEditor;
   openEditor = function (id) { _oe24(id); const d = ED.d; if (d && feedPages(d).some((pg) => Date.now() - (pg.live.at || 0) > 60_000)) refresh(d); };
 
-  FEEDS = { panel, brandForm, slideOffer, attach, unbind };
+  FEEDS = { panel, brandForm, slideOffer, attach, unbind, styleCards, look };
 })();
 
 /* ============ headless: slides rendered by the API (live posts with no studio tab open) ============ */
