@@ -3100,6 +3100,7 @@ Object.assign(IC, {
 
   /* ---------- planner ---------- */
   Object.assign(P, { view: 'week', mo: new Date(), fPf: null, fSt: 'All', best: true, bn: null });
+  try { if (localStorage.getItem('uxb.pside') === '0') P.side = false; } catch (e) {}
   const fvis = (p) => (P.fSt === 'All' || p.status === P.fSt) && (!P.fPf || p.pf.some((k) => P.fPf.has(k)));
   const fnets = () => (P.fPf ? [...P.fPf] : conn());
   const stDot = (s) => `<i class="sd7 ${s}"></i>`;
@@ -3120,7 +3121,49 @@ Object.assign(IC, {
       ${ps.map(postCard).join('')}${gs.map((t) => `<button class="slot7" data-act="pnew" data-date="${k}" data-time="${t}">${ic('studio', 12)}<span>${t}</span><small>Best</small></button>`).join('')}
       ${!ps.length && !gs.length ? `<button class="slot" data-act="pnew" data-date="${k}" aria-label="New post on ${dlabel(k)}">${ic('plus', 16)}</button>` : ''}</div>`;
   }
-  const weekView = () => `<div class="week w7">${[...Array(7)].map((_, i) => dayCol(addD(P.ws, i))).join('')}</div>`;
+  /* ---------- week: an hour grid (Metricool / Notion calendar) ----------
+     Hours down the side, days across; each hour cell is tinted by how good it is to post (best times, as a % of the
+     week's best slot); posts sit at their time; click a free slot to plan a post there, drag a post to move it. */
+  const HH = 56; // px per hour
+  const narrow = () => innerWidth <= 760;
+  function weekView() {
+    const all = [...Array(7)].map((_, i) => addD(P.ws, i)), today = iso(new Date()), now = new Date(), nets = fnets().length ? fnets() : ['ig', 'li', 'fb', 'x']; // no network yet: the usual ones
+    if (!P.focus || !all.some((d) => iso(d) === P.focus)) P.focus = all.some((d) => iso(d) === today) ? today : iso(all[0]);
+    const days = narrow() ? all.filter((d) => iso(d) === P.focus) : all;
+    // heat: each hour's score, relative to the best hour of the week
+    const sc = all.map((d) => [...Array(24)].map((_, h) => nsc(nets, d.getDay(), h + 0.5))), max = Math.max(...sc.flat(), 0.01);
+    const pct = (d, h) => Math.round((sc[all.findIndex((x) => iso(x) === iso(d))][h] / max) * 100);
+    const nowM = now.getHours() * 60 + now.getMinutes();
+    const head = (d) => { const k = iso(d), n = S.posts.filter((p) => p.date === k && fvis(p)).length, we = d.getDay() === 0 || d.getDay() === 6;
+      return `<div class="cal-dh ${k === today ? 'today' : ''} ${we ? 'we' : ''}"><span class="wd">${fmt(d, { weekday: 'short' })}</span><b>${d.getDate()}</b>${n ? `<em title="${n} post${n > 1 ? 's' : ''}">${n}</em>` : ''}</div>`; };
+    const col = (d) => {
+      const k = iso(d), we = d.getDay() === 0 || d.getDay() === 6, ps = S.posts.filter((p) => p.date === k && fvis(p)).sort(byT);
+      const cells = [...Array(24)].map((_, h) => {
+        const past = k < today || (k === today && (h + 1) * 60 <= nowM), v = pct(d, h), t = pad(h) + ':00';
+        return `<div class="cal-cell ${past ? 'past' : ''}" data-date="${k}" data-h="${h}" style="--s:${P.best ? (v / 100).toFixed(2) : 0}" ${past ? '' : `data-act="pnew" data-time="${t}" role="button" tabindex="-1" aria-label="New post on ${dlabel(k)} at ${t}"`}>${P.best && !past ? `<span class="pct">${v}%</span>` : ''}${past ? '' : `<span class="plus">${ic('plus', 14)}<i>${t}</i></span>`}</div>`;
+      }).join('');
+      // posts in the same hour share its width
+      const groups = {}; ps.forEach((p) => { (groups[Math.floor(tmin(p.time) / 60)] ||= []).push(p); });
+      const cards = ps.map((p) => {
+        const g = groups[Math.floor(tmin(p.time) / 60)], i = g.indexOf(p), n = g.length, dd = getD(p.d), m = tmin(p.time);
+        const top = Math.min(24 * HH - 50, (m / 60) * HH + 2), w = 100 / n;
+        return `<div class="cal-post ${p.status}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}" style="top:${top}px;left:calc(${(i * w).toFixed(3)}% + 3px);width:calc(${w.toFixed(3)}% - 6px)" aria-label="${esc(snip(p))}, ${p.time}, ${p.status}" title="${esc(snip(p))} · ${p.time}${p.publish && p.publish.lastError ? ' · ' + esc(p.publish.lastError) : ''}">
+          ${dd ? `<span class="cp-th">${thumb(dd.pages[0], dd.ratio, 30, 30)}</span>` : ''}<span class="cp-b"><b>${p.time}</b><span>${esc(snip(p))}</span></span><span class="cp-f">${pfDots(p.pf)}</span></div>`;
+      }).join('');
+      const line = k === today ? `<div class="cal-now" style="top:${(nowM / 60) * HH}px"><i></i></div>` : '';
+      return `<div class="cal-col ${k === today ? 'today' : ''} ${we ? 'we' : ''}" data-date="${k}">${cells}${cards}${line}</div>`;
+    };
+    const strip = narrow() ? `<div class="cal-strip" role="tablist">${all.map((d) => { const k = iso(d), n = S.posts.filter((p) => p.date === k && fvis(p)).length; return `<button role="tab" aria-selected="${k === P.focus}" class="${k === P.focus ? 'on' : ''} ${k === today ? 'today' : ''}" data-act="pfocus" data-date="${k}"><small>${fmt(d, { weekday: 'short' })}</small><b>${d.getDate()}</b>${n ? '<i></i>' : ''}</button>`; }).join('')}</div>` : '';
+    return `${strip}<div class="cal ${narrow() ? 'one' : ''}" style="--hh:${HH}px;--days:${days.length}">
+      <div class="cal-head"><div class="cal-gut"><small title="${esc(tzLabel(schedTz()))}">${esc((tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1])}</small></div>${days.map(head).join('')}</div>
+      <div class="cal-body" id="calBody"><div class="cal-grid"><div class="cal-hours">${[...Array(24)].map((_, h) => `<span>${h ? pad(h) + ':00' : ''}</span>`).join('')}</div>${days.map(col).join('')}</div></div></div>`;
+  }
+  // first look at a week: start at 7:00 (or just before now); after that keep where the user scrolled
+  const calScroll = () => { const b = $('#calBody'); if (!b) return; const key = iso(P.ws) + (narrow() ? P.focus : ''); if (P.calKey !== key) { P.calKey = key; const h = iso(new Date()) >= iso(P.ws) && iso(new Date()) <= iso(addD(P.ws, 6)) ? Math.max(0, new Date().getHours() - 2) : 7; b.scrollTop = Math.min(h, 7) * HH; P.calY = b.scrollTop; } else b.scrollTop = P.calY || 0; b.addEventListener('scroll', () => { P.calY = b.scrollTop; }, { passive: true }); };
+  // the grid follows the clock: move the "now" line every minute, and switch between day and week when the width crosses the phone size
+  let calWide = !narrow();
+  addEventListener('resize', () => { if (calWide !== !narrow() && /^#\/planner/.test(location.hash) && P.view === 'week') { calWide = !narrow(); route(); } });
+  setInterval(() => { const l = $('.cal-now'); if (l) { const n = new Date(); l.style.top = ((n.getHours() * 60 + n.getMinutes()) / 60) * HH + 'px'; } }, 60_000);
   function monthView() {
     const f = new Date(P.mo.getFullYear(), P.mo.getMonth(), 1), s = monday(f), today = iso(new Date()); let cells = [...Array(42)].map((_, i) => addD(s, i)); if (cells[35].getMonth() !== f.getMonth()) cells = cells.slice(0, 35);
     return `<div class="mhead">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((x) => `<span>${x}</span>`).join('')}</div><div class="mgrid">${cells.map((d) => {
@@ -3177,8 +3220,9 @@ Object.assign(IC, {
       return `<div class="ptool"><b class="ttl">${title}</b>
         <div class="chips">${Object.entries(PLATFORMS).filter(([k]) => S.platforms[k]).map(([k, v]) => `<button class="pnet ${!P.fPf || P.fPf.has(k) ? 'on' : ''}" style="--c:${v.c}" data-act="pfn" data-k="${k}" aria-pressed="${!P.fPf || P.fPf.has(k)}"><i></i>${v.n}</button>`).join('')}</div>
         <select class="field sm" id="pSt" style="width:136px" aria-label="Status filter">${['All', 'Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((s) => `<option value="${s}" ${P.fSt === s ? 'selected' : ''}>${s === 'All' ? 'All statuses' : s}</option>`).join('')}</select>
-        ${P.view === 'week' ? `<span class="pswitch"><button class="switch ${P.best ? 'on' : ''}" data-act="pbest" role="switch" aria-checked="${P.best}" aria-label="Suggest best times"></button>Best times</span>` : ''}</div>
-        ${stats}<div class="pl7"><div class="widget" style="padding:10px">${P.view === 'month' ? monthView() : P.view === 'list' ? listView() : weekView()}</div>${side()}</div>`;
+        ${P.view === 'week' ? `<span class="pswitch"><button class="switch ${P.best ? 'on' : ''}" data-act="pbest" role="switch" aria-checked="${P.best}" aria-label="Suggest best times"></button>Best times</span>` : ''}
+        <button class="btn secondary sm psidebtn ${P.side === false ? '' : 'on'}" data-act="pside" aria-pressed="${P.side !== false}" title="${P.side === false ? 'Show' : 'Hide'} designs, ideas and best times">${ic('layout', 16)}<span class="hide-sm">Panel</span></button></div>
+        ${stats}<div class="pl7 ${P.side === false ? 'noside' : ''}"><div class="widget pcal ${P.view}" style="padding:${P.view === 'week' ? 0 : 10}px">${P.view === 'month' ? monthView() : P.view === 'list' ? listView() : weekView()}</div>${P.side === false ? '' : side()}</div>${P.view === 'week' ? (setTimeout(calScroll, 0), '') : ''}`;
     },
   };
   Object.assign(ACT, {
@@ -3187,7 +3231,9 @@ Object.assign(IC, {
     pfn: (a) => { const all = conn(), s = P.fPf ? new Set(P.fPf) : new Set(all), k = a.dataset.k; s.has(k) ? s.delete(k) : s.add(k); if (!s.size) s.add(k); P.fPf = all.every((x) => s.has(x)) ? null : s; route(); },
     pbest: () => { P.best = !P.best; route(); },
     pbn: (a) => { P.bn = a.dataset.k; route(); },
-    pday: (a) => { P.view = 'week'; P.ws = monday(dparse(a.dataset.date)); route(); },
+    pday: (a) => { P.view = 'week'; P.ws = monday(dparse(a.dataset.date)); P.focus = a.dataset.date; route(); },
+    pfocus: (a) => { P.focus = a.dataset.date; route(); },
+    pside: () => { P.side = P.side === false; try { localStorage.setItem('uxb.pside', P.side ? '1' : '0'); } catch (e) {} route(); },
     pnew: (a) => openSchedule(null, { date: a && a.dataset && a.dataset.date, time: a && a.dataset && a.dataset.time }),
     pnewd: (a) => openSchedule(getD(a.dataset.id), {}),
     pedit: (a) => { const p = S.posts.find((x) => x.id === a.dataset.id); p && openSchedule(getD(p.d), { post: p }); },
@@ -3197,6 +3243,24 @@ Object.assign(IC, {
   });
   document.addEventListener('change', (e) => { if (e.target.id === 'pSt') { P.fSt = e.target.value; route(); } });
   document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.classList && (e.target.classList.contains('pc7') || e.target.classList.contains('mc7') || e.target.classList.contains('l7r') || e.target.classList.contains('dcard'))) { e.preventDefault(); e.target.click(); } });
+
+  /* drag onto an hour slot of the week grid: a post moves to that day and time (on the half hour under the pointer), a design opens the scheduler there */
+  const slotTime = (cell, e) => { const r = cell.getBoundingClientRect(), half = e.clientY - r.top > r.height / 2; return pad(+cell.dataset.h) + (half ? ':30' : ':00'); };
+  document.addEventListener('dragover', (e) => { const c = e.target.closest && e.target.closest('.cal-cell'); $$('.cal-cell.over').forEach((x) => x !== c && x.classList.remove('over')); if (c && !c.classList.contains('past')) { e.preventDefault(); c.classList.add('over'); } }, true);
+  document.addEventListener('drop', (e) => {
+    const c = e.target.closest && e.target.closest('.cal-cell'); if (!c) return; e.preventDefault(); e.stopImmediatePropagation(); $$('.cal-cell.over').forEach((x) => x.classList.remove('over'));
+    if (c.classList.contains('past')) return toast('That time has passed. Pick a later slot.');
+    const v = e.dataTransfer.getData('text/plain'), k = c.dataset.date, t = slotTime(c, e); if (!v) return;
+    if (v.startsWith('post:')) {
+      const p = S.posts.find((x) => x.id === v.slice(5)); if (!p || (p.date === k && p.time === t)) return;
+      if (p.status === 'Published' || (p.publish && ['published', 'partial', 'publishing'].includes(p.publish.state))) return toast('Published posts can’t be moved. Duplicate the design to post it again.');
+      if (p.status === 'Scheduled' && zonedToUtc(k, t, tzValid(p.tz) ? p.tz : schedTz()) < new Date()) return toast(`${dlabel(k)} at ${t} is in the past. Pick a later slot.`);
+      const old = { date: p.date, time: p.time }; p.date = k; p.time = t; save();
+      toastU('Moved to ' + dlabel(k) + ' at ' + t, () => { Object.assign(p, old); save(); route(); }); route();
+    } else { const d = getD(v); d && openSchedule(d, { date: k, time: t }); }
+  }, true);
+  document.addEventListener('dragend', () => $$('.cal-cell.over, .cal-post.dragging').forEach((x) => x.classList.remove('over', 'dragging')));
+  document.addEventListener('dragstart', (e) => { const c = e.target.closest && e.target.closest('.cal-post'); if (c) c.classList.add('dragging'); });
 
   /* drag: posts between days, designs onto a day */
   document.addEventListener('dragstart', (e) => { const c = e.target.closest && e.target.closest('[data-dragpost]'); if (c) { e.dataTransfer.setData('text/plain', 'post:' + c.dataset.dragpost); e.dataTransfer.effectAllowed = 'move'; c.classList.add('dragging'); } });
