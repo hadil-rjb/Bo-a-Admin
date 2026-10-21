@@ -2160,14 +2160,26 @@ function agEmpty() {
 }
 function agMsg(m, i, last) {
   if (m.r === 'u') return `<div class="ag-u">${esc(m.t)}</div>`;
-  const steps = (m.steps || []).map((s) => `<div class="ag-step ${s.done ? 'done' : ''}${s.err ? ' err' : ''}">${s.err ? ic('alert', 14, 'ck') : s.done ? ic('check', 14, 'ck') : '<i class="spin"></i>'}<span>${esc(s.l)}</span></div>`).join('');
-  const acts = [];
-  if (m.after != null && !m.undone) acts.push(`<button class="btn secondary sm" data-act="agUndo" data-i="${i}">${ic('undo', 14)}Undo</button>`);
-  if (m.undone) acts.push('<span class="xs-t muted">Undone</span>');
-  if (m.caption) { acts.push(`<button class="btn secondary sm" data-act="agCopy" data-i="${i}">${ic('copy', 14)}Copy</button>`); if (m.ai || /Here is/.test(m.t)) acts.push(`<button class="btn secondary sm" data-act="agSched" data-i="${i}">${ic('clock', 14)}Schedule with it</button>`); }
+  const steps = m.steps || [], n = steps.length, fails = steps.filter((s) => s.err).length, cur = steps.find((s) => !s.done), running = !m.done;
+  const head = `<div class="ag-who"><span class="ag-av">${ic('studio', 12)}</span><b>Agent</b>${m.model ? `<span class="ag-mdl">${esc(m.model)}</span>` : ''}${running ? '<span class="ag-live"><i></i>Working</span>' : ''}</div>`;
+  // the work log: one live line while it runs, then a summary that opens on the full list
+  let log = '';
+  if (n) {
+    if (running) log = `<div class="ag-log live"><div class="ag-log-s"><i class="spin"></i><span>${esc(cur ? cur.l : 'Thinking')}…</span><em>${cur ? `Step ${steps.filter((s) => s.done).length + 1}` : `${n} done`}</em></div></div>`;
+    else {
+      const list = steps.map((s) => `<li class="${s.err ? 'err' : ''}">${ic(s.err ? 'alert' : 'check', 12)}<span>${esc(s.l)}</span></li>`).join('');
+      log = `<details class="ag-log${fails ? ' bad' : ''}" data-i="${i}"${m.logOpen ? ' open' : ''}><summary class="ag-log-s">${ic(fails ? 'alert' : 'check', 13)}<span>${fails ? `${n - fails} of ${n} actions done` : `${n} action${n === 1 ? '' : 's'} done`}</span>${ic('chevD', 13)}</summary><ol class="ag-log-l">${list}</ol></details>`;
+    }
+  }
+  const think = running && !n && !m.t ? '<div class="ag-dots"><i></i><i></i><i></i></div>' : '';
+  const text = m.t ? `<div class="ag-txt">${esc(m.t)}</div>` : '';
+  const cap = m.caption ? `<div class="ag-cap"><div class="ag-cap-h"><span>Caption</span><span class="grow"></span><button class="ag-mini" data-act="agCopy" data-i="${i}">${ic('copy', 13)}Copy</button>${m.ai || /Here is/.test(m.t) ? `<button class="ag-mini" data-act="agSched" data-i="${i}">${ic('clock', 13)}Schedule</button>` : ''}</div><p>${esc(m.caption)}</p></div>` : '';
+  const foot = m.after != null && !m.undone ? `<div class="ag-foot"><button class="ag-mini" data-act="agUndo" data-i="${i}">${ic('undo', 13)}Undo</button></div>` : m.undone ? `<div class="ag-foot"><span class="ag-undone">${ic('undo', 13)}Undone</span></div>` : '';
   const chips = last && m.done && m.chips && !m.undone ? `<div class="ag-sugs">${m.chips.map((k) => `<button class="ag-sug" data-act="agDo" data-k="${k}">${esc(AG_LABEL[k])}</button>`).join('')}</div>` : '';
-  return `<div class="ag-a"><span class="ag-av">${ic('studio', 14)}</span><div class="ag-body">${steps ? `<div class="ag-steps">${steps}</div>` : ''}${!m.done && !steps ? '<div class="ag-dots"><i></i><i></i><i></i></div>' : ''}${m.t ? `<p>${esc(m.t)}</p>` : ''}${m.caption ? `<div class="ag-quote">${esc(m.caption)}</div>` : ''}${acts.length ? `<div class="ag-acts">${acts.join('')}</div>` : ''}${chips}</div></div>`;
+  return `<div class="ag-a">${head}<div class="ag-body">${running ? log + think + text : text + log}${cap}${foot}${chips}</div></div>`;
 }
+// the work log stays open or closed across re-renders
+document.addEventListener('toggle', (e) => { const d = e.target; if (d && d.classList && d.classList.contains('ag-log') && ED.d && ED.d.chat) { const m = ED.d.chat[+d.dataset.i]; if (m) m.logOpen = d.open; } }, true);
 function agThread() {
   const th = $('#agTh'); if (!th) return; const ch = ED.d.chat || [];
   if (!ch.length && th.querySelector('.ag-empty')) ED._agTop = th.scrollTop; else if (ch.length) ED._agTop = 0;
@@ -6802,7 +6814,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   async function agAI(text) {
     const d = ED.d, model = current(); if (!d || !model) return;
     d.chat = d.chat || [];
-    const msg = { r: 'a', steps: [], done: false, t: '', ai: true };
+    const msg = { r: 'a', steps: [], done: false, t: '', ai: true, model: modelName(model) };
     d.chat.push({ r: 'u', t: text }, msg); ED.agBusy = true; const id = ED.agRun = (ED.agRun || 0) + 1; agThread();
     const run = RUN = { id, msg, pre: snap(), startLen: ED.undo.length };
     const alive = () => id === ED.agRun && ED.d === d;
