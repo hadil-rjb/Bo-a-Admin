@@ -24,7 +24,7 @@ export type Layer = {
 };
 
 export const ROW_PLACEHOLDERS = ["time", "currency", "country", "countryName", "flag", "event", "actual", "forecast", "previous", "value", "impact"] as const;
-export const DATE_PLACEHOLDERS = ["weekday", "day", "month", "year"] as const;
+export const DATE_PLACEHOLDERS = ["weekday", "wd", "day", "month", "mon", "year"] as const;
 /** Placeholders for slide texts outside the rows: the post's day, its week (Mon–Fri) and the time zone */
 export const TEXT_PLACEHOLDERS = ["weekday", "wd", "day", "month", "mon", "year", "weekStartDay", "weekStartMon", "weekStartMonth", "weekEndDay", "weekEndMon", "weekEndMonth", "tz"] as const;
 
@@ -34,7 +34,9 @@ const WeekSchema = z.object({
   dayHeader: z.object({ layerId: z.string(), template: z.string().describe("The first day heading's text with {weekday} {wd} {day} {month} {mon} {year}") }),
   groupHeader: z.object({ layerId: z.string(), template: z.string().describe("The first group heading inside a day (usually a country) with {flag} (flag emoji) {country} (code, e.g. US) {countryName} (full name, e.g. United States) {currency}; use the form the design shows") }).nullable(),
   list: z.object({ layerId: z.string(), lineTemplate: z.string().describe("ONE line of the first events list with its data replaced, e.g. '• {event} – {time} {tz}'; placeholders {time} {currency} {country} {countryName} {flag} {event} {actual} {forecast} {previous} {value} {impact} {tz}") }),
-  slotLayerIds: z.array(z.string()).describe("Every layer of the day blocks (all day bars, day headings, group headings and event lists) - they are rebuilt from the first ones"),
+  groupFlag: z.string().nullable().describe("The flag picture next to the first group heading (a separate image layer), or null"),
+  slotLayerIds: z.array(z.string()).describe("Every layer of the day blocks (all day bars, day headings, flag pictures, group headings and event lists) - they are rebuilt from the first ones"),
+  period: z.enum(["day", "week"]).describe("day: the slide shows ONE day's events (a single day heading); week: several day blocks or a Monday-Friday range"),
 });
 
 const MappingSchema = z.object({
@@ -44,7 +46,7 @@ const MappingSchema = z.object({
   reason: z.string().describe("One short sentence a designer can read, e.g. '5 rows found: time, currency, event, values and impact.'"),
   date: z.object({
     layerId: z.string(),
-    template: z.string().describe("The layer's text with the date parts replaced by {weekday} {day} {month} {year}"),
+    template: z.string().describe("The layer's text with the date parts replaced by {weekday} {day} {month} {year}; short names (Mon, Oct) use {wd} and {mon}"),
   }).nullable().describe("The text layer showing the calendar's day, or null"),
   tz: z.object({
     layerId: z.string(),
@@ -97,13 +99,26 @@ export function sanitize(m: Omit<Mapping, "engine">, layers: Layer[]): Omit<Mapp
   if (week) {
     const okText = (id?: string | null) => !!id && isText(id);
     if (!okText(week.dayHeader?.layerId) || !okText(week.list?.layerId) || !hasPh(week.list.lineTemplate, [...ROW_PLACEHOLDERS, "tz"])) week = null;
-    else week = {
-      ...week,
-      container: week.container && byId.has(week.container) ? week.container : null,
-      dayBar: week.dayBar && byId.has(week.dayBar) ? week.dayBar : null,
-      groupHeader: week.groupHeader && okText(week.groupHeader.layerId) ? week.groupHeader : null,
-      slotLayerIds: [...new Set([...week.slotLayerIds.filter((id) => byId.has(id)), week.dayHeader.layerId, week.list.layerId, ...(week.groupHeader ? [week.groupHeader.layerId] : []), ...(week.dayBar ? [week.dayBar] : [])])],
-    };
+    else {
+      const groupHeader = week.groupHeader && okText(week.groupHeader.layerId) ? week.groupHeader : null;
+      // flag pictures just left of the group headings: the first one is redrawn with each country's flag, all are part of the blocks
+      const gh = groupHeader ? byId.get(groupHeader.layerId)! : null;
+      const flagOf = (t: Layer) => layers.find((l) => !l.hidden && isPic(l.id) && l.w <= 96 && l.h <= 72 && l.w >= 8 && l.x + l.w <= t.x + 6 && l.x + l.w >= t.x - 48 && Math.abs(l.y + l.h / 2 - (t.y + t.h / 2)) <= Math.max(14, t.h * 0.6));
+      const heads = gh ? layers.filter((l) => isText(l.id) && Math.abs(l.x - gh.x) < 30 && Math.abs((l.size || 0) - (gh.size || 0)) < 2) : [];
+      const flags = heads.map(flagOf).filter(Boolean) as Layer[];
+      const groupFlag = gh && !/\{flag\}/.test(groupHeader!.template) ? (week.groupFlag && isPic(week.groupFlag) ? week.groupFlag : flagOf(gh)?.id ?? null) : null;
+      week = {
+        ...week,
+        container: week.container && byId.has(week.container) ? week.container : null,
+        dayBar: week.dayBar && byId.has(week.dayBar) ? week.dayBar : null,
+        groupHeader, groupFlag,
+        slotLayerIds: [...new Set([...week.slotLayerIds.filter((id) => byId.has(id)), week.dayHeader.layerId, week.list.layerId, ...(groupHeader ? [groupHeader.layerId] : []), ...(week.dayBar ? [week.dayBar] : []), ...(groupFlag ? flags.map((f) => f.id) : [])])],
+      };
+      // one day heading is a day calendar; several, or a "Oct 19 – 23" text, a week
+      const dayHeads = week.slotLayerIds.filter((id) => { const t = byId.get(id); return t?.type === "text" && !!dateTemplate(t.text || "") && !/[-–—]/.test(t.text || ""); }).length;
+      const range = (m.texts || []).some((t) => /\{week(Start|End)/.test(t.template || ""));
+      week.period = range || dayHeads >= 2 ? "week" : dayHeads === 1 ? "day" : week.period === "day" ? "day" : "week";
+    }
   }
   const date = m.date && isText(m.date.layerId) && hasPh(m.date.template, DATE_PLACEHOLDERS) ? m.date : null;
   const tz = m.tz && isText(m.tz.layerId) && m.tz.template.includes("{tz}") ? m.tz : null;
@@ -164,9 +179,11 @@ function dateTemplate(text: string): string | null {
   const wd = text.match(WEEKDAYS), mo = text.match(MONTHS), num = /\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b/.test(text);
   if (!mo && !num && !wd) return null;
   if (num) return text.replace(/\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b/, "{day} {month} {year}");
-  let t = text.replace(WEEKDAYS, "{weekday}").replace(MONTHS, "{month}").replace(/\b(19|20)\d{2}\b|[١٢][٠-٩]{3}/, "{year}");
+  // a short name stays short: "Mon, Oct 19" → "{wd}, {mon} {day}" (the full names are longer and could wrap)
+  const short = (m: string) => /^[a-z]{3,4}\.?$/i.test(m);
+  let t = text.replace(WEEKDAYS, (m) => (short(m) ? "{wd}" : "{weekday}")).replace(MONTHS, (m) => (short(m) && !/^may$/i.test(m) ? "{mon}" : "{month}")).replace(/\b(19|20)\d{2}\b|[١٢][٠-٩]{3}/, "{year}");
   t = t.replace(/(^|[^\d{])(\d{1,2}|[٠-٩]{1,2})(?=[^\d}]|$)/, "$1{day}");
-  return /\{(month|weekday)\}/.test(t) ? t : null;
+  return /\{(month|weekday|mon|wd)\}/.test(t) ? t : null;
 }
 
 const LINE_RE = /^\s*([•·\-–*▪◦])?\s*.+?\s*[-–—|:]\s*\d{1,2}[:.]\d{2}/;
@@ -186,7 +203,8 @@ export function countryTemplate(text: string) {
 /** Weekly layouts: day headings, then (country) headings, then multi-line event lists */
 function weekHeuristic(texts: Layer[], vis: Layer[], w: number, h: number): Omit<Mapping, "engine"> | null {
   const lists = texts.filter((l) => { const lines = l.text!.split("\n").filter((x) => x.trim()); return lines.length >= 1 && lines.filter((x) => LINE_RE.test(x)).length >= Math.max(1, lines.length * 0.6); }).sort((a, b) => a.y - b.y);
-  if (lists.length < 2) return null;
+  // two lists, or one list of at least two event lines (a single day with one country)
+  if (!lists.length || (lists.length < 2 && lists[0].text!.split("\n").filter((x) => LINE_RE.test(x)).length < 2)) return null;
   const list = lists[0], line = list.text!.split("\n").find((x) => LINE_RE.test(x))!;
   const lineTemplate = line.replace(/\d{1,2}[:.]\d{2}(?:\s*(?:am|pm))?/i, "{time}").replace(/\b(GMT|UTC)\s*[+-]\s*\d{1,2}(:\d{2})?\b/i, "{tz}").replace(/^(\s*[•·\-–*▪◦]?\s*)(.+?)(\s*[-–—|:]\s*\{time\})/, "$1{event}$3");
   if (!lineTemplate.includes("{event}")) return null;
@@ -197,13 +215,13 @@ function weekHeuristic(texts: Layer[], vis: Layer[], w: number, h: number): Omit
   if (!days.length) return null;
   const day0 = days[0], gh = heads.filter((t) => t.y > day0.y).sort((a, b) => a.y - b.y)[0] || null;
   const bars = vis.filter((s) => s.type !== "text" && days.some((d) => d.x >= s.x - 2 && d.x + Math.min(d.w, 200) <= s.x + s.w + 2 && d.y >= s.y - 2 && d.y + d.h <= s.y + s.h + 2 && s.h < 120));
-  const container = vis.filter((s) => s.type !== "text" && !s.locked && s.x <= list.x && s.y <= day0.y && s.x + s.w >= list.x + list.w && s.h > h * 0.4).sort((a, b) => a.w * a.h - b.w * b.h)[0] || null;
+  const container = vis.filter((s) => s.type !== "text" && !s.locked && s.x <= list.x && s.y <= day0.y && s.x + s.w >= list.x + list.w && s.y + s.h >= list.y + list.h && s.h > h * 0.15).sort((a, b) => a.w * a.h - b.w * b.h)[0] || null;
   const groupTpl = gh ? countryTemplate(gh.text!) : null;
   const slot = [...days, ...heads.filter((t) => t.y > day0.y), ...lists, ...bars].map((l) => l.id);
   return {
     isCalendar: true, layout: "week",
-    reason: `Weekly layout: ${days.length} day blocks with ${lists.length} event lists. Rebuilt from the first day with live events.`,
-    week: { container: container?.id ?? null, dayBar: bars.find((b) => day0.y >= b.y - 2 && day0.y + day0.h <= b.y + b.h + 2)?.id ?? null, dayHeader: { layerId: day0.id, template: dateTemplate(day0.text!)! }, groupHeader: gh && groupTpl && /\{(flag|country|countryName|currency)\}/.test(groupTpl) ? { layerId: gh.id, template: groupTpl } : null, list: { layerId: list.id, lineTemplate }, slotLayerIds: slot },
+    reason: days.length >= 2 ? `Weekly layout: ${days.length} day blocks with ${lists.length} event lists. Rebuilt from the first day with live events.` : `Daily layout: one day with ${lists.length} event list${lists.length === 1 ? "" : "s"}, grouped by country. Rebuilt with that day's live events.`,
+    week: { period: days.length >= 2 ? "week" : "day", groupFlag: null, container: container?.id ?? null, dayBar: bars.find((b) => day0.y >= b.y - 2 && day0.y + day0.h <= b.y + b.h + 2)?.id ?? null, dayHeader: { layerId: day0.id, template: dateTemplate(day0.text!)! }, groupHeader: gh && groupTpl && /\{(flag|country|countryName|currency)\}/.test(groupTpl) ? { layerId: gh.id, template: groupTpl } : null, list: { layerId: list.id, lineTemplate }, slotLayerIds: slot },
     rows: [], date: null, tz: null, impactSymbol: null, texts: [], needs: { impact: "notNeeded", note: "" },
   };
 }
@@ -297,13 +315,13 @@ You get the slide's layers as JSON (id, type, name, text, position and size in p
 
 Decide whether the slide shows a list of economic calendar events (release times, currencies or countries, indicator names, actual/forecast/previous values, impact), and which layout it uses:
 - "rows": one row (card or line) per event, with separate text layers for its parts. Describe "rows" below; "week" is null.
-- "week": blocks per day (a day heading, often on a bar), each with one or more groups (usually a country heading) whose events are written as lines inside one text layer, e.g. "• US Housing Starts – 13:30 GMT+4". Return "week" built from the FIRST day and FIRST group (the studio rebuilds every day and group from them with live data, keeping their style and spacing) and leave "rows" empty: give the day heading template, the group heading template ({flag} is a flag emoji, {country} a country code), ONE line template for the events list, the container panel and the first day bar, and every layer of the day blocks in "slotLayerIds".
+- "week": blocks per day (a day heading, often on a bar), each with one or more groups (usually a country heading) whose events are written as lines inside one text layer, e.g. "• US Housing Starts – 13:30 GMT+4". Return "week" built from the FIRST day and FIRST group (the studio rebuilds every day and group from them with live data, keeping their style and spacing) and leave "rows" empty: give the day heading template, the group heading template ({flag} is a flag emoji, {country} a country code), ONE line template for the events list, the container panel and the first day bar, the flag picture next to the first group heading ("groupFlag", when the flag is a separate picture), every layer of the day blocks in "slotLayerIds", and "period": "day" when the slide shows a single day (one day heading, even with several country groups), "week" when it shows several days or a Monday-Friday range.
 For "rows", describe every row, top to bottom:
 - "fields": each text layer of the row that shows data, with its role and a template. The template is the layer's exact text with the data replaced by placeholders: {time} {currency} {country} (code) {countryName} (full name) {event} {actual} {forecast} {previous} {value} {impact}. A country flag picture in the row is a field too: role "flag", template "{flag}". Keep labels, punctuation and separators exactly as written, e.g. "Actual 0.4% · Forecast 0.3%" becomes "Actual {actual} · Forecast {forecast}". Use {value} for a lone figure without a label. A time like 13:30 is "{time}"; a currency code is "{currency}"; stars or dots showing impact are "{impact}".
 - "layerIds": every layer that belongs to the row, including its background card, badges and dividers, so the row can be hidden when there are fewer events than rows.
 Text that stays the same on every post (titles, headings, column headers, brand name, website, legal notes) is not a field. When a rating is drawn twice on top of itself (all symbols in a faint colour behind, the filled ones in front), only the front layer is the impact field.
 
-If one text layer shows only the calendar's day, return it as "date" with a template using {weekday} {day} {month} {year}, keeping the original order and separators. If a text layer is only the time zone (e.g. "GMT+4"), return it as "tz" with {tz}. Set "impactSymbol" to the repeated character used for impact (e.g. ★), or null.
+If one text layer shows only the calendar's day, return it as "date" with a template using {weekday} {day} {month} {year} ({wd} and {mon} where the design writes short names like "Mon" or "Oct"), keeping the original order and separators. If a text layer is only the time zone (e.g. "GMT+4"), return it as "tz" with {tz}. Set "impactSymbol" to the repeated character used for impact (e.g. ★), or null.
 
 Then list every other text layer in "texts" and decide, for each, what the template needs:
 - Texts that show the post's day, its week or the time zone get a template, even when they hold several parts, e.g. "GMT+4\nOct 21-Oct 25" becomes "{tz}\n{weekStartMon} {weekStartDay}-{weekEndMon} {weekEndDay}" and "Monday, 21 October" becomes "{weekday}, {day} {month}". The week is Monday to Friday of the post's day. {mon} and {wd} are short names ("Oct", "Mon").

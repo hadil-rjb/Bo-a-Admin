@@ -13,7 +13,7 @@
        bootStudio() returns destroy(), so switching workspaces needs no reload.
    ============================================================ */
 import { IC, ic } from './icons';
-import { RATIOS, PLATFORMS, FONTS, uid, Tx, Rc, El, Im, BG, EVENTS, EVENTS_DEFAULT, CUR_COLOR, tplCalendar, tplPrice, tplNews, tplQuote, tplArticle, tplStat, tplLaunch, tplFeatures, tplTestimonial, tplEvent, TPL, FIGMA_FRAMES } from './templates';
+import { RATIOS, PLATFORMS, FONTS, uid, Tx, Rc, El, Im, BG, EVENTS, EVENTS_DEFAULT, CUR_COLOR, tplCalendar, tplCalendarWeek, tplPrice, tplNews, tplQuote, tplArticle, tplStat, tplLaunch, tplFeatures, tplTestimonial, tplEvent, TPL, FIGMA_FRAMES } from './templates';
 import { BOGA_LOGO } from './assets/bogaLogo';
 import { createRuntime } from './runtime';
 
@@ -78,6 +78,8 @@ let renderSlide = null;
 let LIVE = null;
 /** Price alert and news templates (set by the market data section): panel, attach, build */
 let FEEDS = null;
+/** Notion Calendar connection (set by the Notion section): state(), ready(), load() */
+let NOTION = null;
 /** Waits until the adjusted images of a page are rendered at full size (set by the image adjustments section) */
 let fxReady = async () => {};
 /** Text of a text layer as HTML (plain, or spans for mixed styles: set by the mixed text section) */
@@ -1283,7 +1285,7 @@ const SP = {
 };
 PAGES.settings = {
   t: 'Social Media Settings', s: 'Integrations and data.',
-  view: () => `<div class="split"><div class="splitnav"><div class="cap">Select menu</div>${SETS.map(([k, l, i]) => `<button class="${S.set.sec === k ? 'on' : ''}" data-act="setSec" data-k="${k}">${ic(i, 20)}<span>${l}</span></button>`).join('')}</div><div class="panel">${SP[S.set.sec]()}</div></div>`,
+  view: () => `<div class="split"><div class="splitnav"><div class="cap">Select menu</div>${SETS.map(([k, l, i]) => `<button class="${S.set.sec === k ? 'on' : ''}" data-act="setSec" data-k="${k}">${ic(i, 20)}<span>${l}</span></button>`).join('')}</div><div class="panel">${(SP[S.set.sec] || SP.accounts)() /* a section added later in boot (e.g. Notion) isn't there on the first paint */}</div></div>`,
 };
 const rerender = () => { const y = scrollY; route(); scrollTo(0, y); };
 /* phones: the section menu is a horizontal strip, keep the chosen section in view */
@@ -5038,10 +5040,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       const b = S.active, list = await api(`${brandPath()}/publish-state`).catch(() => null); if (!list || S.active !== b) return;
       let changed = false; list.forEach((st) => { changed = merge(st) || changed; });
       if (changed) { save(); refreshViews(); }
-      S.posts.filter((p) => p.status === 'Scheduled' && p.media && p.publish && p.publish.state === 'pending').forEach((p) => { const d = getD(p.d); if (d && p.media.hash && p.media.hash !== designHash(d)) PUB.prepare(p); });
+      // automation runs are rendered and captioned by the API: the studio leaves their slides alone
+      S.posts.filter((p) => !p.auto && p.status === 'Scheduled' && p.media && p.publish && p.publish.state === 'pending').forEach((p) => { const d = getD(p.d); if (d && p.media.hash && p.media.hash !== designHash(d)) PUB.prepare(p); });
       // scheduled posts without rendered slides (created before the API had them, or a failed upload): render once per session
       if (persist.readOnly) return;
-      S.posts.filter((p) => p.status === 'Scheduled' && !p.media && !unready.has(p.id) && p.pf && p.pf.length && zonedToUtc(p.date, p.time || '09:00', tzValid(p.tz) ? p.tz : schedTz()) > new Date())
+      S.posts.filter((p) => !p.auto && p.status === 'Scheduled' && !p.media && !unready.has(p.id) && p.pf && p.pf.length && zonedToUtc(p.date, p.time || '09:00', tzValid(p.tz) ? p.tz : schedTz()) > new Date())
         .forEach((p) => { unready.add(p.id); PUB.prepare(p); });
     },
   };
@@ -5145,7 +5148,18 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   /** Weekly slides show Monday to Friday: on a Saturday or Sunday that's the coming week */
   const weekOf = (date) => { const wd = new Date(date + 'T12:00:00Z').getUTCDay(); return wd === 6 ? addDay(date, 2) : wd === 0 ? addDay(date, 1) : date; };
-  const isWeek = (cfg) => cfg.map && cfg.map.layout === 'week' && cfg.map.week;
+  /** Day blocks with country groups and event lists (rebuilt from the first block) */
+  const isBlocks = (cfg) => !!(cfg.map && cfg.map.layout === 'week' && cfg.map.week);
+  /** One day or Monday–Friday. Older mappings didn't say: one day heading on the slide is a day */
+  function periodOf(cfg) {
+    const wk = cfg.map.week; if (wk.period === 'day' || wk.period === 'week') return wk.period;
+    const DAY = /monday|tuesday|wednesday|thursday|friday|saturday|sunday|\b(mon|tue|wed|thu|fri)\b|الاثنين|الثلاثاء|الأربعاء|الخميس|الجمعة/i;
+    const heads = wk.slotLayerIds.filter((id) => { const t = String((cfg.orig[id] || {}).text || ''); return DAY.test(t) && !/[-–—]/.test(t) && t.split('\n').length === 1; }).length;
+    const range = (cfg.map.texts || []).some((t) => /\{week(Start|End)/.test(t.template || ''));
+    return (wk.period = range || heads >= 2 ? 'week' : 'day');
+  }
+  /** The slide shows a whole week (Mon–Fri): data, picker and labels by week */
+  const isWeek = (cfg) => isBlocks(cfg) && periodOf(cfg) === 'week';
   const weekDays = (date) => { const [y, m, d] = date.split('-').map(Number), at = new Date(Date.UTC(y, m - 1, d, 12)), mon = new Date(at.getTime() - ((at.getUTCDay() + 6) % 7) * 864e5); return [0, 1, 2, 3, 4].map((i) => new Date(mon.getTime() + i * 864e5).toISOString().slice(0, 10)); };
   /** What a page needs: the events of its day, or of the whole week for a weekly layout */
   async function dataFor(cfg, date) {
@@ -5298,18 +5312,22 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const gh2 = heads.find((h) => h.y > list.y && (nextDayTop == null || h.y < nextDayTop));
     const lastBefore = lists.filter((l) => nextDayTop == null || l.y < nextDayTop).pop() || list;
     const bottom = Math.max(...slots.map((l) => l.y + l.h)), lineH = (list.size || 18) * (list.lh || 1.2);
+    // the flag picture beside the first group heading: redrawn beside each group with that country's flag
+    const fl = gh && wk.groupFlag && byId.get(wk.groupFlag);
     return {
+      ...(fl ? { fdx: fl.x - gh.x, fdy: fl.y - gh.y } : {}),
       top, headEnd: headEnd - top, dhOff: dh.y - top, firstGap: (gh ? gh.y : list.y) - headEnd, ghToList: gh ? list.y - (gh.y + gh.h) : 0, ghH: gh ? gh.h : 0, lineH,
       groupGap: gh2 ? gh2.y - (list.y + list.h) : Math.round(lineH), dayGap: nextDayTop != null ? nextDayTop - (lastBefore.y + lastBefore.h) : Math.round(lineH * 1.6),
-      limit: box ? box.y + box.h - Math.max(16, box.y + box.h - bottom) : (pg.layers[0] ? pg.layers[0].h - 40 : 1300),
+      // events may fill the panel down to a bottom margin like its top one (the panel's own padding)
+      limit: box ? box.y + box.h - clamp(top - box.y, 16, 60) : (pg.layers[0] ? pg.layers[0].h - 40 : 1300),
       listW: box ? Math.round(box.x + box.w - list.x - 20) : list.w,
-      proto: { dh: JSON.parse(JSON.stringify(dh)), list: JSON.parse(JSON.stringify(list)), ...(gh ? { gh: JSON.parse(JSON.stringify(gh)) } : {}), ...(bar ? { bar: JSON.parse(JSON.stringify(bar)) } : {}) },
+      proto: { dh: JSON.parse(JSON.stringify(dh)), list: JSON.parse(JSON.stringify(list)), ...(gh ? { gh: JSON.parse(JSON.stringify(gh)) } : {}), ...(bar ? { bar: JSON.parse(JSON.stringify(bar)) } : {}), ...(fl ? { flag: JSON.parse(JSON.stringify(fl)) } : {}) },
       anchor: box ? box.id : wk.slotLayerIds[0],
     };
   }
   /** Rebuilds the day blocks with the week's events; returns true when the slide changed */
   function applyWeek(pg, byDay, cfg) {
-    const wk = cfg.map.week, m = cfg.wkm || (cfg.wkm = weekMetrics(pg, wk)), before = JSON.stringify(pg.layers.filter((l) => l.lvw));
+    const wk = cfg.map.week, m = cfg.wkm && cfg.wkm.v === 2 ? cfg.wkm : (cfg.wkm = { ...weekMetrics(pg, wk), v: 2 }), before = JSON.stringify(pg.layers.filter((l) => l.lvw));
     const keep = new Set(pg.live ? choose(Object.values(byDay || {}).flat(), cfg, 999).map((e) => e.id) : []);
     pg.layers = pg.layers.filter((l) => !l.lvw);
     wk.slotLayerIds.forEach((id) => { const l = pg.layers.find((x) => x.id === id); if (l) l.hidden = true; });
@@ -5352,6 +5370,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           // a flag at the start of the heading is drawn as a picture (emoji flags show as letters on Windows and on the export server)
           const fs = P.gh.size || 20, flag = ghFlag && flagOf(g.e), fw = Math.round(fs * 1.1), fh = Math.round(fs * 0.78), gap = Math.round(fs * 0.4);
           const vals = { flag: flagEmoji(g.e.country), country: g.e.country || '', countryName: countryName(g.e.country, cfg.lang), currency: g.e.currency || '' };
+          if (P.flag && m.fdx != null) add({ ...P.flag, fill: flagOf(g.e) || P.flag.fill }, `lvw-${n}-f${j}`, { x: Math.round(P.gh.x + m.fdx), y: Math.round(y + m.fdy) });
           if (flag) add({ type: 'image', name: 'Flag', x: P.gh.x, y: 0, w: fw, h: fh, rot: 0, op: 1, r: Math.max(2, Math.round(fs * 0.12)), fill: flag, stroke: 'rgba(255,255,255,0.35)', sw: 1 }, `lvw-${n}-f${j}`, { y: Math.round(y + (Math.min(P.gh.h, fs * (P.gh.lh || 1.2)) - fh) / 2) });
           const gx = flag ? P.gh.x + fw + gap : P.gh.x;
           add(flag ? { ...P.gh, x: gx } : P.gh, `lvw-${n}-g${j}`, { y, w: Math.max(P.gh.w - (gx - P.gh.x), m.listW - (gx - P.list.x)), text: fill(flag ? ghRest : ghTpl, vals) });
@@ -5372,7 +5391,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     }
     cfg.shown = shown; // what the slide actually lists (the panel's ticks and count)
     cfg.room = Math.max(0, Math.floor((m.limit - (n ? y - m.dayGap : m.top)) / m.lineH)); // event lines that still fit
-    if (!out.length) { add(P.dh, 'lvw-0-day', { y: m.top + m.dhOff, text: cfg.lang === 'ar' ? 'لا توجد أحداث هذا الأسبوع' : 'No events this week' }); }
+    if (!out.length) { add(P.dh, 'lvw-0-day', { y: m.top + m.dhOff, text: isWeek(cfg) ? (cfg.lang === 'ar' ? 'لا توجد أحداث هذا الأسبوع' : 'No events this week') : (cfg.lang === 'ar' ? 'لا توجد أحداث في هذا اليوم' : 'No events this day') }); }
     const at = pg.layers.findIndex((l) => l.id === m.anchor); pg.layers.splice(at >= 0 ? at + 1 : pg.layers.length, 0, ...out);
     return JSON.stringify(out) !== before;
   }
@@ -5383,7 +5402,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (!cfg.srcLang) cfg.srcLang = map.rows.some((r) => r.fields.some((f) => f.role === 'event' && AR_RE.test(String((cfg.orig[f.layerId] || {}).text || '')))) ? 'ar' : 'en';
     const set = (id, k, v) => { const l = byId.get(id); if (l && l[k] !== v) { l[k] = v; changed = true; } };
     const shown = (id) => !!(cfg.orig[id] && cfg.orig[id].hidden);
-    if (isWeek(cfg)) { changed = applyWeek(pg, byDay || { [date]: events }, cfg) || changed; byId = new Map(pg.layers.map((l) => [l.id, l])); }
+    if (isBlocks(cfg)) { changed = applyWeek(pg, byDay || { [date]: events }, cfg) || changed; byId = new Map(pg.layers.map((l) => [l.id, l])); }
     const list = choose(events, cfg, map.rows.length), pal = palette(pg, cfg);
     map.rows.forEach((row, i) => {
       const e = list[i];
@@ -5468,7 +5487,21 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     }
     return c;
   }
-  LIVE = { forPost, refresh };
+  /** A Brand Kit calendar slide and how it reads: one day (rows of events) or the whole week (day blocks) */
+  async function calendarSlide(w, h, { style = 'dark', lang = 'en', rows = 5, layout = 'day' } = {}) {
+    const layers = layout === 'week' && FEEDS ? tplCalendarWeek(w, h, FEEDS.look(style, lang)) : brandCalendar(w, h, style, lang, rows);
+    const map = await api('/social/calendar/analyze', { method: 'POST', body: { layers: layersIn({ layers }), w, h, engine: 'heuristic' } });
+    return { layers, map };
+  }
+  /** Builds a live calendar on a page (no editor needed: automations use it) */
+  async function buildCalendar(pg, w, h, o = {}) {
+    const { layers, map } = await calendarSlide(w, h, o);
+    pg.layers = layers; pg.bg = layers[0].fill; delete pg.live;
+    if (!map.isCalendar) throw new Error('The calendar template could not be read');
+    bind(pg, map, { lang: o.lang || 'en' });
+    return pg;
+  }
+  LIVE = { forPost, refresh, buildCalendar };
 
   const tzShort = () => (tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1];
   /* ---------- reading a slide ---------- */
@@ -5501,7 +5534,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     cfg.geo = (keep && keep.geo) || {};
     pg.layers.forEach((l) => { if (!cfg.geo[l.id]) cfg.geo[l.id] = { x: l.x, align: l.align, dir: l.dir, font: l.font }; });
     if (keep && keep.i18n) cfg.i18n = keep.i18n;
-    if (map.layout === 'week' && map.week) { cfg.wkm = weekMetrics(pg, map.week); cfg.pick = null; const ll = pg.layers.find((l) => l.id === map.week.list.layerId); if (ll && !map.timeFmt) map.timeFmt = timeFmt(ll.text); }
+    if (map.layout === 'week' && map.week) { cfg.wkm = { ...weekMetrics(pg, map.week), v: 2 }; cfg.pick = null; const ll = pg.layers.find((l) => l.id === map.week.list.layerId); if (ll && !map.timeFmt) map.timeFmt = timeFmt(ll.text); }
     pg.live = cfg;
   }
   /** Free space to the right of each left-aligned data text (up to the next element in its row, or its card's edge):
@@ -5746,7 +5779,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   function bound(pg) {
     const cfg = pg.live, map = cfg.map, events = cfg.events || [], tz = schedTz();
-    const list = choose(events, cfg, isWeek(cfg) ? 999 : map.rows.length), chosen = new Set(list.map((e) => e.id));
+    const bk = isBlocks(cfg), list = choose(events, cfg, bk ? 999 : map.rows.length), chosen = new Set(list.map((e) => e.id));
     const visible = events.filter((e) => cfg.impact.includes(e.impact) || chosen.has(e.id));
     const r1 = map.rows[0], byId = new Map(pg.layers.map((l) => [l.id, l]));
     const wk = isWeek(cfg), shownDate = (cfg.feed && cfg.feed.date) || dayFor(cfg, ED.d);
@@ -5758,7 +5791,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         <button class="lv-pd ${ED.lvCal && ED.lvCal.open ? 'on' : ''}" data-act="lvCal" title="Choose a ${unit}" aria-haspopup="dialog" aria-expanded="${!!(ED.lvCal && ED.lvCal.open)}">${ic('cal', 15)}<span>${esc(periodLabel(shownDate, wk))}</span>${ic('chevD', 14)}</button>
         <button class="lv-pa" data-act="lvShift" data-n="1" aria-label="Next ${unit}" title="Next ${unit}">${ic('chevR', 16)}</button>${ED.lvCal && ED.lvCal.open ? calPop(wk, shownDate) : ''}</div>`;
     const feedNote = cfg.err ? `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>` : cfg.feed ? `<p class="lv-src">${cfg.feed.count} events ${wk ? 'this week' : 'that day'} · ${cfg.feed.source === 'tradingview' ? 'TradingView' : 'Forex Factory'}${cfg.feed.errors.length ? ' (fallback)' : ''} · ${esc(tzShort())}</p>` : '';
-    const ctry = cfg.countries.length, onSlide = wk ? new Set(cfg.shown || []) : chosen;
+    const ctry = cfg.countries.length, onSlide = bk ? new Set(cfg.shown || []) : chosen;
     // the list: what's on the slide first in mind, grouped by day on weekly slides
     let evHtml = '';
     if (visible.length) {
@@ -5774,7 +5807,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           + (cfg.lang === 'ar' && (cfg.srcLang || 'en') !== 'ar' ? `<div class="lv-swr lv-rtl"><div class="grow"><b>Right-to-left</b><p>Mirror the layout for Arabic.</p></div>${sw(cfg.mirror !== false, 'lvMirror', '', 'Right-to-left layout')}</div>` : '')))
       + sec('Filters', field('Impact', `<div class="lv-imps">${['high', 'medium', 'low'].map((k) => `<button class="lv-impb i${IMP[k]} ${cfg.impact.includes(k) ? 'on' : ''}" data-act="lvImp" data-k="${k}" aria-pressed="${cfg.impact.includes(k)}"><span class="st">${'★'.repeat(IMP[k])}</span>${IMP_WORD.en[k]}</button>`).join('')}</div>`)
         + field(`Countries <em>${ctry}/${CTRY.length}</em>${ctry < CTRY.length ? '<button class="btn link sm lv-all" data-act="lvCtyAll">All</button>' : ''}`, `<div class="lv-ctys">${CTRY.map(([k, l]) => `<button class="lv-cty ${cfg.countries.includes(k) ? 'on' : ''}" data-act="lvCty" data-k="${k}" aria-pressed="${cfg.countries.includes(k)}" title="${esc(countryName(k, 'en'))} · ${l}">${k === 'GB' ? 'UK' : k}</button>`).join('')}</div>`))
-      + sec('Events', feedNote + (wk && cfg.room != null && cfg.room < 1 && visible.length > onSlide.size ? `<p class="lv-full">${ic('alert', 14)}<span>The slide is full. Untick an event to add another.</span></p>` : '') + `<div class="lv-evs ${wk && cfg.room != null && cfg.room < 1 ? 'full' : ''}">${evHtml}</div>`,
+      + sec('Events', feedNote + (bk && cfg.room != null && cfg.room < 1 && visible.length > onSlide.size ? `<p class="lv-full">${ic('alert', 14)}<span>The slide is full. Untick an event to add another.</span></p>` : '') + `<div class="lv-evs ${wk && cfg.room != null && cfg.room < 1 ? 'full' : ''}">${evHtml}</div>`,
         `<span class="lv-count" title="Events on the slide">${onSlide.size} on the slide</span>${cfg.pick ? '<button class="btn link sm lv-auto" data-act="lvAuto">Auto-pick</button>' : '<span class="lv-tag">Auto</span>'}`)
       + sec('Updates', `<div class="lv-sw">
           ${figSw(map, cfg)}
@@ -5787,7 +5820,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           ${map.needs && map.needs.note ? `<p class="lv-note">${ic('wand', 14)}<span>${esc(map.needs.note)}</span></p>` : ''}
           <div class="lv-maps" role="table" aria-label="Fields read on the slide">
             <div class="lv-map lv-map-h" role="row"><span role="columnheader">On the slide</span><span role="columnheader">Reads as</span></div>
-            ${isWeek(cfg) ? [['Day heading', map.week.dayHeader.layerId, 'Day'], ...(map.week.groupHeader ? [['Group heading', map.week.groupHeader.layerId, 'Country']] : []), ['Events list', map.week.list.layerId, 'Event lines']].map(([n2, id, lab]) => `<div class="lv-map" role="row"><span class="tx" title="${esc((cfg.orig[id] || {}).text || '')}">${esc(String((cfg.orig[id] || {}).text || n2).split('\n')[0].slice(0, 28))}</span><span class="lv-fixed live">${lab}</span></div>`).join('') + `<p class="lv-hint">Every day of the week is rebuilt from the first day block, one group per country, with the design's spacing. Each line: <code>${esc(map.week.list.lineTemplate)}</code></p>` : ''}
+            ${bk ? [['Day heading', map.week.dayHeader.layerId, 'Day'], ...(map.week.groupHeader ? [['Group heading', map.week.groupHeader.layerId, 'Country']] : []), ['Events list', map.week.list.layerId, 'Event lines']].map(([n2, id, lab]) => `<div class="lv-map" role="row"><span class="tx" title="${esc((cfg.orig[id] || {}).text || '')}">${esc(String((cfg.orig[id] || {}).text || n2).split('\n')[0].slice(0, 28))}</span><span class="lv-fixed live">${lab}</span></div>`).join('') + `<p class="lv-hint">${isWeek(cfg) ? 'Every day of the week is rebuilt from the first day block' : 'The day block is rebuilt with that day\'s events'}, one group per country, with the design's spacing. Each line: <code>${esc(map.week.list.lineTemplate)}</code></p>` : ''}
             ${r1 ? r1.fields.map((f, n) => `<div class="lv-map" role="row">${mapChip(f, cfg, byId)}<select class="field sm" data-lvrole="${n}" aria-label="Field type">${ROLES.map(([v, l]) => `<option value="${v}" ${f.role === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('') : ''}
             ${map.date ? `<div class="lv-map" role="row"><span class="tx" title="${esc((cfg.orig[map.date.layerId] || {}).text || '')}">${esc(((cfg.orig[map.date.layerId] || {}).text || '').slice(0, 28))}</span><span class="lv-fixed">Date</span></div>` : ''}
             ${map.tz ? `<div class="lv-map" role="row"><span class="tx">${esc(((cfg.orig[map.tz.layerId] || {}).text || '').split('\n')[0].slice(0, 28))}</span><span class="lv-fixed">Time zone</span></div>` : ''}
@@ -5812,7 +5845,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const r = peek.get(pageSig(d.pages[i])), found = r && !(r instanceof Promise) ? r : null; if (!found) peekPage(d, i);
     const feed = found && !found.isCalendar && FEEDS ? FEEDS.detect(d.pages[i]) : null;
     const card = !found ? '<div class="lv-card"><div class="skel" style="height:14px;width:55%"></div><div class="skel" style="height:12px;width:85%;margin-top:10px"></div></div>'
-      : found.isCalendar ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>${found.layout === 'week' ? 'Weekly calendar found' : 'Calendar design found'}</b><p>${found.layout === 'week' ? 'Day blocks with event lists. We keep your design and fill the whole week.' : `${found.rows.length} rows. We keep your design and make its text live.`}</p></div></div>`
+      : found.isCalendar ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>${found.layout === 'week' ? (found.week && found.week.period === 'day' ? 'Daily calendar found' : 'Weekly calendar found') : 'Calendar design found'}</b><p>${found.layout === 'week' ? (found.week && found.week.period === 'day' ? 'One day with events grouped by country. We keep your design and fill it with that day\'s events.' : 'Day blocks with event lists. We keep your design and fill the whole week.') : `${found.rows.length} rows. We keep your design and make its text live.`}</p></div></div>`
         : feed ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>${feed.kind === 'price' ? 'Price alert found' : 'News post found'}</b><p>We keep your design and make its ${esc(feed.found.join(', '))} live${feed.kind === 'news' ? ' with the latest headline' : ' with the market price'}.</p></div></div>`
         : `<div class="lv-card"><span class="lv-ic muted">${ic('chart', 16)}</span><div><b>No live layout found yet</b><p>Claude can still look for a calendar, or build a calendar, price alert or news template from your Brand Kit.</p></div></div>`;
     return `${card}<div class="lv-cta"><button class="btn primary lv-go" data-act="lvAnalyze">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Nothing is replaced. Only the text becomes live.</p></div>${FEEDS ? FEEDS.slideOffer() : ''}${importCard()}`;
@@ -5822,8 +5855,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const pick = field('Template', seg('lvKind', kind, [['calendar', 'Calendar'], ['price', 'Price alert'], ['news', 'News']]));
     if (kind !== 'calendar' && FEEDS) return pick + FEEDS.brandForm(d) + importCard();
     return `${pick}<div class="lv-card"><span class="lv-dots">${b.colors.slice(0, 5).map((c) => `<i style="background:${esc(c.hex)}"></i>`).join('')}</span><div><b>${esc(b.name)} Brand Kit</b><p>${esc(b.fonts.heading)} · ${esc(b.fonts.body)}<br>${w}×${h} · up to 5 rows</p></div></div>
-      ${field('Style', FEEDS ? FEEDS.styleCards(d, (style) => brandCalendar(w, h, style, ED.lang === 'ar' ? 'ar' : 'en', rows)) : seg('lvStyle', st, [['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']]))}
-      ${field('Rows', seg('lvRows', String(rows), [['3', '3'], ['4', '4'], ['5', '5']]))}
+      ${field('Style', FEEDS ? FEEDS.styleCards(d, (style) => (ED.liveLayout === 'week' ? tplCalendarWeek(w, h, FEEDS.look(style, ED.lang === 'ar' ? 'ar' : 'en')) : brandCalendar(w, h, style, ED.lang === 'ar' ? 'ar' : 'en', rows))) : seg('lvStyle', st, [['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']]))}
+      ${field('Layout', seg('lvLayout', ED.liveLayout || 'day', [['day', 'One day'], ['week', 'Whole week']]))}
+      ${(ED.liveLayout || 'day') === 'week' ? '' : field('Rows', seg('lvRows', String(rows), [['3', '3'], ['4', '4'], ['5', '5']]))}
       <div class="lv-cta"><button class="btn primary lv-go" data-act="lvBuild">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Replaces this slide with a new template. You can undo it.</p></div>${importCard()}`;
   }
   function livePanel(p) {
@@ -6026,6 +6060,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     lvStyle: (a) => { ED.liveStyle = a.dataset.v; edPanel(); },
     lvRows: (a) => { ED.liveRows = +a.dataset.v; edPanel(); },
     lvKind: (a) => { ED.liveKind = a.dataset.v; edPanel(); },
+    lvLayout: (a) => { ED.liveLayout = a.dataset.v; edPanel(); },
     lvPickFile: (a, e) => { if (e && e.target && e.target.id === 'lvFile') return; e && e.preventDefault(); const i = $('#lvFile'); i && i.click(); },
     lvAnalyze: async () => {
       if (!canEdit()) return; const d = ED.d, i = ED.pi, pg = d.pages[i], done = busyWith('[data-act=lvAnalyze]', 'Analyzing…');
@@ -6052,8 +6087,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     lvBuild: async () => {
       if (!canEdit()) return; const d = ED.d, pg = curP(), [w, h] = RATIOS[d.ratio], done = busyWith('[data-act=lvBuild]', 'Building…');
       try {
-        const lang = ED.lang === 'ar' ? 'ar' : 'en', layers = brandCalendar(w, h, ED.liveStyle || 'dark', lang, ED.liveRows || 5);
-        const map = await api('/social/calendar/analyze', { method: 'POST', body: { layers: layersIn({ layers }), w, h, engine: 'heuristic' } });
+        const lang = ED.lang === 'ar' ? 'ar' : 'en', { layers, map } = await calendarSlide(w, h, { style: ED.liveStyle || 'dark', lang, rows: ED.liveRows || 5, layout: ED.liveLayout || 'day' });
         mutate(() => { pg.layers = layers; pg.bg = layers[0].fill; ED.sel = null; delete pg.live; if (map.isCalendar) bind(pg, map, { lang }); d.tpl = 'calendar'; });
         toast('Template built from your Brand Kit with live data');
         await refresh(d, { silent: false, force: true });
@@ -6074,7 +6108,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     lvPick: async (a) => {
       if (ED.lvPicking) return; // one change at a time: each one re-renders the slide
       ED.lvAnchor = { id: a.dataset.id, top: a.getBoundingClientRect().top };
-      const c = cfgNow(), wk = isWeek(c), n = wk ? 999 : c.map.rows.length, cur = wk ? [...(c.shown || [])] : choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id, adding = !cur.includes(id);
+      const c = cfgNow(), wk = isBlocks(c), n = wk ? 999 : c.map.rows.length, cur = wk ? [...(c.shown || [])] : choose(c.events || [], c, n).map((e) => e.id), id = a.dataset.id, adding = !cur.includes(id);
       const next = adding ? [...cur, id] : cur.filter((x) => x !== id);
       if (next.length > n) { toast(`This design has ${n} rows: untick an event first`); return; }
       if (!next.length) { toast('Keep at least one event on the slide, or use Auto-pick'); return; }
@@ -6126,7 +6160,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       for (const p of S.posts.filter((x) => x.d === d.id && x.status === 'Scheduled' && x.publish && x.publish.state === 'pending')) {
         try {
           const sigs = [];
-          for (const pg of livePages(d)) { const r = await dataFor(pg.live, dayFor(pg.live, d, p)); sigs.push(sigOf(r.events, pg.live, isWeek(pg.live) ? 999 : pg.live.map.rows.length)); }
+          for (const pg of livePages(d)) { const r = await dataFor(pg.live, dayFor(pg.live, d, p)); sigs.push(sigOf(r.events, pg.live, isBlocks(pg.live) ? 999 : pg.live.map.rows.length)); }
           const sig = sigs.join('#'); if (p.liveSig !== sig) { const first = p.liveSig == null; p.liveSig = sig; save(); if (!first) PUB.prepare(p); }
         } catch (e) { /* next tick */ }
       }
@@ -6351,6 +6385,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   const cal = LIVE;
   LIVE = {
+    ...cal, // buildCalendar…
     forPost: async (d, post) => forPost(cal ? await cal.forPost(d, post) : d),
     refresh: async (d, o) => { const a = cal ? await cal.refresh(d, o) : false, b = await refresh(d, o); return a || b; },
   };
@@ -6664,7 +6699,14 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     toast(`${f.kind === 'price' ? 'Price alert' : 'News post'} found: ${f.found.join(', ')} now ${f.found.length === 1 ? 'is' : 'are'} live. Fine-tune it under Fields.`);
     await refresh(ED.d, { silent: false, force: true });
   }
-  FEEDS = { panel, brandForm, slideOffer, attach, unbind, styleCards, look, detect, bindDetected };
+  /** A Brand Kit price alert or news slide on a page (no editor needed: automations use it) */
+  function buildPage(pg, kind, w, h, o = {}) {
+    const lang = o.lang === 'ar' ? 'ar' : 'en', layers = (kind === 'price' ? tplPrice : tplNews)(w, h, look(o.style || 'dark', lang));
+    pg.layers = layers; pg.bg = layers[0].fill; delete pg.live;
+    attach(pg, kind, kind === 'price' ? { lang, symbols: [o.symbol || 'OANDA:XAUUSD'] } : { lang, src: o.source || 'fxstreet' });
+    return pg;
+  }
+  FEEDS = { panel, brandForm, slideOffer, attach, unbind, styleCards, look, detect, bindDetected, buildPage, refresh };
 })();
 
 /* ============ v25 · Studio Agent with AI: every editor action, any model ============ */
@@ -6975,6 +7017,389 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && AGM.open) { AGM.open = false; agModelChip(); } });
 }
 
+/* ============ v26 · Automations: recurring posts with live data ============ */
+/* An automation publishes one design on a rhythm (every day, weekdays, chosen days) at a set time.
+   The API keeps the coming week of runs as scheduled posts (they show in the planner with a repeat
+   badge), renders each one with fresh live data just before its time, writes its caption and
+   publishes it, even with no studio open. This page lists them, creates them from presets or from
+   any design, and the planner lets you skip one run. */
+{
+  const AU = { list: null, server: null, brand: null, loading: null, err: '' };
+  const path = (b = S.active) => '/social/brands/' + encodeURIComponent(b) + '/automations';
+  const DAYS = [[1, 'Monday', 'Mon', 'M'], [2, 'Tuesday', 'Tue', 'T'], [3, 'Wednesday', 'Wed', 'W'], [4, 'Thursday', 'Thu', 'T'], [5, 'Friday', 'Fri', 'F'], [6, 'Saturday', 'Sat', 'S'], [7, 'Sunday', 'Sun', 'S']];
+  const dayName = (n, k = 1) => (DAYS[n - 1] || [])[k] || '';
+  const aiReady = () => !!(AIS.view && AIS.view.ready);
+  const onPage = () => /^#\/automations/.test(location.hash);
+  const rerender = () => { if (onPage() || /^#\/(planner|overview)/.test(location.hash)) route(); };
+
+  function load(force) {
+    if (AU.loading && !force && AU.brand === S.active) return AU.loading;
+    const b = S.active;
+    AU.loading = api(path(b)).then((r) => { if (S.active !== b) return; AU.list = r.automations || []; AU.server = r.server || {}; AU.brand = b; AU.err = ''; })
+      .catch((e) => { AU.err = e.message; AU.list = AU.list || []; }).then(() => { AU.loading = null; if (onPage()) route(); });
+    return AU.loading;
+  }
+  const mine = () => (AU.brand === S.active ? AU.list : null);
+
+  /* ---------- words ---------- */
+  function rhythm(c) {
+    if (!c) return '';
+    if (c.kind === 'daily') return `Every day at ${c.time}`;
+    if (c.kind === 'weekdays') return `Weekdays at ${c.time}`;
+    const ds = [...(c.days || [])].sort();
+    if (ds.length === 1) return `Every ${dayName(ds[0])} at ${c.time}`;
+    if (ds.length === 7) return `Every day at ${c.time}`;
+    return `${ds.map((d) => dayName(d, 2)).join(', ')} at ${c.time}`;
+  }
+  const whenLabel = (date, time) => `${fmt(new Date(date + 'T12:00'), { weekday: 'short', day: 'numeric', month: 'short' })} · ${time}`;
+  const netNames = (pf) => (pf || []).map((k) => (PLATFORMS[k] || {}).n).filter(Boolean);
+  const listWords = (a) => (a.length < 2 ? a.join('') : a.slice(0, -1).join(', ') + ' and ' + a[a.length - 1]);
+  /** The next runs, computed here as the API does (for the summary while editing) */
+  function nextRuns(c, tz, n = 3, startDate, endDate) {
+    const out = []; let date = nowIn(tz).date;
+    for (let i = 0; i < 60 && out.length < n; i++) {
+      const d = new Date(Date.parse(date + 'T12:00:00Z') + i * 864e5).toISOString().slice(0, 10), wd = ((new Date(d + 'T12:00:00Z').getUTCDay() + 6) % 7) + 1;
+      if (startDate && d < startDate) continue; if (endDate && d > endDate) break;
+      const ok = c.kind === 'daily' || (c.kind === 'weekdays' && wd <= 5) || (c.kind === 'weekly' && c.days.includes(wd));
+      if (ok && zonedToUtc(d, c.time, tz) > new Date()) out.push({ date: d, time: c.time });
+    }
+    return out;
+  }
+
+  /* ---------- presets ---------- */
+  const PRESETS = [
+    { k: 'calendar', icon: 'cal', t: 'Weekly economic calendar', d: 'The week’s key events, every Monday morning.', build: { kind: 'calendar', layout: 'week', ratio: '4:5' }, cadence: { kind: 'weekly', days: [1], time: '08:00' },
+      caption: { mode: 'fixed', text: '📅 The week ahead: key economic events for {week}.\nSave this post and plan your trades.\n\n{hashtags}' } },
+    { k: 'news', icon: 'doc', t: 'Daily market news', d: 'The latest headline with its photo, every weekday.', build: { kind: 'news' }, cadence: { kind: 'weekdays', days: [1, 2, 3, 4, 5], time: '09:00' },
+      caption: { mode: 'ai', text: '📰 {headline}\n\nMore market news on {website}\n{hashtags}' } },
+    { k: 'price', icon: 'trend', t: 'Daily gold price', d: 'Gold’s live price and daily change, every evening.', build: { kind: 'price', symbol: 'OANDA:XAUUSD' }, cadence: { kind: 'daily', days: [1, 2, 3, 4, 5, 6, 7], time: '17:00' },
+      caption: { mode: 'fixed', text: '🔔 {price}\n\nPrices move fast: follow {website} for live updates.\n{hashtags}' } },
+  ];
+  const BUILD_NAME = { calendar: 'Weekly economic calendar', news: 'Daily market news', price: 'Daily gold price' };
+  /** A new design for a preset, built from the Brand Kit with live data */
+  async function makeDesign(build) {
+    const ratio = build.ratio || brand().defaultRatio || '4:5';
+    const d = createDesign({ name: BUILD_NAME[build.kind] || 'Automation', tpl: 'blank', ratio, source: 'Template' }), [w, h] = RATIOS[d.ratio], pg = d.pages[0];
+    try {
+      if (build.kind === 'calendar') { await LIVE.buildCalendar(pg, w, h, { style: 'dark', lang: 'en', layout: build.layout || 'day' }); d.tpl = 'calendar'; }
+      else { FEEDS.buildPage(pg, build.kind, w, h, { style: 'dark', lang: 'en', symbol: build.symbol, source: build.source }); d.tpl = build.kind; }
+    } catch (e) { S.designs = S.designs.filter((x) => x !== d); save(); throw e; } // no half-built design left behind
+    try { await LIVE.refresh(d, { force: true }); } catch (e) { /* the server fills it before each post */ } // the thumbnail shows real data
+    d.status = 'Approved'; save(); await persist.flush();
+    return d;
+  }
+
+  /* ---------- page ---------- */
+  const liveOf = (d) => (d && d.pages ? d.pages.map((pg) => pg.live && (pg.live.kind || 'calendar')).filter(Boolean) : []);
+  const KIND = { calendar: 'Economic calendar', price: 'Price alert', news: 'News post' };
+  function stateBadge(a) {
+    const L = a.last;
+    if (!a.active) return `<span class="au-st off">${ic('minus', 12)}Paused</span>`;
+    if (!L) return `<span class="au-st">${ic('clock', 12)}No post yet</span>`;
+    if (L.status === 'Published') return `<span class="au-st ok" title="${esc(whenLabel(L.date, L.time))}">${ic('check', 12)}Published ${esc(fmt(new Date(L.date + 'T12:00'), { day: 'numeric', month: 'short' }))}</span>`;
+    if (L.status === 'Failed' || L.state === 'failed') return `<span class="au-st bad" title="${esc(L.error || 'Failed')}">${ic('alert', 12)}Last post failed</span>`;
+    return `<span class="au-st">${ic('clock', 12)}Publishing…</span>`;
+  }
+  function card(a) {
+    const d = getD(a.d), next = a.next && a.next[0], off = (a.pf || []).filter((k) => !S.platforms[k]);
+    return `<article class="au-card ${a.active ? '' : 'paused'}">
+      <button class="au-th" data-act="auEdit" data-id="${esc(a.id)}" aria-label="Edit ${esc(a.name)}">${d ? thumb(d.pages[0], d.ratio, 92, 112) : `<span class="au-miss">${ic('alert', 18)}</span>`}</button>
+      <div class="au-main">
+        <div class="au-top"><b class="au-name">${esc(a.name)}</b>${sw(a.active, 'auToggle', `data-id="${esc(a.id)}"`, a.active ? 'Pause this automation' : 'Turn this automation on')}</div>
+        <p class="au-rh">${ic('refresh', 14)}<span>${esc(rhythm(a.cadence))}</span></p>
+        <div class="au-nets">${(a.pf || []).map((k) => `<span class="au-net ${S.platforms[k] ? '' : 'off'}" title="${esc((PLATFORMS[k] || {}).n || k)}${S.platforms[k] ? '' : ' · not connected'}" style="--c:${(PLATFORMS[k] || {}).c}">${ic('net_' + k, 14)}</span>`).join('')}${liveOf(d).length ? `<span class="au-live">${ic('chart', 12)}${esc(KIND[liveOf(d)[0]] || 'Live data')}</span>` : ''}${NOTION && NOTION.ready() && a.notion !== false ? '<span class="au-nt" title="Shown in Notion Calendar"><i>N</i>Notion Calendar</span>' : ''}</div>
+        ${a.note ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(a.note)}</span></p>` : off.length ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(listWords(off.map((k) => PLATFORMS[k].n)))} ${off.length > 1 ? 'aren’t' : 'isn’t'} connected. <a href="#/settings" data-act="goAccounts">Connect</a></span></p>` : ''}
+        <div class="au-foot">
+          <span class="au-next">${a.active && next ? `<em>Next</em>${esc(whenLabel(next.date, next.time))}` : a.active ? 'No upcoming post' : 'Paused'}</span>${stateBadge(a)}
+          <span class="grow"></span>
+          <button class="btn ghost sm" data-act="auRun" data-id="${esc(a.id)}" title="Publish one post now">${ic('send', 14)}<span class="hide-sm">Post now</span></button>
+          <button class="btn ghost icon sm" data-act="auEdit" data-id="${esc(a.id)}" aria-label="Edit">${ic('settings', 15)}</button>
+        </div>
+      </div>
+    </article>`;
+  }
+  function presetCards(compact) {
+    return `<div class="au-presets ${compact ? 'compact' : ''}">${PRESETS.map((p) => `<button class="au-pre" data-act="auPreset" data-k="${p.k}">
+      <span class="au-pi">${ic(p.icon, 18)}</span><span class="grow"><b>${esc(p.t)}</b><small>${esc(rhythm(p.cadence))}</small>${compact ? '' : `<em>${esc(p.d)}</em>`}</span>${ic('plus', 16)}</button>`).join('')}</div>`;
+  }
+  function upcoming(list) {
+    const rows = list.filter((a) => a.active).flatMap((a) => (a.next || []).map((n) => ({ a, ...n }))).sort((x, y) => x.at.localeCompare(y.at)).slice(0, 6);
+    if (!rows.length) return '';
+    return `<section class="au-side"><h3>Coming up</h3><ol class="au-up">${rows.map((r) => { const d = getD(r.a.d); return `<li><span class="au-ud"><b>${esc(fmt(new Date(r.date + 'T12:00'), { day: 'numeric' }))}</b><small>${esc(fmt(new Date(r.date + 'T12:00'), { month: 'short' }))}</small></span>
+      <span class="grow"><b>${esc(r.a.name)}</b><small>${esc(fmt(new Date(r.date + 'T12:00'), { weekday: 'long' }))} · ${esc(r.time)}</small></span>${d ? `<span class="au-ut">${thumb(d.pages[0], d.ratio, 30, 36)}</span>` : ''}</li>`; }).join('')}</ol>
+      <a class="btn link sm" href="#/planner">${ic('cal', 14)}See them in the planner</a></section>`;
+  }
+  PAGES.automations = {
+    t: 'Automations', s: 'Recurring posts with live data. They’re prepared with fresh data and published on their own, even with the studio closed.',
+    actions: () => `<button class="btn primary" data-act="auNew">${ic('plus', 18)}<span class="hide-sm">New automation</span></button>`,
+    view: () => {
+      const list = mine();
+      if (!list) { load(); return `<div class="au-wrap"><div class="au-list">${[0, 1].map(() => '<div class="skel" style="height:140px;border-radius:16px"></div>').join('')}</div></div>`; }
+      const warn = AU.server && AU.server.render === false ? `<div class="note warn">${ic('alert', 16)}<span>This server can’t render posts (SOCIAL_LIVE_RENDER is off), so automations won’t publish. Ask your administrator to turn it on.</span></div>` : '';
+      const err = AU.err ? `<div class="note warn">${ic('alert', 16)}<span>Couldn’t load the automations: ${esc(AU.err)}</span></div>` : '';
+      if (!list.length) return `${warn}${err}<div class="au-empty"><span class="au-orb">${ic('refresh', 26)}</span><h2>Put your posting on autopilot</h2>
+        <p>Pick a ready-made automation or start from one of your designs. Each post is filled with fresh data just before it goes out.</p>${presetCards(false)}
+        <button class="btn secondary" data-act="auNew">${ic('layout', 16)}Start from one of my designs</button></div>`;
+      const nt = NOTION && NOTION.state(), tip = nt && !NOTION.ready() ? `<div class="au-tip"><span class="nt-logo sm">N</span><span class="grow">Want these in <b>Notion Calendar</b>? Connect Notion and every automation post shows up there too.</span><button class="btn secondary sm" data-act="ntGo">${nt.connected ? 'Choose the database' : 'Connect Notion'}</button></div>` : '';
+      return `${warn}${err}${tip}<div class="au-wrap"><div class="au-list">${list.map(card).join('')}
+        <div class="au-more"><span>Add another</span>${presetCards(true)}</div></div>${upcoming(list)}</div>`;
+    },
+  };
+  NAV.splice(NAV.findIndex((n) => n[0] === 'planner') + 1, 0, ['automations', 'Automations', 'refresh', 'New']);
+  // the planner links here
+  const pa = PAGES.planner.actions;
+  PAGES.planner.actions = () => `<a class="btn secondary" href="#/automations">${ic('refresh', 16)}<span class="hide-sm">Automations</span></a>` + pa();
+
+  /* ---------- editor ---------- */
+  function openAuto(a, preset) {
+    const tz = schedTz(), b = brand();
+    const st = a ? { id: a.id, name: a.name, d: a.d, build: null, cadence: { ...a.cadence, days: [...(a.cadence.days || [])] }, pf: new Set(a.pf || []), caption: { ...a.caption }, startDate: a.startDate || '', endDate: a.endDate || '', active: a.active, tz: a.tz || tz, notion: a.notion !== false }
+      : { id: null, name: preset ? preset.t : '', d: null, build: preset ? preset.build : null, cadence: preset ? { ...preset.cadence, days: [...preset.cadence.days] } : { kind: 'weekly', days: [1], time: '09:00' },
+          pf: new Set(Object.keys(PLATFORMS).filter((k) => S.platforms[k]).slice(0, 2)), caption: preset ? { ...preset.caption, mode: preset.caption.mode === 'ai' && !aiReady() ? 'fixed' : preset.caption.mode } : { mode: 'fixed', text: '' }, startDate: '', endDate: '', active: true, tz, notion: true };
+    const designs = () => [...S.designs].sort((x, y) => (liveOf(y).length ? 1 : 0) - (liveOf(x).length ? 1 : 0)).slice(0, 12);
+    const FIELDS = [['{date}', 'Date'], ['{weekday}', 'Weekday'], ['{week}', 'Week'], ['{headline}', 'Headline'], ['{price}', 'Price'], ['{website}', 'Website'], ['{hashtags}', 'Hashtags']];
+    let close = () => {}, root = null;
+    const R = (id) => root && root.querySelector('#' + id);
+    const pickDesign = () => {
+      const cur = st.d && getD(st.d);
+      return `<div class="au-ds">${st.build ? `<button class="au-d on" data-c="keepBuild" aria-pressed="true"><span class="au-dn">${ic('wand', 20)}</span><b>New: ${esc(BUILD_NAME[st.build.kind])}</b><small>Built from your Brand Kit</small></button>` : ''}
+        ${designs().map((d) => { const on = !st.build && st.d === d.id, lv = liveOf(d); return `<button class="au-d ${on ? 'on' : ''}" data-c="design" data-id="${esc(d.id)}" aria-pressed="${on}" title="${esc(d.name)}">${thumb(d.pages[0], d.ratio, 64, 76)}<b>${esc(d.name)}</b><small>${lv.length ? `${ic('chart', 11)}${esc(KIND[lv[0]] || 'Live')}` : 'Static design'}</small></button>`; }).join('')}</div>
+        ${!st.build ? `<div class="au-newd"><span>Or build a new live template:</span>${['calendar', 'news', 'price'].map((k) => `<button class="chip" data-c="build" data-k="${k}">${esc({ calendar: 'Weekly calendar', news: 'News post', price: 'Price alert' }[k])}</button>`).join('')}</div>` : `<div class="au-newd"><button class="btn link sm" data-c="useExisting">Use one of my designs instead</button></div>`}
+        ${cur && !liveOf(cur).length && !st.build ? `<p class="au-hint">${ic('alert', 13)}This design has no live data: every post will look the same.</p>` : ''}`;
+    };
+    const when = () => `<div class="seg au-seg">${[['daily', 'Every day'], ['weekdays', 'Weekdays'], ['weekly', 'Pick days']].map(([k, l]) => `<button class="${st.cadence.kind === k ? 'on' : ''}" data-c="kind" data-k="${k}" aria-pressed="${st.cadence.kind === k}">${l}</button>`).join('')}</div>
+      ${st.cadence.kind === 'weekly' ? `<div class="au-days" role="group" aria-label="Days of the week">${DAYS.map(([n, long, , s]) => { const on = st.cadence.days.includes(n); return `<button class="${on ? 'on' : ''}" data-c="day" data-n="${n}" aria-pressed="${on}" title="${long}">${s}</button>`; }).join('')}</div>` : ''}
+      <div class="au-row"><label class="au-f"><span>Time</span><input type="time" class="field" id="auTime" value="${esc(st.cadence.time)}" step="300" required></label>
+        <label class="au-f"><span>Starts</span><input type="date" class="field" id="auStart" value="${esc(st.startDate)}"></label>
+        <label class="au-f"><span>Ends</span><input type="date" class="field" id="auEnd" value="${esc(st.endDate)}"></label></div>
+      <p class="au-hint">${ic('globe', 13)}Times are in ${esc(tzLabel(st.tz))}. Change it in Settings → Export &amp; publishing.</p>`;
+    const nets = () => `<div class="au-nw">${Object.entries(PLATFORMS).map(([k, v]) => { const on = st.pf.has(k), c = S.platforms[k]; return `<button class="au-nb ${on ? 'on' : ''} ${c ? '' : 'off'}" style="--c:${v.c}" data-c="net" data-k="${k}" aria-pressed="${on}" title="${esc(v.n)}${c ? '' : ' · not connected yet'}">${ic('net_' + k, 18)}<span>${esc(v.n)}</span>${on ? ic('check', 13) : ''}</button>`; }).join('')}</div>
+      ${NOTION && NOTION.ready() ? `<div class="lv-swr au-ntsw"><span class="nt-logo sm">N</span><div class="grow"><b>Show in Notion Calendar</b><p>Each post appears in “${esc(NOTION.state().database.title)}” with its time, caption and status.</p></div>${sw(st.notion, '', 'data-c="notion"', 'Show in Notion Calendar')}</div>` : ''}
+      ${[...st.pf].some((k) => !S.platforms[k]) ? `<p class="au-hint warn">${ic('alert', 13)}Connect ${esc(listWords([...st.pf].filter((k) => !S.platforms[k]).map((k) => PLATFORMS[k].n)))} in Settings before the first post, or it will be skipped there.</p>` : ''}`;
+    const cap = () => `<div class="seg au-seg">${[['fixed', 'My caption'], ['ai', 'Written by AI']].map(([k, l]) => `<button class="${st.caption.mode === k ? 'on' : ''}" data-c="mode" data-k="${k}" aria-pressed="${st.caption.mode === k}" ${k === 'ai' && !aiReady() ? 'title="Add a Claude or Groq key in Settings → AI to use this"' : ''}>${k === 'ai' ? ic('wand', 14) : ''}${l}</button>`).join('')}</div>
+      ${st.caption.mode === 'ai' ? `<p class="au-hint">${ic('wand', 13)}${aiReady() ? `AI writes a fresh caption for every post, from what the slide shows, in ${esc(b.name)}’s voice. If it can’t, the caption below is used.` : 'No AI key yet (Settings → AI): the caption below is used until you add one.'}</p>` : ''}
+      <textarea class="field au-ta" id="auCap" rows="4" maxlength="3000" placeholder="${st.caption.mode === 'ai' ? 'Fallback caption (optional)' : 'Write the caption. Fields like {date} are filled for each post.'}">${esc(st.caption.text || '')}</textarea>
+      <div class="au-fields"><span>Insert</span>${FIELDS.map(([f, l]) => `<button class="au-fld" data-c="field" data-f="${f}" title="${esc(f)}">${l}</button>`).join('')}</div>`;
+    const summary = () => {
+      const runs = nextRuns(st.cadence, st.tz, 1, st.startDate, st.endDate), names = netNames([...st.pf]), dn = st.build ? BUILD_NAME[st.build.kind] : st.d && getD(st.d) ? getD(st.d).name : null;
+      const ok = !!dn && st.pf.size && (st.cadence.kind !== 'weekly' || st.cadence.days.length) && /^\d{2}:\d{2}$/.test(st.cadence.time);
+      return { ok, html: ok ? `<b>${esc(rhythm(st.cadence))}</b>, “${esc(dn)}” goes to ${esc(listWords(names))}.${runs[0] ? ` First post: <b>${esc(whenLabel(runs[0].date, runs[0].time))}</b>.` : ' No post in the chosen dates.'}`
+        : !dn ? 'Choose what to post.' : !st.pf.size ? 'Choose at least one network.' : 'Pick at least one day.' };
+    };
+    const sec = (n, t, body, id) => `<section class="au-sec"><h3><span>${n}</span>${t}</h3><div id="${id}">${body}</div></section>`;
+    const draw = (id, fn) => { const e = R(id); if (e) e.innerHTML = fn(); };
+    const drawSum = () => { const s = summary(), e = R('auSum'), g = R('auSave'); if (e) e.innerHTML = s.html; if (g) g.disabled = !s.ok; };
+    const html = `<div class="mh"><h2>${a ? 'Edit automation' : 'New automation'}</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb au-mb"><label class="au-f au-name-f"><span>Name</span><input class="field" id="auName" maxlength="80" value="${esc(st.name)}" placeholder="e.g. Weekly economic calendar"></label>
+        ${sec(1, 'What to post', pickDesign(), 'auDes')}${sec(2, 'When', when(), 'auWhen')}${sec(3, 'Where', nets(), 'auNets')}${sec(4, 'Caption', cap(), 'auCap0')}</div>
+      <div class="mf au-mf"><p class="au-sum" id="auSum" aria-live="polite"></p>${a ? `<button class="btn ghost au-del" data-c="del">${ic('trash', 15)}Delete</button>` : ''}<button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="auSave" data-c="save">${a ? 'Save changes' : 'Create automation'}</button></div>`;
+    close = modal(html, {
+      wide: true,
+      onMount: (bg, c) => {
+        root = bg; drawSum();
+        bg.addEventListener('input', (e) => {
+          const t = e.target;
+          if (t.id === 'auName') st.name = t.value;
+          if (t.id === 'auCap') st.caption.text = t.value;
+          if (t.id === 'auTime' && t.value) { st.cadence.time = t.value.slice(0, 5); drawSum(); }
+          if (t.id === 'auStart') { st.startDate = t.value; drawSum(); }
+          if (t.id === 'auEnd') { st.endDate = t.value; drawSum(); }
+        });
+        bg.addEventListener('click', async (e) => {
+          const el = e.target.closest('[data-c]'); if (!el || !bg.contains(el)) return; const k = el.dataset.c;
+          if (k === 'design') { st.d = el.dataset.id; st.build = null; if (!st.name) { st.name = getD(st.d).name; R('auName').value = st.name; } draw('auDes', pickDesign); }
+          else if (k === 'build') { st.build = { kind: el.dataset.k, ...(el.dataset.k === 'calendar' ? { layout: 'week', ratio: '4:5' } : el.dataset.k === 'price' ? { symbol: 'OANDA:XAUUSD' } : {}) }; if (!st.name) { st.name = BUILD_NAME[el.dataset.k]; R('auName').value = st.name; } draw('auDes', pickDesign); }
+          else if (k === 'useExisting') { st.build = null; draw('auDes', pickDesign); }
+          else if (k === 'kind') { st.cadence.kind = el.dataset.k; if (el.dataset.k === 'weekly' && !st.cadence.days.length) st.cadence.days = [1]; draw('auWhen', when); }
+          else if (k === 'day') { const n = +el.dataset.n, ds = st.cadence.days; st.cadence.days = ds.includes(n) ? ds.filter((x) => x !== n) : [...ds, n].sort(); draw('auWhen', when); }
+          else if (k === 'net') { const n = el.dataset.k; st.pf.has(n) ? st.pf.delete(n) : st.pf.add(n); draw('auNets', nets); }
+          else if (k === 'mode') { st.caption.mode = el.dataset.k; draw('auCap0', cap); }
+          else if (k === 'notion') { st.notion = !st.notion; draw('auNets', nets); }
+          else if (k === 'field') { const ta = R('auCap'), f = el.dataset.f, s0 = ta.selectionStart ?? ta.value.length, s1 = ta.selectionEnd ?? s0; ta.value = ta.value.slice(0, s0) + f + ta.value.slice(s1); st.caption.text = ta.value; ta.focus(); ta.setSelectionRange(s0 + f.length, s0 + f.length); }
+          else if (k === 'del') { c(); confirmDelete(a); return; }
+          else if (k === 'save') { await submit(el); return; }
+          drawSum();
+        });
+      },
+    });
+    async function submit(btn) {
+      if (!canEdit()) return; const s = summary(); if (!s.ok) return toast(s.html.replace(/<[^>]+>/g, ''));
+      busy(btn, true, a ? 'Saving…' : 'Creating…');
+      try {
+        if (st.build) { const d = await makeDesign(st.build); st.d = d.id; st.build = null; }
+        const body = { name: (st.name || '').trim() || getD(st.d).name, d: st.d, cadence: { kind: st.cadence.kind, days: st.cadence.kind === 'weekly' ? st.cadence.days : [], time: st.cadence.time }, pf: [...st.pf], caption: { mode: st.caption.mode, text: st.caption.text || '' }, startDate: st.startDate || '', endDate: st.endDate || '', notion: st.notion };
+        const r = a ? await api(path() + '/' + encodeURIComponent(a.id), { method: 'PATCH', body }) : await api(path(), { method: 'POST', body: { ...body, tz: st.tz } });
+        close(); await load(true); pull();
+        const n = r && r.next && r.next[0];
+        toast(a ? 'Automation saved' : `Automation created.${n ? ` First post: ${whenLabel(n.date, n.time)}` : ''}`);
+        if (!onPage()) location.hash = '#/automations';
+      } catch (e) { btn.isConnected && busy(btn, false); toast('Couldn’t save the automation: ' + e.message); }
+    }
+  }
+  function confirmDelete(a) {
+    modal(`<div class="mh"><h2>Delete “${esc(a.name)}”?</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
+      <div class="mb"><p class="sm-t">Its upcoming posts are removed from the planner. Posts already published stay where they are. The design is kept.</p></div>
+      <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn danger" id="auDelGo">Delete automation</button></div>`, {
+      onMount: (bg, close) => bg.querySelector('#auDelGo').addEventListener('click', async (e) => {
+        busy(e.currentTarget, true, 'Deleting…');
+        try { await api(path() + '/' + encodeURIComponent(a.id), { method: 'DELETE' }); close(); await load(true); pull(); toast('Automation deleted'); } catch (err) { busy(e.currentTarget, false); toast('Couldn’t delete: ' + err.message); }
+      }),
+    });
+  }
+  const byId = (id) => (mine() || []).find((x) => x.id === id);
+  Object.assign(ACT, {
+    auNew: () => { if (canEdit()) openAuto(null, null); },
+    auPreset: (el) => { if (canEdit()) openAuto(null, PRESETS.find((p) => p.k === el.dataset.k)); },
+    auEdit: (el) => { const a = byId(el.dataset.id); if (a && canEdit()) openAuto(a); },
+    auToggle: async (el) => {
+      const a = byId(el.dataset.id); if (!a || !canEdit()) return; a.active = !a.active; route();
+      try { await api(path() + '/' + encodeURIComponent(a.id), { method: 'PATCH', body: { active: a.active } }); toast(a.active ? `“${a.name}” is on` : `“${a.name}” is paused. Its upcoming posts are removed`); await load(true); pull(); }
+      catch (e) { a.active = !a.active; route(); toast('Couldn’t change it: ' + e.message); }
+    },
+    auRun: (el) => {
+      const a = byId(el.dataset.id); if (!a || !canEdit()) return;
+      modal(`<div class="mh"><h2>Post “${esc(a.name)}” now?</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
+        <div class="mb"><p class="sm-t">One post is prepared with fresh data and published to ${esc(listWords(netNames(a.pf)))} within a minute. The schedule doesn’t change.</p></div>
+        <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="auRunGo">${ic('send', 15)}Post now</button></div>`, {
+        onMount: (bg, close) => bg.querySelector('#auRunGo').addEventListener('click', async (e) => {
+          busy(e.currentTarget, true, 'Preparing…');
+          try { await api(path() + '/' + encodeURIComponent(a.id) + '/run', { method: 'POST' }); close(); toast('Prepared: it goes out within a minute'); pull(); setTimeout(() => load(true), 60_000); }
+          catch (err) { busy(e.currentTarget, false); toast('Couldn’t post it: ' + err.message); }
+        }),
+      });
+    },
+  });
+
+  /* ---------- planner: the runs are posts ---------- */
+  /** Brings the server's automation runs into the planner (and drops the ones it removed) */
+  async function pull() {
+    if (persist.readOnly) return;
+    const b = S.active, from = new Date(Date.now() - 2 * 864e5).toISOString().slice(0, 10);
+    let list; try { list = await api(`/social/brands/${encodeURIComponent(b)}/posts?from=${from}`); } catch (e) { return; }
+    if (S.active !== b || !Array.isArray(list)) return;
+    const runs = list.filter((p) => p.auto), ids = new Set(runs.map((p) => p.id)); let changed = false;
+    runs.forEach((sp) => {
+      const lp = S.posts.find((x) => x.id === sp.id);
+      if (!lp) { S.posts.push(sp); changed = true; return; }
+      ['d', 'date', 'time', 'tz', 'pf', 'cap', 'fc', 'status', 'auto', 'publish', 'media', 'autoError'].forEach((k) => { if (JSON.stringify(lp[k]) !== JSON.stringify(sp[k])) { lp[k] = sp[k]; changed = true; } });
+    });
+    for (let i = S.posts.length - 1; i >= 0; i--) { const p = S.posts[i]; if (p.auto && p.date >= from && !ids.has(p.id)) { S.posts.splice(i, 1); changed = true; } }
+    if (changed) { save(); rerender(); }
+  }
+  setTimeout(pull, 2500); setInterval(() => { if (!document.hidden) pull(); }, 60_000);
+  const r0 = route;
+  route = function () { if (onPage() && AU.brand !== S.active) { AU.list = null; load(true); } return r0.apply(this, arguments); };
+  // the repeat badge on planner cards
+  const badge = (p) => (p.auto ? `<span class="au-b" title="From the automation “${esc(p.auto.name || '')}”">${ic('refresh', 11)}</span>` : '');
+  const _pv = PAGES.planner.view;
+  PAGES.planner.view = function () {
+    const html = _pv.apply(this, arguments);
+    setTimeout(() => S.posts.filter((p) => p.auto).forEach((p) => $$(`#view [data-dragpost="${CSS.escape(p.id)}"]`).forEach((el) => { if (!el.querySelector('.au-b')) { const t = el.querySelector('.cp-b > b, .pc7h b, .t, b'); t && t.insertAdjacentHTML('afterend', badge(p)); } })), 0);
+    return html;
+  };
+  // an automation's post: open its automation, or skip this one
+  const _edit = ACT.pedit, _del = ACT.pdel;
+  ACT.pedit = (el) => {
+    const p = S.posts.find((x) => x.id === el.dataset.id);
+    if (!p || !p.auto || p.status !== 'Scheduled') return _edit(el);
+    const d = getD(p.d);
+    modal(`<div class="mh"><h2>${esc(p.auto.name || 'Automation')}</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
+      <div class="mb"><div class="au-run">${d ? thumb(d.pages[0], d.ratio, 84, 100) : ''}<div><p class="sm-t"><b>${esc(whenLabel(p.date, p.time))}</b></p><p class="sm-t muted">This post comes from an automation. It’s filled with fresh data and published on its own${p.media && p.media.count ? '' : ', about 10 minutes before it goes out it gets its final slides and caption'}.</p>${p.autoError ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(p.autoError)}</span></p>` : ''}</div></div></div>
+      <div class="mf"><button class="btn ghost" id="auSkip">${ic('minus', 15)}Skip this post</button><span class="grow"></span><button class="btn secondary" id="auDes">Open the design</button><button class="btn primary" id="auOpen">Edit the automation</button></div>`, {
+      onMount: (bg, close) => {
+        bg.querySelector('#auOpen').addEventListener('click', async () => { close(); location.hash = '#/automations'; await load(true); const a = byId(p.auto.id); a && openAuto(a); });
+        bg.querySelector('#auDes').addEventListener('click', () => { close(); location.hash = '#/editor/' + p.d; });
+        bg.querySelector('#auSkip').addEventListener('click', (e) => { close(); skip(p); });
+      },
+    });
+  };
+  async function skip(p) {
+    if (!canEdit()) return;
+    try { await api(path() + '/' + encodeURIComponent(p.auto.id) + '/skip', { method: 'POST', body: { date: p.date } }); const i = S.posts.indexOf(p); if (i >= 0) S.posts.splice(i, 1); save(); rerender(); toast(`Skipped the ${whenLabel(p.date, p.time)} post. The automation goes on.`); load(true); }
+    catch (e) { toast('Couldn’t skip it: ' + e.message); }
+  }
+  ACT.pdel = (el) => { const p = S.posts.find((x) => x.id === el.dataset.id); if (p && p.auto && p.status === 'Scheduled') return skip(p); return _del(el); };
+}
+
+/* ============ v27 · Notion Calendar: the schedule as a Notion database ============ */
+/* Settings → Notion Calendar connects an internal integration, then picks or creates the calendar
+   database. The API keeps one Notion page per automation post (or per scheduled post): date and time,
+   status, networks, caption and link; Notion Calendar shows the database next to the other calendars. */
+{
+  const NT = { st: null, loading: null, targets: null, q: '', tLoading: false };
+  const NOTION_NEW = 'https://www.notion.so/profile/integrations';
+  const isAdmin = () => user.role === 'admin';
+  function load(force) {
+    if (NT.loading && !force) return NT.loading;
+    NT.loading = api('/social/notion').then((r) => { NT.st = r; }).catch(() => { NT.st = NT.st || { connected: false }; })
+      .then(() => { NT.loading = null; if (/^#\/settings/.test(location.hash) && S.set.sec === 'notion') rerender(); if (/^#\/automations/.test(location.hash)) route(); });
+    return NT.loading;
+  }
+  NOTION = { state: () => NT.st, load, ready: () => !!(NT.st && NT.st.connected && NT.st.database) };
+  async function findTargets() {
+    NT.tLoading = true; rerender();
+    try { NT.targets = await api('/social/notion/targets?' + new URLSearchParams({ q: NT.q })); } catch (e) { toast(e.message); NT.targets = []; }
+    NT.tLoading = false; rerender();
+  }
+  const ago = (iso) => { const m = Math.round((Date.now() - Date.parse(iso)) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : fmt(new Date(iso), { day: 'numeric', month: 'short' }); };
+  SETS.splice(SETS.findIndex((x) => x[0] === 'export'), 0, ['notion', 'Notion Calendar', 'cal']);
+  SP.notion = () => {
+    const st = NT.st; if (!st) { load(); return phead('Notion Calendar', 'Loading…') + '<div class="skel" style="height:120px;border-radius:14px"></div>'; }
+    const head = phead('Notion Calendar', 'See your automations in Notion Calendar: every post becomes an event in a Notion database, with its time, networks, caption and status.', sbadge(st.connected && st.database, 'Syncing', st.connected ? 'Choose a database' : 'Not connected'));
+    if (!st.connected) {
+      if (!isAdmin()) return head + `<div class="note">${ic('lock', 16)}<span>An admin can connect Notion here.</span></div>`;
+      return head + `<div class="nt-card"><ol class="nt-steps">
+        <li><b>Create an integration</b><span>In Notion, open <a href="${NOTION_NEW}" target="_blank" rel="noopener">Integrations</a> → <i>New integration</i>, choose your workspace and type <i>Internal</i>. Copy its <i>Internal Integration Secret</i>.</span></li>
+        <li><b>Paste it here</b><span><span class="nt-tok"><input class="field" id="ntTok" type="password" autocomplete="off" spellcheck="false" placeholder="ntn_…"><button class="btn primary" data-act="ntConnect">Connect</button></span></span></li>
+        <li><b>Share a page with it</b><span>In Notion, open the page that should hold the calendar → <i>•••</i> → <i>Connections</i> → add your integration.</span></li></ol>
+        <p class="hint">${ic('lock', 13)} The secret is stored encrypted on the server. Boğa only sees the pages you share with the integration.</p></div>`;
+    }
+    const who = `<div class="nt-who"><span class="nt-logo">N</span><div class="grow"><b>${esc(st.workspace || 'Notion workspace')}</b><small>Connected as “${esc(st.bot)}”${st.connectedAt ? ' · ' + esc(fmt(new Date(st.connectedAt), { day: 'numeric', month: 'short', year: 'numeric' })) : ''}</small></div>${isAdmin() ? '<button class="btn ghost sm" data-act="ntDisconnect">Disconnect</button>' : ''}</div>`;
+    if (!st.database || NT.picking) {
+      if (!isAdmin()) return head + who + `<div class="note">${ic('alert', 16)}<span>An admin still has to choose the calendar database.</span></div>`;
+      if (NT.targets == null && !NT.tLoading) findTargets();
+      const rows = (NT.targets || []).map((t) => `<div class="nt-t"><span class="nt-ti">${t.icon ? esc(t.icon) : t.type === 'database' ? ic('grid', 16) : ic('doc', 16)}</span><div class="grow"><b>${esc(t.title)}</b><small>${t.type === 'database' ? 'Database' : 'Page'}</small></div>
+        ${t.type === 'database' ? `<button class="btn secondary sm" data-act="ntUse" data-id="${esc(t.id)}">Use this database</button>` : `<button class="btn primary sm" data-act="ntCreate" data-id="${esc(t.id)}">${ic('plus', 14)}Create the calendar here</button>`}</div>`).join('');
+      return head + who + `<div class="nt-card"><h3>Where should the calendar live?</h3><p class="sm-t muted">Create a new “Social calendar” database inside a page, or use a database you already have (the missing columns are added).</p>
+        <div class="nt-search"><input class="field" id="ntQ" placeholder="Search your shared pages…" value="${esc(NT.q)}"><button class="btn secondary" data-act="ntFind">${ic('refresh', 15)}Search</button></div>
+        <div class="nt-list">${NT.tLoading ? '<div class="skel" style="height:44px"></div><div class="skel" style="height:44px"></div>' : rows || `<p class="lv-empty">Nothing is shared with “${esc(st.bot)}” yet. In Notion, open a page → ••• → Connections → add it, then search again.</p>`}</div>
+        ${st.database ? '<button class="btn link sm" data-act="ntCancelPick">Keep the current database</button>' : ''}</div>`;
+    }
+    const db = st.database;
+    return head + who + `<div class="nt-card nt-db"><span class="nt-cal">${ic('cal', 22)}</span><div class="grow"><b>${esc(db.title)}</b><small>${st.lastSync ? `${st.synced} post${st.synced === 1 ? '' : 's'} synced · ${esc(ago(st.lastSync))}` : 'First sync in a moment…'}</small>
+        ${st.error ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(st.error)}</span></p>` : ''}</div>
+        <a class="btn secondary sm" href="${esc(db.url)}" target="_blank" rel="noopener">${ic('ext', 14)}Open in Notion</a></div>
+      <div class="nt-card"><h3>What goes to Notion Calendar</h3>
+        <div class="seg nt-seg">${[['auto', 'Automation posts'], ['all', 'Every scheduled post']].map(([k, l]) => `<button class="${st.scope === k ? 'on' : ''}" data-act="ntScope" data-k="${k}" ${isAdmin() ? '' : 'disabled'}>${l}</button>`).join('')}</div>
+        <p class="hint">Each automation also has its own “Show in Notion Calendar” switch. Posts update when their time, status or caption change; skipped or deleted posts are archived.</p>
+        <div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn secondary sm" data-act="ntSync">${ic('refresh', 14)}Sync now</button>${isAdmin() ? '<button class="btn ghost sm" data-act="ntPick">Use another database</button>' : ''}</div></div>` +
+      how(['Open <b>Notion Calendar</b> (calendar.notion.so or the app).', `In the left sidebar, under your Notion workspace, add the <b>${esc(db.title)}</b> database.`, 'Automation posts show up with their time; click one to see its caption, status and link.']).replace('How to connect', 'See it in Notion Calendar');
+  };
+  Object.assign(ACT, {
+    ntConnect: async (a) => {
+      const t = ($('#ntTok') || {}).value || ''; if (!t.trim()) return toast('Paste the integration secret first');
+      busy(a, true, 'Checking…');
+      try { NT.st = await api('/social/notion/token', { method: 'PUT', body: { token: t.trim() } }); NT.targets = null; rerender(); toast(`Connected to ${NT.st.workspace || 'Notion'}`); }
+      catch (e) { busy(a, false); toast(e.message); }
+    },
+    ntFind: () => { NT.q = ($('#ntQ') || {}).value || ''; findTargets(); },
+    ntCreate: async (a) => { busy(a, true, 'Creating…'); try { NT.st = await api('/social/notion/setup', { method: 'POST', body: { pageId: a.dataset.id } }); NT.picking = false; rerender(); toast('Calendar database created in Notion. Your automation posts are on their way.'); setTimeout(() => load(true), 6000); } catch (e) { busy(a, false); toast(e.message); } },
+    ntUse: async (a) => { busy(a, true, 'Preparing…'); try { NT.st = await api('/social/notion/setup', { method: 'POST', body: { databaseId: a.dataset.id } }); NT.picking = false; rerender(); toast('Using this database. Your automation posts are on their way.'); setTimeout(() => load(true), 6000); } catch (e) { busy(a, false); toast(e.message); } },
+    ntPick: () => { NT.picking = true; NT.targets = null; rerender(); },
+    ntCancelPick: () => { NT.picking = false; rerender(); },
+    ntScope: async (a) => { try { NT.st = await api('/social/notion/options', { method: 'PATCH', body: { scope: a.dataset.k } }); rerender(); setTimeout(() => load(true), 6000); } catch (e) { toast(e.message); } },
+    ntSync: async (a) => { busy(a, true, 'Syncing…'); try { NT.st = await api('/social/notion/sync', { method: 'POST' }); rerender(); toast('Notion Calendar is up to date'); } catch (e) { busy(a, false); toast(e.message); load(true); } },
+    ntDisconnect: () => modal(`<div class="mh"><h2>Disconnect Notion?</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
+      <div class="mb"><p class="sm-t">Posts stop syncing to Notion Calendar. The database and its pages stay in Notion.</p></div>
+      <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn danger" id="ntOff">Disconnect</button></div>`, {
+      onMount: (bg, close) => bg.querySelector('#ntOff').addEventListener('click', async (e) => { busy(e.currentTarget, true, '…'); try { await api('/social/notion', { method: 'DELETE' }); NT.st = { connected: false }; NT.targets = null; close(); rerender(); toast('Notion disconnected'); } catch (err) { busy(e.currentTarget, false); toast(err.message); } }),
+    }),
+    ntGo: () => { S.set.sec = 'notion'; save(); location.hash = '#/settings'; },
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target && e.target.id === 'ntQ') ACT.ntFind(); if (e.key === 'Enter' && e.target && e.target.id === 'ntTok') ACT.ntConnect($('[data-act="ntConnect"]')); });
+  setTimeout(() => load(), 3000);
+}
+
 /* ============ headless: slides rendered by the API (live posts with no studio tab open) ============ */
 /* The server opens /social-media/render in a headless browser, boots this engine with that post's brand,
    design and settings, and calls renderPost: the same live data mapping and the same export renderer as
@@ -6998,7 +7423,9 @@ if (headless) {
       await fontsFor(d);
       const live = LIVE ? await LIVE.forPost(d, post) : d;
       await fontsFor(live); // Arabic events may switch a text to the brand's Arabic font
-      return { images: await PUB.renderPages(live), live: live.liveUsed || [] };
+      // the slides' texts as rendered (top to bottom), for captions written on the server
+      const texts = live.pages.flatMap((pg) => pg.layers.filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim()).sort((a, b) => a.y - b.y || a.x - b.x).map((l) => String(l.text).trim().slice(0, 400))).slice(0, 80);
+      return { images: await PUB.renderPages(live), live: live.liveUsed || [], texts };
     },
   });
 }

@@ -24,6 +24,11 @@ import { CalendarController } from "./calendar/calendar.controller";
 import { CalendarService } from "./calendar/calendar.service";
 import { BrandGuideController } from "./brand-guide/guide.controller";
 import { MarketsController } from "./markets/markets.controller";
+import { AutomationsController } from "./automations/automations.controller";
+import { AutomationsService } from "./automations/automations.service";
+import { NotionController } from "./notion/notion.controller";
+import { NotionService, SocialNotionPage, SocialNotionPageSchema } from "./notion/notion.service";
+import { SocialAutomation, SocialAutomationSchema } from "./schemas/automation.schema";
 import { MarketsService } from "./markets/markets.service";
 
 /** Social Media workspace: brands, designs, posts, settings, connected accounts, publishing and Figma import (collections prefixed social_). */
@@ -40,9 +45,11 @@ import { MarketsService } from "./markets/markets.service";
       { name: SocialOAuthState.name, schema: SocialOAuthStateSchema },
       { name: SocialMedia.name, schema: SocialMediaSchema },
       { name: SocialIntegration.name, schema: SocialIntegrationSchema },
+      { name: SocialAutomation.name, schema: SocialAutomationSchema },
+      { name: SocialNotionPage.name, schema: SocialNotionPageSchema },
     ]),
   ],
-  controllers: [SocialWorkspaceController, SocialBrandsController, PublishingController, FigmaController, CalendarController, MarketsController, BrandGuideController],
-  providers: [WorkspaceService, BrandsService, ConnectionsService, PublisherService, PublishScheduler, LiveRenderService, FigmaService, CalendarService, MarketsService],
+  controllers: [SocialWorkspaceController, SocialBrandsController, PublishingController, FigmaController, CalendarController, MarketsController, AutomationsController, NotionController, BrandGuideController],
+  providers: [WorkspaceService, BrandsService, ConnectionsService, PublisherService, PublishScheduler, LiveRenderService, FigmaService, CalendarService, MarketsService, AutomationsService, NotionService],
 })
 export class SocialModule {}

@@ -87,6 +87,17 @@ export class PublisherService {
     await this.posts.updateOne({ brandId, id: postId }, { $set: { media } });
   }
 
+  /** An automation's post rendered by the server: its slides and caption, ready for the scheduler */
+  async arm(brandId: string, postId: string, images: string[], live: Record<string, unknown>, caption: string) {
+    if (!images.length) throw new BadRequestException("No images");
+    const post = await this.posts.findOne({ brandId, id: postId }).select("publish status").lean<Record<string, any>>();
+    if (!post) throw new NotFoundException("Post not found");
+    const saved = await this.store(brandId, postId, images);
+    const media = { ids: saved.map((d) => String(d._id)), hash: "auto", count: saved.length, at: new Date(), live };
+    const pub = post.publish || { state: "idle", results: {}, attempts: 0 };
+    await this.posts.updateOne({ brandId, id: postId }, { $set: { media, cap: caption, hash: "", publish: { ...pub, state: "pending", attempts: 0, nextTry: null } } });
+  }
+
   async state(brandId: string, postId: string) {
     const p = await this.posts.findOne({ brandId, id: postId }).select("id status publish media").lean<Record<string, any>>();
     if (!p) throw new NotFoundException("Post not found");
