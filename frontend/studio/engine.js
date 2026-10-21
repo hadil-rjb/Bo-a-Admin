@@ -633,34 +633,32 @@ document.addEventListener('drop', (e) => {
 });
 
 /* ---------- Studio (design hub) ---------- */
-const ST = { tab: 0, cat: 'All', q: '' };
+const ST = { tab: 0, q: '' };
 PAGES.studio = {
   t: 'Studio', s: 'Design posts for every platform, or bring them in from Figma.',
   actions: () => `<button class="btn secondary" data-act="figma">${ic('figma')}<span class="hide-sm">Import from Figma</span></button><button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
   view: () => {
     const tile = (r, n, s, w, h, sl) => `<button class="tile" data-act="newDesign" data-ratio="${r}" data-slides="${sl || 1}"><span class="shape"><i style="width:${w}px;height:${h}px"></i></span><span><b>${n}</b><small>${s}</small></span></button>`;
-    const tabs = ['All designs', 'Templates', 'Figma imports'];
-    let body = '';
-    if (ST.tab === 0) { const l = S.designs.filter((d) => d.name.toLowerCase().includes(ST.q.toLowerCase())); body = l.length ? `<div class="cards">${l.map((d) => designCard(d)).join('')}</div>` : `<div class="empty">${ic('search', 28)}<p>No design matches “${esc(ST.q)}”.</p></div>`; }
-    if (ST.tab === 1) {
-      const bt = brand().templates, cats = ['All', ...new Set(Object.values(TPL).filter((t) => t.cat !== 'Basics').map((t) => t.cat))];
-      body = `<div><b style="font:600 16px var(--jak)">${esc(brand().name)} templates</b><p class="xs-t muted">Saved from your designs. Only this brand can see them.</p></div>
-      ${bt.length ? `<div class="cards">${bt.map((t) => `<div class="card tp"><button class="pv" data-act="fromBTpl" data-id="${t.id}" style="border:0">${btThumb(t, 170, 200)}<span class="badge b-Approved">Brand</span></button><div class="meta"><b>${esc(t.name)}</b><small>${t.ratio}</small></div></div>`).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No ${esc(brand().name)} templates yet.<br>Open a design and choose “Save slide as brand template”.</p></div>`}
-      <div><b style="font:600 16px var(--jak)">Starter templates</b><p class="xs-t muted">Recolored with ${esc(brand().name)}’s colors and fonts.</p></div>
-      <div class="chips">${cats.map((c) => `<button class="chip ${ST.cat === c ? 'on' : ''}" data-act="cat" data-c="${c}">${c}</button>`).join('')}</div><div class="cards">${Object.entries(TPL).filter(([, t]) => t.cat !== 'Basics' && (ST.cat === 'All' || t.cat === ST.cat)).map(([k, t]) => `<button class="card tp" data-act="fromTpl" data-tpl="${k}"><div class="pv">${tplThumb(k, '4:5', 170, 200)}${t.live ? '<span class="badge b-Scheduled">Live data</span>' : ''}</div><div class="meta"><b>${t.name}</b><small>${t.cat}</small></div></button>`).join('')}</div>`;
-    }
-    if (ST.tab === 2) {
-      const fg = S.designs.filter((d) => d.source === 'Figma');
-      body = `<div class="widget row" style="gap:16px;flex-wrap:wrap"><span class="thumbbox" style="width:48px;height:48px;color:var(--text-2)">${ic('figma', 26)}</span><div class="grow"><b>${FIG.status && FIG.status.connected ? 'Figma connected' + (FIG.status.user && FIG.status.user.handle ? ' as ' + esc(FIG.status.user.handle) : '') : 'Figma not connected'}</b><p class="sm-t muted">${FIG.status && FIG.status.defaultFile ? esc(FIG.status.defaultFile.name) + ' · default file · ' : ''}${fg.length} design${fg.length === 1 ? '' : 's'} linked. Changes in Figma can be pulled into the Studio with Re-sync.</p></div>${FIG.status && !FIG.status.connected ? `<button class="btn secondary" data-act="figConnect">${ic('figma')}Connect Figma</button>` : ''}<button class="btn secondary" data-act="figma">${ic('plus')}Import frames</button></div>
-      <div class="cards">${fg.map((d) => designCard(d, `<span class="row" style="margin-top:6px;gap:6px"><span class="badge ${d.figma.sync === 'In sync' ? 'b-Published' : 'b-warn'}">${d.figma.sync}</span></span>`)).join('')}</div>`;
-    }
+    // two libraries: the brand's designs and the templates saved from them (in All brands, every brand's)
+    const q = ST.q.trim().toLowerCase(), hit = (n) => !q || String(n || '').toLowerCase().includes(q);
+    const tpls = (allOn() ? S.brands : [brand()]).flatMap((b) => (b.templates || []).map((t) => ({ t, b })));
+    const ds = S.designs.filter((d) => hit(d.name)), ts = tpls.filter((x) => hit(x.t.name));
+    const none = (icon, title, text, cta) => `<div class="lib-empty">${ic(icon, 24)}<b>${title}</b><p>${text}</p>${cta || ''}</div>`;
+    const miss = () => none('search', 'No results', `Nothing matches “${esc(ST.q.trim())}”.`, `<button class="btn secondary sm" data-act="stClear">Clear search</button>`);
+    const tplCard = ({ t, b }) => `<div class="card tp"${allOn() ? ` data-brand="${b.id}"` : ''}><button class="pv" data-act="fromBTpl" data-id="${t.id}" aria-label="New design from ${esc(t.name)}">${allOn() ? `<span class="bmark" title="${esc(b.name)}">${brandAv(b, 'xs')}</span>` : ''}${btThumb(t, 190, 215)}</button><div class="meta"><b>${esc(t.name)}</b><small>${ratioLabel(t.ratio)}${allOn() ? ' · ' + esc(b.name) : ''}</small></div></div>`;
+    let body;
+    if (ST.tab === 1) body = ts.length ? `<div class="cards">${ts.map(tplCard).join('')}</div>` : q && tpls.length ? miss()
+      : none('layout', 'No templates yet', 'Open a design and choose “Save slide as brand template” to reuse its layout here.', S.designs.length ? '' : `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
+    else body = ds.length ? `<div class="cards">${ds.map((d) => designCard(d)).join('')}</div>` : q && S.designs.length ? miss()
+      : none('image', 'No designs yet', 'Pick a format above to start, or import frames from Figma.', `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
+    const tab = (i, l, n) => `<button class="${ST.tab === i ? 'on' : ''}" data-act="stab" data-i="${i}" role="tab" aria-selected="${ST.tab === i}">${l}<span class="lib-n">${n}</span></button>`;
     return `<div class="tiles">${tile('1:1', 'Square post', '1080 × 1080', 26, 26)}${tile('4:5', 'Portrait post', '1080 × 1350', 22, 28)}${tile('9:16', 'Story / Reel', '1080 × 1920', 18, 32)}${tile('4:5', 'Carousel', '3 slides · 4:5', 22, 28, 3)}</div>
-    <div class="row sp" style="flex-wrap:wrap;gap:12px"><div class="tabs" style="min-width:300px">${tabs.map((t, i) => `<button class="${ST.tab === i ? 'on' : ''}" data-act="stab" data-i="${i}">${t}</button>`).join('')}</div>
-      <input class="field" id="stq" placeholder="Search designs" style="max-width:260px;${ST.tab === 0 ? '' : 'visibility:hidden'}" value="${esc(ST.q)}"></div>${body}`;
+    <div class="lib-bar"><div class="tabs lib-tabs" role="tablist">${tab(0, 'Designs', S.designs.length)}${tab(1, 'Templates', tpls.length)}</div>
+      <label class="lib-q">${ic('search', 16)}<input id="stq" type="search" placeholder="Search ${ST.tab === 1 ? 'templates' : 'designs'}" value="${esc(ST.q)}" aria-label="Search ${ST.tab === 1 ? 'templates' : 'designs'}"></label></div>${body}`;
   },
 };
 ACT.stab = (a) => { ST.tab = +a.dataset.i; route(); };
-ACT.cat = (a) => { ST.cat = a.dataset.c; route(); };
+ACT.stClear = () => { ST.q = ''; route(); $('#stq') && $('#stq').focus(); };
 document.addEventListener('input', (e) => { if (e.target.id === 'stq') { ST.q = e.target.value; const p = e.target.selectionStart; route(); const n = $('#stq'); n.focus(); n.setSelectionRange(p, p); } });
 
 /* ---------- Brand kit (one per brand workspace) ---------- */
@@ -719,7 +717,7 @@ const BKP = {
   },
   tpl: () => {
     const b = brand();
-    return `<div class="phead"><div><h2>${esc(b.name)} templates</h2><p>Reusable layouts saved from your designs. Only this brand sees them.</p></div><a class="btn secondary sm" href="#/studio" data-act="goTemplates">Starter templates</a></div>
+    return `<div class="phead"><div><h2>${esc(b.name)} templates</h2><p>Reusable layouts saved from your designs. Only this brand sees them.</p></div><a class="btn secondary sm" href="#/studio" data-act="goTemplates">Open in Studio</a></div>
       ${b.templates.length ? `<div class="cards">${b.templates.map((t) => `<div class="card tp"><button class="pv" data-act="fromBTpl" data-id="${t.id}" style="border:0">${btThumb(t, 170, 200)}</button><div class="meta"><b>${esc(t.name)}</b><small>${t.ratio}</small><div class="row" style="margin-top:8px;gap:4px"><button class="btn secondary sm grow" data-act="fromBTpl" data-id="${t.id}">Use</button>${persist.readOnly ? '' : `<button class="btn ghost icon sm" data-act="rnBTpl" data-id="${t.id}" title="Rename" aria-label="Rename ${esc(t.name)}">${ic('type', 16)}</button><button class="btn ghost icon sm" data-act="delBTpl" data-id="${t.id}" title="Delete" aria-label="Delete ${esc(t.name)}">${ic('trash', 16)}</button>`}</div></div></div>`).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No templates yet.<br>Open any design in the editor and choose “Save slide as brand template”.</p></div>`}`;
   },
   set: () => {
@@ -855,7 +853,7 @@ function openAddBrand() {
         if (!name) { err.textContent = 'Give your brand a name.'; err.hidden = false; $('#nbName', bg).focus(); return; }
         if (S.brands.some((b) => b.name.toLowerCase() === name.toLowerCase())) { err.textContent = 'You already have a brand with this name.'; err.hidden = false; return; }
         const b = makeBrand({ name, industry: $('#nbInd', bg).value.trim(), website: $('#nbWeb', bg).value.trim(), color: $('#nbCol', bg).value, colorTouched: touched, from: $('#nbFrom', bg).value });
-        close(); S.active = b.id; save(); BK.tab = 'info'; ST.q = ''; ST.tab = 0; ST.cat = 'All'; renderSide(); toast('“' + b.name + '” workspace created');
+        close(); S.active = b.id; save(); BK.tab = 'info'; ST.q = ''; ST.tab = 0; renderSide(); toast('“' + b.name + '” workspace created');
         location.hash === '#/brand' ? route() : (location.hash = '#/brand');
       };
       $('#nbGo', bg).addEventListener('click', go);
@@ -1008,7 +1006,7 @@ function openGuideImport(file) {
       logos: st.logos.filter((l) => l.on).map((l) => ({ id: 'l' + uid(), name: l.name.slice(0, 40), kind: l.kind, src: l.src })),
     });
     if (cols.length) b.colors = mkColors(cols.map((c) => [c.name, c.hex]));
-    closeAll(); S.active = b.id; save(); BK.tab = 'info'; ST.q = ''; ST.tab = 0; ST.cat = 'All'; renderSide(); toast('“' + b.name + '” created from its brand guide');
+    closeAll(); S.active = b.id; save(); BK.tab = 'info'; ST.q = ''; ST.tab = 0; renderSide(); toast('“' + b.name + '” created from its brand guide');
     location.hash === '#/brand' ? route() : (location.hash = '#/brand');
   };
   const closeAll = modal(view(), { wide: true, onClose: () => { alive = false; }, onMount: (bg) => {
@@ -1031,7 +1029,7 @@ Object.assign(ACT, {
     const wasAll = allOn(); if (S.set) S.set.allBrands = false;
     const b0 = S.brands.find((x) => x.id === a.dataset.id); if (b0) b0.lastUsed = Date.now();
     closeModals(); if (a.dataset.id === S.active && !wasAll) { closeDrawer(); return; }
-    S.active = a.dataset.id; save(); ST.q = ''; ST.tab = 0; ST.cat = 'All'; P.tray = 'designs'; renderSide(); route(); toast('Switched to ' + brand().name);
+    S.active = a.dataset.id; save(); ST.q = ''; ST.tab = 0; P.tray = 'designs'; renderSide(); route(); toast('Switched to ' + brand().name);
   },
   addBrand: () => { closeModals(); closeDrawer(); openAddBrand(); },
   allBrands: () => { closeModals(); closeDrawer(); S.set.allBrands = true; save(); renderSide(); if (/^#\/(brand|settings|profile|editor)/.test(location.hash)) location.hash = '#/overview'; else route(); toast('All brands in one workspace'); },
@@ -1597,7 +1595,7 @@ function openFigma({ into = false, pickDefault = false } = {}) {
         } else {
           const ds = ok.map((x) => createDesign({ name: x.name.replace(' / ', ' · '), ratio: x.ratio, source: 'Figma', mutate: (d) => { d.pages = [page(x)]; d.figma = meta(x); } }));
           toast(ds.length + ' design' + (ds.length > 1 ? 's' : '') + ' imported from Figma');
-          go = () => { if (ds.length === 1) location.hash = '#/editor/' + ds[0].id; else { ST.tab = 2; location.hash = '#/studio'; route(); } };
+          go = () => { if (ds.length === 1) location.hash = '#/editor/' + ds[0].id; else { ST.tab = 0; location.hash = '#/studio'; route(); } };
           st.open = { many: ds.length > 1 };
         }
         save(); st.busy = false;
