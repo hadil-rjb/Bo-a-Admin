@@ -303,7 +303,8 @@ function brandAv(b, size) {
 }
 /** "All brands" mode (Settings: S.set.allBrands): overview, planner and studio show every brand together */
 const allOn = () => !!(S.set && S.set.allBrands) && S.brands.length > 1;
-const allAv = (size) => `<span class="bav ${size || 'md'} all" aria-hidden="true">${S.brands.slice(0, 3).map((b) => brandAv(b, 'xs')).join('')}</span>`;
+/** "All brands" avatar: the first brands side by side, overlapping, and "+N" for the others */
+const allAv = (size) => `<span class="bgrp ${size || 'md'}" aria-hidden="true">${S.brands.slice(0, 3).map((b) => brandAv(b, 'xs')).join('')}${S.brands.length > 3 ? `<span class="bgrp-n">+${S.brands.length - 3}</span>` : ''}</span>`;
 const wsBtn = () => allOn() ? `${allAv('md')}<span class="t"><b>All brands</b><small>${S.brands.length} brands · Social Media Admin</small></span>${ic('chevD', 16)}` : `${brandAv(brand(), 'md')}<span class="t"><b>${esc(brand().name)}</b><small>Social Media Admin</small></span>${ic('chevD', 16)}`;
 const pillHTML = () => allOn() ? `${allAv('sm')}<span class="hide-sm">All brands</span>${ic('chevD', 16)}` : `${brandAv(brand(), 'sm')}<span class="hide-sm">${esc(brand().name)}</span>${ic('chevD', 16)}`;
 function refreshChrome() { const w = $('.ws-btn'); if (w) w.innerHTML = wsBtn(); const p = $('.bpill'); if (p) p.innerHTML = pillHTML(); }
@@ -731,7 +732,7 @@ const BKP = {
 };
 PAGES.brand = {
   t: 'Brand kit', get s() { return 'Colors, fonts, logos and templates for ' + brand().name + '. Nothing here is shared with your other brands.'; },
-  actions: () => `<button class="btn secondary hide-sm" data-act="manageBrands">${ic('layers')}All brands</button><button class="btn primary" data-act="addBrand">${ic('plus')}New brand</button>`,
+  actions: () => `<button class="btn secondary hide-sm" data-act="manageBrands">${ic('layers')}Manage brands</button><button class="btn primary" data-act="addBrand">${ic('plus')}New brand</button>`,
   view: () => {
     const b = brand(), it = setupItems(), done = it.filter((x) => x.d).length;
     return `<div class="widget"><div class="bk-head"><button class="br-av lg" data-act="brandPhoto" data-id="${b.id}" title="Change the brand photo" aria-label="Change ${esc(b.name)}’s photo">${brandAv(b, 'lg')}<span class="br-cam">${ic('image', 13)}</span></button><div class="grow"><h2 id="bkName" style="font:600 20px/1.3 var(--jak)">${esc(b.name)}</h2><p class="sm-t muted">${esc([b.industry, b.website].filter(Boolean).join(' · ') || 'Add your brand details below')}</p></div><span class="badge ${done === it.length ? 'b-Published' : 'b-warn'}">${done === it.length ? 'Brand kit complete' : done + ' of ' + it.length + ' set up'}</span></div></div>
@@ -6095,7 +6096,10 @@ if (headless) {
   const ask = (name, title) => { const f = ACT[name]; if (!f) return; ACT[name] = (a, e) => { if (!allOn() || (a && a.closest && a.closest('[data-brand]'))) return f(a, e); pickBrand(title, () => f(a, e)); }; };
   ask('newDesign', 'New design for which brand?'); ask('fromTpl', 'Design it for which brand?'); ask('pnew', 'New post for which brand?'); ask('figma', 'Import from Figma into which brand?');
   // pages that belong to one brand say which one
-  ['brand', 'settings'].forEach((page) => { const P0 = PAGES[page]; if (!P0) return; const v = P0.view; P0.view = () => (allOn() ? `<div class="note">${ic('layers', 16)}<span>All brands view: this is <b>${esc(brand().name)}</b>. <button class="btn link sm" data-act="manageBrands">Choose another brand</button></span></div>` : '') + v(); });
+  // pages that belong to one brand: brand tabs to choose which brand they show, without leaving All brands
+  const brandTabs = (page) => `<div class="ab-tabs" role="tablist" aria-label="Brand">${S.brands.map((b) => `<button role="tab" aria-selected="${b.id === S.active}" class="ab-tab ${b.id === S.active ? 'on' : ''}" data-act="kitBrand" data-id="${b.id}">${brandAv(b, 'sm')}<span>${esc(b.name)}</span></button>`).join('')}<span class="ab-tabs-h">${page === 'settings' ? 'Settings of the selected brand' : 'Brand kit of the selected brand'}</span></div>`;
+  ['brand', 'settings'].forEach((page) => { const P0 = PAGES[page]; if (!P0) return; const v = P0.view; P0.view = () => (allOn() ? brandTabs(page) : '') + v(); });
+  ACT.kitBrand = (a) => { if (a.dataset.id === S.active) return; S.active = a.dataset.id; save(); route(); };
 }
 
 /* ============ first paint, with every renderer installed ============ */
