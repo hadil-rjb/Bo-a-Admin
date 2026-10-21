@@ -5810,9 +5810,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     <p class="lv-hint">Designing in Figma? Import it from the <button class="btn link sm lv-inl" data-act="edTab" data-k="figma">Figma tab</button>, then come back. You can also drop a file on this panel.</p>`;
   function unboundSlide(d, i) {
     const r = peek.get(pageSig(d.pages[i])), found = r && !(r instanceof Promise) ? r : null; if (!found) peekPage(d, i);
+    const feed = found && !found.isCalendar && FEEDS ? FEEDS.detect(d.pages[i]) : null;
     const card = !found ? '<div class="lv-card"><div class="skel" style="height:14px;width:55%"></div><div class="skel" style="height:12px;width:85%;margin-top:10px"></div></div>'
       : found.isCalendar ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>${found.layout === 'week' ? 'Weekly calendar found' : 'Calendar design found'}</b><p>${found.layout === 'week' ? 'Day blocks with event lists. We keep your design and fill the whole week.' : `${found.rows.length} rows. We keep your design and make its text live.`}</p></div></div>`
-        : `<div class="lv-card"><span class="lv-ic muted">${ic('chart', 16)}</span><div><b>No calendar found yet</b><p>Claude can still look for one, or build a template from your Brand Kit.</p></div></div>`;
+        : feed ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>${feed.kind === 'price' ? 'Price alert found' : 'News post found'}</b><p>We keep your design and make its ${esc(feed.found.join(', '))} live${feed.kind === 'news' ? ' with the latest headline' : ' with the market price'}.</p></div></div>`
+        : `<div class="lv-card"><span class="lv-ic muted">${ic('chart', 16)}</span><div><b>No live layout found yet</b><p>Claude can still look for a calendar, or build a calendar, price alert or news template from your Brand Kit.</p></div></div>`;
     return `${card}<div class="lv-cta"><button class="btn primary lv-go" data-act="lvAnalyze">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Nothing is replaced. Only the text becomes live.</p></div>${FEEDS ? FEEDS.slideOffer() : ''}${importCard()}`;
   }
   function unboundBrand(d) {
@@ -5847,7 +5849,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       box.addEventListener('scroll', () => { ED.lvEvsTop = box.scrollTop; }, { passive: true });
     }
     const how = $('.lv-how', p); how && how.addEventListener('toggle', () => { ED.liveHow = how.open; });
-    if (cfg && !cfg.events) refresh(d, { force: true });
+    // first data for this slide; after an error it waits for the next automatic update or Refresh now (no request loop)
+    if (cfg && !cfg.events && !cfg.err) refresh(d, { force: true });
   }
   const _pn23 = edPanel;
   edPanel = function () {
@@ -6028,6 +6031,12 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       if (!canEdit()) return; const d = ED.d, i = ED.pi, pg = d.pages[i], done = busyWith('[data-act=lvAnalyze]', 'Analyzing…');
       try {
         const keep = pg.live && pg.live.map ? pg.live : null;
+        // not a calendar, but a price alert or a news post: its texts become live market data
+        if (!keep && FEEDS) {
+          const quick = await Promise.resolve(peekPage(d, i)).catch(() => null);
+          const feed = !(quick && quick.isCalendar) && FEEDS.detect(pg);
+          if (feed) { done(); return FEEDS.bindDetected(pg, feed); }
+        }
         if (keep) unbind(pg); // read the original texts, not the live ones
         const map = await analyze(d, i, 'auto');
         if (!map.isCalendar || (!map.rows.length && !(map.layout === 'week' && map.week))) { if (keep) bind(pg, keep.map, keep); done(); edPanel(); return toast(map.note || map.reason || 'No calendar found on this slide'); }
@@ -6574,7 +6583,88 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const _oe24 = openEditor;
   openEditor = function (id) { _oe24(id); const d = ED.d; if (d && feedPages(d).some((pg) => Date.now() - (pg.live.at || 0) > 60_000)) refresh(d); };
 
-  FEEDS = { panel, brandForm, slideOffer, attach, unbind, styleCards, look };
+  /* ---------- reading an existing slide: is it a price alert or a news post? ---------- */
+  /** What our own templates' layers show, by layer name (a slide built from them keeps the names) */
+  const KNOWN = {};
+  [['price', tplPrice], ['news', tplNews]].forEach(([k, fn]) => { KNOWN[k] = {}; fn(1080, 1350).forEach((l) => { if (l.feed || l.tone) KNOWN[k][l.name] = { feed: l.feed, feedAr: l.feedAr, tone: l.tone, fit: l.fit, flow: l.flow }; }); });
+  const wordsIn = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
+  const NUM_RE = /^[$€£¥]?\s?(\d{1,3}(,\d{3})+|\d+)(\.\d{1,6})?$/;
+  const PCT_RE = /^[▲▼△▽↑↓+\-−]?\s?[+\-−]?\d+([.,]\d+)?\s?%$/;
+  const DATE_RE = /\b\d{1,2}\s+[A-Za-zÀ-ÿ؀-ۿ]{3,12}\.?\s+\d{4}\b|\b[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/;
+  /**
+   * Finds which layers of a slide are a price alert's or a news post's data. Returns
+   * { kind, props: Map(layerId → feed props), found: [what], symbol? } or null. Template layer names first,
+   * then the layout: a big number with a % change is a price alert; a long headline with a summary or a
+   * photo is a news post.
+   */
+  function detect(pg) {
+    const W = (pg.layers[0] && pg.layers[0].w) || 1080, live = (l) => !l.hidden && !(l.locked && l.name === 'Background');
+    const texts = pg.layers.filter((l) => l.type === 'text' && live(l) && String(l.text || '').trim()), tx = (l) => String(l.text).trim();
+    for (const kind of ['price', 'news']) {
+      const props = new Map(); pg.layers.forEach((l) => { const k = KNOWN[kind][l.name]; if (k) props.set(l.id, Object.fromEntries(Object.entries(k).filter(([, v]) => v != null))); });
+      const need = kind === 'price' ? ['Price'] : ['Headline'], has = (n) => pg.layers.some((l) => l.name === n && props.has(l.id));
+      const WORD = { 'Headline photo': 'photo', Headline: 'headline', Summary: 'summary', Source: 'source', Date: 'date', Price: 'price', Market: 'market name', Ticker: 'ticker', 'Change %': 'change %', Change: 'change', Low: 'day range', High: 'day range', 'Range marker': 'day range', Updated: 'update time', 'Change pill': 'up/down colour' };
+      if (need.every(has) && props.size >= 3) return { kind, props, found: [...new Set(pg.layers.filter((l) => props.has(l.id)).map((l) => WORD[l.name]).filter(Boolean))], symbol: guessSymbol(texts.map(tx)) };
+    }
+    // a price alert: the biggest text is a number, and a % change sits nearby
+    const nums = texts.filter((l) => NUM_RE.test(tx(l))).sort((a, b) => (b.size || 0) - (a.size || 0)), price = nums[0];
+    const pct = texts.find((l) => PCT_RE.test(tx(l)));
+    if (price && (price.size || 0) >= 56 && pct) {
+      const props = new Map(), found = ['price', 'change %'], set = (l, f) => props.set(l.id, f);
+      set(price, { feed: '{price}' });
+      set(pct, { feed: /^[▲▼△▽↑↓]/.test(tx(pct)) ? '{arrow} {changePct}' : '{changePct}' });
+      const abs = texts.find((l) => l !== pct && !props.has(l.id) && /^[+\-−]\s?[\d,]+(\.\d+)?(\s+\D.*)?$/.test(tx(l)));
+      if (abs) { set(abs, { feed: tx(abs).replace(/^[+\-−]\s?[\d,]+(\.\d+)?/, '{change}') }); found.push('change'); }
+      const tick = texts.find((l) => !props.has(l.id) && /^[A-Z0-9]{2,6}\s?\/\s?[A-Z]{3,5}$/.test(tx(l)));
+      if (tick) { set(tick, { feed: '{ticker}' }); found.push('ticker'); }
+      const name = texts.filter((l) => !props.has(l.id) && l.y < price.y && wordsIn(tx(l)) <= 4 && (l.size || 0) >= 36 && !/^[A-Z\s]+$/.test(tx(l))).sort((a, b) => (b.size || 0) - (a.size || 0))[0]
+        || texts.filter((l) => !props.has(l.id) && l.y < price.y && wordsIn(tx(l)) <= 3 && (l.size || 0) >= 44).sort((a, b) => (b.size || 0) - (a.size || 0))[0];
+      if (name) { set(name, { feed: '{name}' }); found.push('market name'); }
+      // two smaller numbers on one line: the day's low (left) and high (right)
+      const small = nums.slice(1).filter((l) => !props.has(l.id));
+      const pair = small.flatMap((a) => small.filter((b) => b !== a && Math.abs(a.y - b.y) < 20 && b.x > a.x).map((b) => [a, b]))[0];
+      if (pair) { set(pair[0], { feed: '{low}' }); set(pair[1], { feed: '{high}' }); found.push('day range'); }
+      const upd = texts.find((l) => !props.has(l.id) && /\d{1,2}:\d{2}/.test(tx(l)));
+      if (upd) set(upd, { feed: tx(upd).replace(/\d{1,2}:\d{2}(\s?[AP]M)?/i, '{time}').replace(DATE_RE, '{date}') });
+      // the pill behind the % change takes the up / down colour
+      const cx = pct.x + pct.w / 2, cy = pct.y + pct.h / 2, pillL = pg.layers.find((l) => l.type !== 'text' && !l.locked && cx > l.x && cx < l.x + l.w && cy > l.y && cy < l.y + l.h && l.w < W * 0.6);
+      if (pillL) { props.set(pillL.id, { tone: 'fill' }); found.push('up/down colour'); } else props.set(pct.id, { ...props.get(pct.id), tone: 'color' });
+      return { kind: 'price', props, found, symbol: guessSymbol(texts.map(tx)) };
+    }
+    // a news post: a long headline, with a summary under it or a photo
+    const head = texts.filter((l) => wordsIn(tx(l)) >= 5 && (l.size || 0) >= 34).sort((a, b) => (b.size || 0) - (a.size || 0) || tx(b).length - tx(a).length)[0];
+    if (head) {
+      const props = new Map([[head.id, { feed: '{title}', fit: 1 }]]), found = ['headline'];
+      const sum = texts.filter((l) => l !== head && l.y > head.y && wordsIn(tx(l)) >= 8 && (l.size || 0) < (head.size || 0)).sort((a, b) => a.y - b.y)[0];
+      if (sum) { props.set(sum.id, { feed: '{summary}', fit: 1, flow: 1 }); found.push('summary'); }
+      const photos = pg.layers.filter((l) => l.type !== 'text' && live(l) && !l.icon && /url\(/.test(String(l.fill || '')) && l.w * l.h > W * W * 0.12).sort((a, b) => b.w * b.h - a.w * a.h);
+      if (photos[0]) { props.set(photos[0].id, { feed: '@image' }); found.push('photo'); }
+      const src = texts.find((l) => !props.has(l.id) && l.y > head.y && wordsIn(tx(l)) <= 8 && /·|•|\|| ago\b|\bmin\b|\bh\b|hours?|il y a|منذ|reuters|bloomberg|cnbc|fxstreet|marketwatch|investing/i.test(tx(l)));
+      if (src) { props.set(src.id, { feed: '{source} · {ago}' }); found.push('source'); }
+      const date = texts.find((l) => !props.has(l.id) && DATE_RE.test(tx(l)) && wordsIn(tx(l)) <= 5);
+      if (date) { props.set(date.id, { feed: '{today}' }); found.push('date'); }
+      if (sum || photos[0]) return { kind: 'news', props, found };
+    }
+    return null;
+  }
+  /** "Gold", "XAU/USD" or "BTC/USDT" on the slide → that market */
+  function guessSymbol(list) {
+    const all = list.join(' | ');
+    for (const [s, p] of PRESET) if (all.includes(ticker(s)) || new RegExp(`(^|\\|\\s)${p.en.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}(\\s\\||$)`, 'i').test(all) || all.includes(p.ar)) return s;
+    return 'OANDA:XAUUSD';
+  }
+  /** Makes the detected layers live (undoable) and fills them */
+  async function bindDetected(pg, f) {
+    const ar = pg.layers.some((l) => l.type === 'text' && AR_RE.test(String(l.text || '')));
+    mutate(() => {
+      pg.layers.forEach((l) => { const p = f.props.get(l.id); if (p) Object.assign(l, p); });
+      pg.live = { ...defaults(f.kind), lang: ar ? 'ar' : 'en', srcLang: ar ? 'ar' : 'en', ...(f.kind === 'price' ? { symbols: [f.symbol || 'OANDA:XAUUSD'] } : {}) };
+      ED.d.tpl = f.kind;
+    });
+    toast(`${f.kind === 'price' ? 'Price alert' : 'News post'} found: ${f.found.join(', ')} now ${f.found.length === 1 ? 'is' : 'are'} live. Fine-tune it under Fields.`);
+    await refresh(ED.d, { silent: false, force: true });
+  }
+  FEEDS = { panel, brandForm, slideOffer, attach, unbind, styleCards, look, detect, bindDetected };
 })();
 
 /* ============ v25 · Studio Agent with AI: every editor action, any model ============ */
