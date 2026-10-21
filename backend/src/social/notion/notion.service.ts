@@ -6,6 +6,7 @@ import { Model } from "mongoose";
 import { decrypt, encrypt } from "../../common/crypto";
 import { validTz } from "../../framer/time";
 import { SocialIntegration } from "../publishing/connection.schema";
+import { PublisherService } from "../publishing/publisher.service";
 import { SocialAutomation } from "../schemas/automation.schema";
 import { SocialBrand } from "../schemas/brand.schema";
 import { SocialDesign } from "../schemas/design.schema";
@@ -21,6 +22,9 @@ export class SocialNotionPage {
   @Prop({ required: true }) pageId!: string;
   @Prop() date?: string;
   @Prop() hash?: string;
+  /** The pictures it shows (cover and body), and the image blocks this sync added to the page */
+  @Prop() imgHash?: string;
+  @Prop({ type: [String], default: [] }) blocks?: string[];
 }
 export const SocialNotionPageSchema = SchemaFactory.createForClass(SocialNotionPage);
 SocialNotionPageSchema.index({ brandId: 1, postId: 1 }, { unique: true });
@@ -39,6 +43,8 @@ const PROPS: Record<string, any> = {
 };
 /** Keep this many days of past posts in sync (status, links); older pages are left as they are */
 const PAST_DAYS = 14;
+const ext = (url: string) => ({ type: "external", external: { url } });
+const imageBlock = (url: string) => ({ object: "block", type: "image", image: ext(url) });
 const opt = (s: string) => s.replace(/,/g, " ").trim().slice(0, 100) || "—";
 
 /**
@@ -63,6 +69,7 @@ export class NotionService {
     @InjectModel(SocialDesign.name) private designs: Model<SocialDesign>,
     @InjectModel(SocialWorkspace.name) private workspaces: Model<SocialWorkspace>,
     private cfg: ConfigService,
+    private publisher: PublisherService,
   ) {}
 
   private get secret() { return this.cfg.getOrThrow<string>("JWT_SECRET"); }
@@ -77,6 +84,9 @@ export class NotionService {
     const set = Object.fromEntries(Object.entries(patch).map(([k, v]) => [`info.${k}`, v]));
     await this.integ.updateOne({ _id: ID }, { $set: set });
   }
+
+  /** Connected, with a calendar database chosen */
+  async ready() { const d = await this.doc(); return !!(d?.secret && d.info?.database?.id); }
 
   /* ---------- connection ---------- */
   async status() {
@@ -165,7 +175,7 @@ export class NotionService {
     try {
       const c = this.client(d), scope = d.info?.scope === "all" ? "all" : "auto";
       const from = new Date(Date.now() - PAST_DAYS * 864e5).toISOString().slice(0, 10);
-      const autos = new Map((await this.autos.find({}).select("brandId id name notion").lean<Record<string, any>[]>()).map((a) => [`${a.brandId}|${a.id}`, a]));
+      const autos = new Map((await this.autos.find({}).select("brandId id name notion preview").lean<Record<string, any>[]>()).map((a) => [`${a.brandId}|${a.id}`, a]));
       const ws = await this.workspaces.findById(WORKSPACE_ID).lean(), wsTz = String(((ws?.set || {}) as any).tz || "");
       const all = await this.posts.find({ date: { $gte: from }, status: { $in: ["Scheduled", "Published", "Failed"] } }).lean<Record<string, any>[]>();
       const want = all.filter((p) => {
@@ -182,12 +192,22 @@ export class NotionService {
         const k = `${p.brandId}|${p.id}`; seen.add(k);
         const props = this.props(p, db, await nameOf(p.brandId), p.auto?.name || (await designOf(p.brandId, p.d)), validTz(p.tz || "") ? p.tz : validTz(wsTz) ? wsTz : "UTC");
         const hash = createHash("sha1").update(JSON.stringify(props)).digest("hex"), link = links.get(k);
+        // the design: the post's own slides once it has them, the automation's preview before
+        const imgs = this.images(p, p.auto ? autos.get(`${p.brandId}|${p.auto.id}`) : null), imgHash = imgs.join("|");
         if (!link) {
-          const page: any = await c.call("POST", "/pages", { parent: { database_id: db.id }, icon: { type: "emoji", emoji: p.auto ? "🔁" : "📣" }, properties: props });
-          await this.links.updateOne({ brandId: p.brandId, postId: p.id }, { $set: { pageId: page.id, date: p.date, hash } }, { upsert: true }); made++;
-        } else if (link.hash !== hash) {
-          await c.call("PATCH", `/pages/${link.pageId}`, { properties: props, archived: false });
-          await this.links.updateOne({ _id: link._id }, { $set: { hash, date: p.date } }); changed++;
+          const page: any = await c.call("POST", "/pages", { parent: { database_id: db.id }, icon: { type: "emoji", emoji: p.auto ? "🔁" : "📣" }, ...(imgs[0] ? { cover: ext(imgs[0]) } : {}), properties: props, children: imgs.map(imageBlock) });
+          const blocks = imgs.length ? ((await c.call("GET", `/blocks/${page.id}/children?page_size=50`)).results || []).filter((b: any) => b.type === "image").map((b: any) => b.id) : [];
+          await this.links.updateOne({ brandId: p.brandId, postId: p.id }, { $set: { pageId: page.id, date: p.date, hash, imgHash, blocks } }, { upsert: true }); made++;
+        } else if (link.hash !== hash || (link.imgHash || "") !== imgHash) {
+          const imgChanged = (link.imgHash || "") !== imgHash;
+          await c.call("PATCH", `/pages/${link.pageId}`, { properties: props, archived: false, ...(imgChanged ? { cover: imgs[0] ? ext(imgs[0]) : null } : {}) });
+          let blocks: string[] = link.blocks || [];
+          if (imgChanged) {
+            // only the image blocks this sync added are replaced: notes written in the page stay
+            for (const b of blocks) await c.call("DELETE", `/blocks/${b}`).catch(() => undefined);
+            blocks = imgs.length ? ((await c.call("PATCH", `/blocks/${link.pageId}/children`, { children: imgs.map(imageBlock) })).results || []).map((b: any) => b.id) : [];
+          }
+          await this.links.updateOne({ _id: link._id }, { $set: { hash, date: p.date, imgHash, blocks } }); changed++;
         }
       }
       // posts that were skipped, re-planned, deleted or left the sync: their pages are archived
@@ -205,6 +225,12 @@ export class NotionService {
       this.running = false;
       if (this.again) { this.again = false; this.reconcileSoon(500); }
     }
+  }
+
+  /** Public links of the pictures a post's page shows (at most 4) */
+  private images(p: Record<string, any>, a: Record<string, any> | null | undefined) {
+    const ids: string[] = p.media?.ids?.length ? p.media.ids : a?.preview?.ids || [];
+    return ids.slice(0, 4).map((id) => this.publisher.publicUrl(id));
   }
 
   /** A post as Notion properties: name, date with its time zone (30 min), status, networks, automation, brand, caption, link */

@@ -608,6 +608,34 @@ a.btn{text-decoration:none}
 .au-mf{flex-wrap:wrap;align-items:center}
 .au-sum{flex:1 1 260px;min-width:0;margin:0;font-size:13px;line-height:1.45;color:var(--text-2)}.au-sum b{color:var(--text-1)}
 .au-del{color:var(--neg)}
+/* Automations on small screens */
+@media (max-width:640px){
+  .au-card{gap:12px;padding:12px;border-radius:16px}
+  .au-th{width:64px;min-height:0;height:80px;align-self:flex-start;border-radius:10px}
+  .au-th .thumb{transform:scale(.66);transform-origin:center}
+  .au-name{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;font-size:15px}
+  .au-top{align-items:flex-start}
+  .au-rh{font-size:13px}
+  .au-foot{gap:8px;margin-left:-76px;padding-top:10px}
+  .au-foot .au-next{flex:1 1 100%}
+  .au-foot .grow{display:none}
+  .au-foot .btn.ghost.sm{margin-left:auto}
+  .au-tip{flex-wrap:wrap}.au-tip .btn{width:100%}
+  .au-empty{margin:8px auto}.au-empty h2{font-size:21px}
+  .au-presets{gap:8px}
+  .au-side{position:static}
+  /* the editor fills the screen */
+  .au-mb{max-height:none;gap:16px}
+  .au-ds{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}
+  .au-days{gap:4px;justify-content:space-between}.au-days button{width:36px;height:36px}
+  .au-row{grid-template-columns:1fr 1fr}.au-row .au-f:first-child{grid-column:1/-1}
+  .au-seg{max-width:none}
+  .au-nb{flex:1 1 calc(50% - 8px);justify-content:flex-start}
+  .au-mf{gap:8px}.au-mf .au-sum{flex-basis:100%}.au-mf .btn{flex:1}.au-mf .au-del{flex:0 0 auto}
+  .nt-tok{flex-direction:column}.nt-search{flex-direction:column}
+  .nt-t{flex-wrap:wrap}.nt-t .btn{width:100%}
+  .nt-db{flex-wrap:wrap}.nt-db .btn{width:100%}
+}
 /* Notion Calendar */
 .nt-logo{display:grid;place-items:center;width:38px;height:38px;flex:none;border:2px solid var(--text-1);border-radius:9px;background:var(--surface);font:800 20px/1 Georgia,serif;color:var(--text-1)}
 .nt-logo.sm{width:24px;height:24px;border-width:1.5px;border-radius:6px;font-size:13px}
@@ -2004,7 +2032,7 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .dtp-native{display:none!important}
 .dtp-btn{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;cursor:pointer;font-variant-numeric:tabular-nums}
 .dtp-btn .dtp-v{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-1)}
-.dtp-btn.empty .dtp-v{color:var(--text-3)}
+.dtp-btn.is-empty .dtp-v{color:var(--text-3)}
 .dtp-btn .ic{flex:none;color:var(--text-3);transition:color .12s}
 .dtp-btn:hover .ic,.dtp-btn[aria-expanded="true"] .ic{color:var(--accent)}
 .dtp-btn[aria-expanded="true"]{border-color:var(--accent);box-shadow:0 0 0 3px rgba(253,14,53,.12)}

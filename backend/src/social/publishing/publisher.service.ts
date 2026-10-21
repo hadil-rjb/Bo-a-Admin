@@ -110,6 +110,11 @@ export class PublisherService {
     return rows.map((p) => ({ id: p.id, status: p.status, publish: p.publish, media: p.media ?? null }));
   }
 
+  /** Images that aren't a post's slides (an automation's design preview), stored like slides and served at the public media URL */
+  async storeImages(brandId: string, key: string, images: string[]) {
+    return (await this.store(brandId, key, images)).map((d) => String(d._id));
+  }
+
   publicUrl(id: string) { return `${this.conns.apiUrl}/social/media/${id}.jpg`; }
 
   async file(raw: string) {
