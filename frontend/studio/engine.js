@@ -1804,8 +1804,7 @@ function edPanel() {
     const bt = brand().templates;
     h = `<h3>Templates</h3><button class="btn secondary" style="padding: 12px 16px;" data-act="edSaveTpl">${ic('plus')}Save slide as brand template</button>
     <span class="label" style="margin-top:6px">${esc(brand().name)} templates</span>
-    ${bt.length ? `<div class="tgrid">${bt.map((x) => `<button data-act="edBTpl" data-id="${x.id}">${btThumb(x, 126, 150)}<span>${esc(x.name)}</span></button>`).join('')}</div>` : `<p class="xs-t muted">None yet. Design a slide, then save it here to reuse it. Only this brand sees it.</p>`}
-    <span class="label" style="margin-top:10px">Starter templates</span><p class="xs-t muted">Uses ${esc(brand().name)}’s colors and fonts. Replaces the current slide. You can undo it.</p><div class="tgrid">${Object.keys(TPL).filter((x) => x !== 'blank').map((x) => `<button data-act="edTpl" data-k="${x}">${tplThumb(x, ED.d.ratio, 126, 150)}<span>${TPL[x].name}</span></button>`).join('')}</div>`;
+    ${bt.length ? `<div class="tgrid">${bt.map((x) => `<button data-act="edBTpl" data-id="${x.id}">${btThumb(x, 126, 150)}<span>${esc(x.name)}</span></button>`).join('')}</div>` : `<p class="xs-t muted">None yet. Design a slide, then save it here to reuse it. Only this brand sees it.</p>`}`;
   }
   if (t === 'elements') h = `<h3>Elements</h3><div class="g3f">${Object.keys(SHAPES).map((x) => `<button class="shapebtn" data-act="edShape" data-k="${x}" title="${SHAPES[x]}"><i style="${shapeIcon[x]}"></i></button>`).join('')}</div>
     <span class="label" style="margin-top:6px">Brand colors</span><div class="chips">${k.colors.map((c) => `<button class="chip" style="padding:0;width:30px;height:30px;background:${c}" data-act="edColor" data-c="${c}" title="${c}"></button>`).join('')}</div>`;
@@ -2356,7 +2355,6 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     const C = [], a = (g, t, fn, s, sw) => C.push({ g, t, fn, s, sw }), k = edKit();
     [['heading', 'h', 'T'], ['subheading', 's'], ['body text', 'b']].forEach(([t, x, s]) => a('Create', 'Add ' + t, () => ACT.edText({ dataset: { k: x } }), s));
     Object.entries(SHAPES).forEach(([x, n]) => a('Create', 'Add shape: ' + n.toLowerCase(), () => ACT.edShape({ dataset: { k: x } })));
-    Object.keys(TPL).filter((x) => x !== 'blank').forEach((x) => a('Template', 'Apply template: ' + TPL[x].name, () => ACT.edTpl({ dataset: { k: x } })));
     Object.keys(RATIOS).forEach((r) => a('Canvas', 'Resize to ' + r, () => magicResize(r)));
     a('Slides', 'Add slide', () => ACT.edAddPage()); a('Slides', 'Duplicate slide', () => ACT.edDupPage());
     RAIL.forEach(([x, n]) => a('Panel', 'Open ' + n, () => ACT.edTab({ dataset: { k: x } })));
