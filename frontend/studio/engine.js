@@ -13,7 +13,7 @@
        bootStudio() returns destroy(), so switching workspaces needs no reload.
    ============================================================ */
 import { IC, ic } from './icons';
-import { RATIOS, PLATFORMS, FONTS, uid, Tx, Rc, El, Im, BG, EVENTS, EVENTS_DEFAULT, CUR_COLOR, tplCalendar, tplQuote, tplArticle, tplStat, tplLaunch, tplFeatures, tplTestimonial, tplEvent, TPL, FIGMA_FRAMES } from './templates';
+import { RATIOS, PLATFORMS, FONTS, uid, Tx, Rc, El, Im, BG, EVENTS, EVENTS_DEFAULT, CUR_COLOR, tplCalendar, tplPrice, tplNews, tplQuote, tplArticle, tplStat, tplLaunch, tplFeatures, tplTestimonial, tplEvent, TPL, FIGMA_FRAMES } from './templates';
 import { BOGA_LOGO } from './assets/bogaLogo';
 import { createRuntime } from './runtime';
 
@@ -76,6 +76,8 @@ function fitPage(layers, from, to) {
 let renderSlide = null;
 /** Live data templates (set by the live data section): forPost(d, post) → the design with that post's data */
 let LIVE = null;
+/** Price alert and news templates (set by the market data section): panel, attach, build */
+let FEEDS = null;
 /** Waits until the adjusted images of a page are rendered at full size (set by the image adjustments section) */
 let fxReady = async () => {};
 /** Text of a text layer as HTML (plain, or spans for mixed styles: set by the mixed text section) */
@@ -564,6 +566,7 @@ function createDesign({ name, tpl = 'blank', ratio = '4:5', slides = 1, source =
   if (!RATIOS[ensureRatio(ratio)]) d.ratio = ratio = '4:5'; // unknown size: fall back to the default canvas
   const [w, h] = RATIOS[ratio];
   d.pages = Array.from({ length: slides }, () => ({ id: uid(), bg: '#0b1220', layers: brandize(TPL[tpl].fn(w, h)) }));
+  if (FEEDS) d.pages.forEach((pg) => FEEDS.attach(pg, tpl));
   mutate && mutate(d); S.designs.unshift(d); return d;
 }
 ACT.open = (a) => { location.hash = '#/editor/' + a.dataset.id; };
@@ -1123,7 +1126,7 @@ Object.assign(ACT, {
   },
   edBTpl: (a) => {
     const t = brand().templates.find((x) => x.id === a.dataset.id); if (!t) return;
-    const same = t.ratio === ED.d.ratio, pg = pageFromTemplate(t), live = same && pg.live;
+    const same = t.ratio === ED.d.ratio, pg = pageFromTemplate(t), live = (same || (pg.live && pg.live.kind)) && pg.live; // market templates follow their layers at any size
     mutate(() => {
       const cur = curP(); cur.layers = same ? pg.layers : fitLayers(pg.layers, t.ratio, ED.d.ratio);
       if (live) cur.live = live; else delete cur.live; // the old mapping named the replaced layers
@@ -1270,7 +1273,7 @@ const SP = {
   export: () => phead('Export & publishing', 'Defaults used by the Export button and the Schedule dialog.') +
     fgrid(fld('Format', dd('fmt', S.set.fmt, [['PNG', 'PNG (lossless)'], ['JPG', 'JPG (smaller file)'], ['PDF', 'PDF (carousel document)']])) + fld('Quality', dd('quality', S.set.quality, [['1x', '1× (the design’s size)'], ['2x', '2× (sharp on high-density screens)'], ['3x', '3× (print and large displays)']])) +
       fld('Languages', dd('exLang', S.set.exLang, [['English only', 'English only'], ['Arabic only', 'Arabic only'], ['English + Arabic', 'English + Arabic (auto-translate)']])) + fld('Time zone', `<input class="inp" data-s="tz" value="${esc(S.set.tz)}">`, { hint: 'Scheduled posts go out in this time zone.' })) +
-    `<div class="swlist">${swRow('Check safe zones before export', 'Warn when text sits under the profile bar or the reply bar of a story.', 'safe')}${swRow('Create every ratio automatically', 'Export 1:1, 4:5 and 9:16 from one design with Magic resize.', 'auto')}${swRow('Refresh live calendar posts on the server', 'Just before a scheduled post with live data goes out, the server fills in that day’s events and renders its slides again, even with no studio tab open.', 'liveServer')}</div>` +
+    `<div class="swlist">${swRow('Check safe zones before export', 'Warn when text sits under the profile bar or the reply bar of a story.', 'safe')}${swRow('Create every ratio automatically', 'Export 1:1, 4:5 and 9:16 from one design with Magic resize.', 'auto')}${swRow('Refresh live posts on the server', 'Just before a scheduled post with live data goes out, the server fills in that day’s events, the latest prices or headlines, and renders its slides again, even with no studio tab open.', 'liveServer')}</div>` +
     acts(`<button class="btn primary" data-act="saveSet">Save export settings</button>`, 1),
   look: () => phead('Appearance', 'Choose how the admin looks.') +
     `<div class="themes">${['dark', 'light'].map((x) => `<button class="theme ${S.theme === x ? 'active' : ''}" data-act="pickTheme" data-t="${x}"><span class="tprev ${x}"><i style="height:12px"></i><i style="height:24px"></i><i style="height:36px"></i></span>${x === 'dark' ? 'Dark' : 'Light'}</button>`).join('')}</div>`,
@@ -1731,7 +1734,7 @@ function fixSel() { ED.pi = Math.min(ED.pi, ED.d.pages.length - 1); if (!curL())
 /* ---------- open ---------- */
 function openEditor(id) {
   const d = getD(id); if (!d) { location.hash = '#/studio'; return; }
-  Object.assign(ED, { d, pi: 0, sel: null, fit: true, undo: [], redo: [], rtab: 'design', safe: false, lang: 'en', pre: null, editing: null, tab: d.tpl === 'blank' ? 'templates' : d.tpl === 'calendar' ? 'data' : d.source === 'Figma' ? 'figma' : 'templates' });
+  Object.assign(ED, { d, pi: 0, sel: null, fit: true, undo: [], redo: [], rtab: 'design', safe: false, lang: 'en', pre: null, editing: null, tab: d.tpl === 'blank' ? 'templates' : ['calendar', 'price', 'news'].includes(d.tpl) ? 'data' : d.source === 'Figma' ? 'figma' : 'templates' });
   $('#editor').innerHTML = `<div class="ed">
     <div class="ed-top">
       <button class="btn ghost icon sm" data-act="edBack" title="Back to Studio">${ic('chevL')}</button><span title="${esc(brand().name)}">${brandAv(brand(), 'sm')}</span>
@@ -5099,7 +5102,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const ROLES = [['time', 'Time'], ['currency', 'Currency'], ['country', 'Country'], ['flag', 'Flag'], ['event', 'Event'], ['value', 'Value'], ['actual', 'Actual'], ['forecast', 'Forecast'], ['previous', 'Previous'], ['impact', 'Impact']];
   const VAL_ONLY = /^[^{}]*(\{(actual|forecast|previous|value)\}[^{}]*)+$/;
   const defaults = () => ({ v: 1, src: 'tradingview', day: 'publish', date: '', impact: ['high', 'medium'], countries: ['US', 'EU', 'GB', 'JP', 'DE', 'CA', 'AU', 'CN'], lang: 'en', pick: null, values: true, every: 15, paused: false, map: null, orig: {}, at: 0 });
-  const livePages = (d) => (d && d.pages ? d.pages.filter((pg) => pg.live && pg.live.map) : []);
+  // price alert and news pages (pg.live.kind) belong to the market data section
+  const livePages = (d) => (d && d.pages ? d.pages.filter((pg) => pg.live && pg.live.map && !pg.live.kind) : []);
   const pad2 = (n) => String(n).padStart(2, '0');
 
   /* ---------- data ---------- */
@@ -5444,7 +5448,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const c = JSON.parse(JSON.stringify(d));
     c.liveUsed = [];
     for (const [i, pg] of c.pages.entries()) {
-      if (!pg.live || !pg.live.map) continue;
+      if (!pg.live || !pg.live.map || pg.live.kind) continue;
       try {
         const date = dayFor(pg.live, c, post), r = await dataFor(pg.live, date); applyPage(pg, r.events, date, r.byDay);
         c.liveUsed.push({ page: i, date, source: r.source, events: r.events.length, shown: choose(r.events, pg.live, pg.live.map.rows.length).map((e) => `${hhmm(e.at)} ${e.currency || e.country} ${e.en}`) });
@@ -5503,6 +5507,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   function unbind(pg) {
     const cfg = pg.live; if (!cfg) return;
+    if (cfg.kind) { if (FEEDS) FEEDS.unbind(pg); return; } // price alert / news page
     pg.layers = pg.layers.filter((l) => !l.lvw);
     pg.layers.forEach((l) => { const g = cfg.geo && cfg.geo[l.id]; if (!g) return; l.x = g.x; if (l.type === 'text') { if (g.align) l.align = g.align; if (g.dir) l.dir = g.dir; else delete l.dir; if (g.font) l.font = g.font; } });
     pg.layers.forEach((l) => { const o = cfg.orig[l.id]; if (!o) return; if (o.hidden) l.hidden = true; else delete l.hidden; if (o.text != null && l.type === 'text') l.text = o.text; if (o.dir) l.dir = o.dir; else delete l.dir; if (o.size) l.size = o.size; if (o.w) l.w = o.w; if (o.r !== undefined && l.type !== 'text') l.r = o.r; if (o.font) l.font = o.font; if (o.fill !== undefined && l.type !== 'text') l.fill = o.fill; });
@@ -5793,16 +5798,19 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const card = !found ? '<div class="lv-card"><div class="skel" style="height:14px;width:55%"></div><div class="skel" style="height:12px;width:85%;margin-top:10px"></div></div>'
       : found.isCalendar ? `<div class="lv-card ok"><span class="lv-ic">${ic('check', 16)}</span><div><b>${found.layout === 'week' ? 'Weekly calendar found' : 'Calendar design found'}</b><p>${found.layout === 'week' ? 'Day blocks with event lists. We keep your design and fill the whole week.' : `${found.rows.length} rows. We keep your design and make its text live.`}</p></div></div>`
         : `<div class="lv-card"><span class="lv-ic muted">${ic('chart', 16)}</span><div><b>No calendar found yet</b><p>Claude can still look for one, or build a template from your Brand Kit.</p></div></div>`;
-    return `${card}<div class="lv-cta"><button class="btn primary lv-go" data-act="lvAnalyze">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Nothing is replaced. Only the text becomes live.</p></div>${importCard()}`;
+    return `${card}<div class="lv-cta"><button class="btn primary lv-go" data-act="lvAnalyze">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Nothing is replaced. Only the text becomes live.</p></div>${FEEDS ? FEEDS.slideOffer() : ''}${importCard()}`;
   }
   function unboundBrand(d) {
-    const b = brand(), [w, h] = RATIOS[d.ratio], st = ED.liveStyle || 'dark', rows = ED.liveRows || 5;
-    return `<div class="lv-card"><span class="lv-dots">${b.colors.slice(0, 5).map((c) => `<i style="background:${esc(c.hex)}"></i>`).join('')}</span><div><b>${esc(b.name)} Brand Kit</b><p>${esc(b.fonts.heading)} · ${esc(b.fonts.body)}<br>${w}×${h} · up to 5 rows</p></div></div>
+    const b = brand(), [w, h] = RATIOS[d.ratio], st = ED.liveStyle || 'dark', rows = ED.liveRows || 5, kind = ED.liveKind || 'calendar';
+    const pick = field('Template', seg('lvKind', kind, [['calendar', 'Calendar'], ['price', 'Price alert'], ['news', 'News']]));
+    if (kind !== 'calendar' && FEEDS) return pick + FEEDS.brandForm(d) + importCard();
+    return `${pick}<div class="lv-card"><span class="lv-dots">${b.colors.slice(0, 5).map((c) => `<i style="background:${esc(c.hex)}"></i>`).join('')}</span><div><b>${esc(b.name)} Brand Kit</b><p>${esc(b.fonts.heading)} · ${esc(b.fonts.body)}<br>${w}×${h} · up to 5 rows</p></div></div>
       ${field('Style', seg('lvStyle', st, [['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']]))}
       ${field('Rows', seg('lvRows', String(rows), [['3', '3'], ['4', '4'], ['5', '5']]))}
       <div class="lv-cta"><button class="btn primary lv-go" data-act="lvBuild">${ic('wand', 18)}Analyze &amp; Build Template</button><p class="lv-hint c">Replaces this slide with a new template. You can undo it.</p></div>${importCard()}`;
   }
   function livePanel(p) {
+    if (curP().live && curP().live.kind && FEEDS) return FEEDS.panel(p);
     const d = ED.d, pg = curP(), cfg = pg.live && pg.live.map ? pg.live : null;
     let h = `<header class="lv-head"><div class="row sp"><h3>Live data</h3>${stamp(cfg)}</div><p>${cfg ? 'This slide is a live template: its texts follow the economic calendar.' : 'Make this slide live without changing it, or build a new template from your Brand Kit.'}</p></header>`;
     if (cfg) h += bound(pg);
@@ -5999,6 +6007,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     lvTab: (a) => { ED.liveTab = a.dataset.v; edPanel(); },
     lvStyle: (a) => { ED.liveStyle = a.dataset.v; edPanel(); },
     lvRows: (a) => { ED.liveRows = +a.dataset.v; edPanel(); },
+    lvKind: (a) => { ED.liveKind = a.dataset.v; edPanel(); },
     lvPickFile: (a, e) => { if (e && e.target && e.target.id === 'lvFile') return; e && e.preventDefault(); const i = $('#lvFile'); i && i.click(); },
     lvAnalyze: async () => {
       if (!canEdit()) return; const d = ED.d, i = ED.pi, pg = d.pages[i], done = busyWith('[data-act=lvAnalyze]', 'Analyzing…');
@@ -6069,7 +6078,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   document.addEventListener('click', (e) => { if (ED.lvCal && ED.lvCal.open && e.target.isConnected && !e.target.closest('.lv-period')) { ED.lvCal = { open: false }; edPanel(); } });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && ED.lvCal && ED.lvCal.open) { ED.lvCal = { open: false }; edPanel(); } });
   document.addEventListener('change', (e) => {
-    const t = e.target; if (!ED.d || ED.tab !== 'data' || !curP().live) return; const c = cfgNow();
+    const t = e.target; if (!ED.d || ED.tab !== 'data' || !curP().live || curP().live.kind) return; const c = cfgNow();
     if (t.id === 'lvSrc') { c.src = t.value; save(); reapply(); }
     else if (t.id === 'lvEvery') { c.every = +t.value; save(); edPanel(); }
     else if (t.id === 'lvDate' && t.value) { c.date = t.value; c.day = 'fixed'; c.pick = null; save(); reapply(); }
@@ -6105,7 +6114,433 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   openEditor = function (id) { _oe23(id); const d = ED.d; if (d && livePages(d).some((pg) => Date.now() - (pg.live.at || 0) > 60_000)) refresh(d); };
 })();
 
-/* ============ headless: slides rendered by the API (live calendar posts with no studio tab open) ============ */
+/* ============ v24 · live market templates: price alerts and news posts ============ */
+/* A price alert or news slide keeps its design; each live layer says what it shows: a text's `feed`
+   ("{name}", "{price}", "{title}"…, `feedAr` when the slide is in Arabic), the photo ('@image'), the
+   day-range marker ('@pos'), and `tone` for the colours that follow the price direction. The page's
+   settings (pg.live, kind 'price' | 'news') name the markets or the news feed. The studio fills the
+   layers with real data and refreshes them on its own; the API does the same right before a scheduled
+   post goes out (LiveRenderService), so the post shows the price or headline of that moment. */
+(function () {
+  const KINDS = ['price', 'news'];
+  /** [symbol, English name, Arabic name, decimals] */
+  const MARKETS = [
+    ['Forex', [['FX_IDC:EURUSD', 'EUR/USD', 'اليورو/دولار', 5], ['FX_IDC:GBPUSD', 'GBP/USD', 'الإسترليني/دولار', 4], ['FX_IDC:USDJPY', 'USD/JPY', 'الدولار/ين', 3], ['FX_IDC:USDCHF', 'USD/CHF', 'الدولار/فرنك', 5], ['FX_IDC:AUDUSD', 'AUD/USD', 'الأسترالي/دولار', 5], ['FX_IDC:USDCAD', 'USD/CAD', 'الدولار/كندي', 5], ['TVC:DXY', 'US Dollar Index', 'مؤشر الدولار', 2]]],
+    ['Metals & energy', [['OANDA:XAUUSD', 'Gold', 'الذهب', 2], ['TVC:SILVER', 'Silver', 'الفضة', 3], ['NYMEX:CL1!', 'WTI crude oil', 'نفط غرب تكساس', 2], ['ICEEUR:BRN1!', 'Brent crude oil', 'خام برنت', 2]]],
+    ['Crypto', [['BINANCE:BTCUSDT', 'Bitcoin', 'بيتكوين', 2], ['BINANCE:ETHUSDT', 'Ethereum', 'إيثريوم', 2], ['BINANCE:SOLUSDT', 'Solana', 'سولانا', 2]]],
+    ['Indices', [['SP:SPX', 'S&P 500', 'إس آند بي 500', 2], ['NASDAQ:NDX', 'Nasdaq 100', 'ناسداك 100', 2], ['DJ:DJI', 'Dow Jones', 'داو جونز', 2], ['XETR:DAX', 'DAX 40', 'داكس 40', 2]]],
+    ['Stocks', [['NASDAQ:AAPL', 'Apple', 'آبل', 2], ['NASDAQ:NVDA', 'NVIDIA', 'إنفيديا', 2], ['NASDAQ:TSLA', 'Tesla', 'تسلا', 2], ['NASDAQ:MSFT', 'Microsoft', 'مايكروسوفت', 2]]],
+  ];
+  const PRESET = new Map(MARKETS.flatMap(([, l]) => l.map(([s, en, ar, dec]) => [s, { en, ar, dec }])));
+  const NEWS_SRC = [['fxstreet', 'FXStreet · forex & commodities'], ['cnbc', 'CNBC · markets'], ['marketwatch', 'MarketWatch · top stories'], ['google', 'Google News · any topic']];
+  const SRC_NAME = { fxstreet: 'FXStreet', cnbc: 'CNBC', marketwatch: 'MarketWatch', google: 'Google News', tradingview: 'TradingView', binance: 'Binance' };
+  const KEYS = {
+    price: ['name', 'ticker', 'price', 'change', 'changePct', 'arrow', 'direction', 'high', 'low', 'time', 'date', 'tz'],
+    news: ['title', 'summary', 'source', 'ago', 'time', 'date', 'today', 'tz'],
+  };
+  const EVERY = [[1, '1 minute'], [5, '5 minutes'], [15, '15 minutes'], [60, '1 hour']];
+  const SYM_RE = /^[A-Z0-9_.]{1,20}:[A-Z0-9_.!&-]{1,30}$/;
+  const AR_RE = /[؀-ۿ]/;
+  const defaults = (kind) => (kind === 'price'
+    ? { v: 1, kind, map: { kind }, symbols: ['OANDA:XAUUSD'], labels: {}, dec: {}, lang: 'en', up: '#16A34A', down: '#DC2626', every: 5, paused: false, at: 0 }
+    : { v: 1, kind, map: { kind }, src: 'fxstreet', q: '', lang: 'en', pick: null, photo: true, every: 15, paused: false, at: 0 });
+  const feedPages = (d) => (d && d.pages ? d.pages.filter((pg) => pg.live && KINDS.includes(pg.live.kind)) : []);
+  const LAYER_KEYS = ['feed', 'feedAr', 'feedN', 'tone', 'toneN', 'fit', 'flow', 'feedHid', 'fs0', 'fh0', 'fa0', 'fd0', 'ff0', 'fy0', 'fu', 'feedFill0'];
+
+  /* ---------- data ---------- */
+  const cache = new Map(); // path → { at, p }
+  function get(path, ttl) {
+    const hit = cache.get(path); if (hit && Date.now() - hit.at < ttl) return hit.p;
+    const p = api(path).catch((e) => { cache.delete(path); throw e; });
+    cache.set(path, { at: Date.now(), p }); return p;
+  }
+  /** How many items a page shows: {price2} or {title3} in a layer asks for a 2nd or 3rd one */
+  function slots(pg) {
+    let n = 1;
+    pg.layers.forEach((l) => {
+      [l.feed, l.feedAr].forEach((t) => String(t || '').replace(/\{[a-zA-Z]+(\d+)\}/g, (m, i) => { n = Math.max(n, +i); return m; }));
+      if (l.feedN) n = Math.max(n, l.feedN + 1); if (l.toneN) n = Math.max(n, l.toneN + 1);
+    });
+    return Math.min(n, 10);
+  }
+  async function dataFor(cfg, n) {
+    if (cfg.kind === 'price') {
+      while (cfg.symbols.length < n) cfg.symbols.push([...PRESET.keys()].find((s) => !cfg.symbols.includes(s)));
+      const syms = cfg.symbols.slice(0, n), r = await get('/social/markets/quotes?' + new URLSearchParams({ symbols: syms.join(',') }), 30_000);
+      const by = new Map(r.quotes.map((q) => [q.symbol, q]));
+      return { items: syms.map((s) => by.get(s) || null), source: (r.quotes[0] || {}).source, missing: r.missing || [] };
+    }
+    const r = await get('/social/markets/news?' + new URLSearchParams({ source: cfg.src, q: cfg.q || '', lang: cfg.lang, limit: '20' }), 120_000);
+    return { items: r.items, source: r.source, missing: [] };
+  }
+  /** The headlines on the slide: the hand-picked ones, then the latest */
+  function chooseNews(items, cfg, n) {
+    const mine = cfg.pick && cfg.pick.length ? items.filter((x) => cfg.pick.includes(x.id)) : [];
+    return [...mine, ...items.filter((x) => !mine.includes(x))].slice(0, n);
+  }
+  const photoOf = (url) => get('/social/markets/photo?' + new URLSearchParams({ url }), 30 * 60_000).then((r) => r.dataUrl);
+  /** What each slot shows: quotes in symbol order, or headlines with their photo (as a data URL the exporter can embed) */
+  async function itemsFor(pg, cfg, r) {
+    const n = slots(pg);
+    if (cfg.kind === 'price') return r.items.slice(0, n);
+    const list = chooseNews(r.items, cfg, n), wants = new Set(pg.layers.filter((l) => l.feed === '@image').map((l) => l.feedN || 0));
+    return Promise.all(list.map(async (x, i) => ({ ...x, photo: cfg.photo && x.image && wants.has(i) ? await photoOf(x.image).catch(() => null) : null })));
+  }
+
+  /* ---------- values ---------- */
+  const loc = (lang) => (lang === 'ar' ? 'ar-u-nu-latn' : 'en-GB');
+  const tzShort = () => (tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1];
+  const hhmm = (ts) => { const p = tzParts(ts, schedTz()); return String(+p.hour % 24).padStart(2, '0') + ':' + p.minute; };
+  const dayLabel = (ts, lang) => new Intl.DateTimeFormat(loc(lang), { timeZone: schedTz(), day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(ts));
+  const num = (v, dec) => (v == null || !Number.isFinite(v) ? '—' : v.toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec }));
+  const signed = (v, dec) => (v == null || !Number.isFinite(v) ? '—' : (v > 0 ? '+' : v < 0 ? '-' : '') + num(Math.abs(v), dec));
+  function ticker(sym) {
+    const t = String(sym || '').split(':').pop().replace(/1!$/, '');
+    return /^[A-Z]{6}$/.test(t) ? t.slice(0, 3) + '/' + t.slice(3) : /^[A-Z0-9]{2,10}USDT$/.test(t) ? t.replace(/USDT$/, '/USDT') : t;
+  }
+  function ago(iso, lang) {
+    const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60_000));
+    if (lang === 'ar') { const rt = new Intl.RelativeTimeFormat('ar-u-nu-latn', { numeric: 'auto' }); return m < 60 ? rt.format(-Math.max(1, m), 'minute') : m < 1440 ? rt.format(-Math.round(m / 60), 'hour') : rt.format(-Math.round(m / 1440), 'day'); }
+    return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
+  }
+  const nameOf = (sym, cfg, q) => (cfg.labels && cfg.labels[sym]) || (PRESET.get(sym) || {})[cfg.lang === 'ar' ? 'ar' : 'en'] || (q && q.name) || ticker(sym);
+  const decOf = (sym, cfg, q) => (cfg.dec && cfg.dec[sym] != null ? cfg.dec[sym] : PRESET.has(sym) ? PRESET.get(sym).dec : q ? q.decimals : 2);
+  /** In an Arabic line, "+1.2%" keeps its sign in front (an isolated left-to-right run) */
+  const ltr = (v, ar) => (ar ? '\u2066' + v + '\u2069' : v);
+  function itemValues(x, cfg, i) {
+    const ar = cfg.lang === 'ar';
+    if (cfg.kind === 'price') {
+      const sym = cfg.symbols[i], dec = decOf(sym, cfg, x), dir = !x ? 0 : Math.sign(x.change || x.changePct || 0);
+      return {
+        name: nameOf(sym, cfg, x), ticker: ticker(sym), price: x ? num(x.price, dec) : '—', change: x ? ltr(signed(x.change, dec), ar) : '—', changePct: x ? ltr(signed(x.changePct, 2) + '%', ar) : '—',
+        arrow: dir > 0 ? '▲' : dir < 0 ? '▼' : '■', direction: ar ? (dir > 0 ? 'ارتفاع' : dir < 0 ? 'انخفاض' : 'استقرار') : dir > 0 ? 'up' : dir < 0 ? 'down' : 'flat',
+        high: x ? num(x.high, dec) : '—', low: x ? num(x.low, dec) : '—',
+      };
+    }
+    if (!x) return { title: '', summary: '', source: '', ago: '', time: '', date: '' };
+    return { title: x.title, summary: x.summary || '', source: x.source || SRC_NAME[cfg.src] || '', ago: ago(x.at, cfg.lang), time: hhmm(Date.parse(x.at)), date: dayLabel(Date.parse(x.at), cfg.lang) };
+  }
+  /** {name}, {price2}, {title3}…: item 1 has no number */
+  function valuesFor(items, cfg, n) {
+    const now = Date.now(), ar = cfg.lang === 'ar', V = { tz: ltr(tzShort() || schedTz(), ar), today: dayLabel(now, cfg.lang) };
+    if (cfg.kind === 'price') Object.assign(V, { time: hhmm(now), date: dayLabel(now, cfg.lang) });
+    for (let i = 0; i < n; i++) Object.entries(itemValues(items[i], cfg, i)).forEach(([k, v]) => { V[i ? k + (i + 1) : k] = v; });
+    return V;
+  }
+  const fill = (tpl, V) => String(tpl).replace(/\{(\w+)\}/g, (m, k) => (k in V ? V[k] : m));
+
+  /* ---------- writing the data into the layers ---------- */
+  const mctx = document.createElement('canvas').getContext('2d');
+  const textW = (l, t, size) => { mctx.font = `${l.it ? 'italic ' : ''}${l.weight || 400} ${size}px '${l.font}', sans-serif`; return Math.max(...String(t).split('\n').map((x) => mctx.measureText(x).width + (l.ls || 0) * [...x].length)); };
+  function lineCount(l, t, size) {
+    let n = 0;
+    String(t).split('\n').forEach((para) => {
+      let cur = ''; n++;
+      para.split(/\s+/).filter(Boolean).forEach((w) => { const next = cur ? cur + ' ' + w : w; if (cur && textW(l, next, size) > l.w) { n++; cur = w; } else cur = next; });
+    });
+    return n;
+  }
+  /** Long texts shrink (to 60%) before they leave their box; a box sized for several lines keeps its lines and cuts with "…" */
+  function fitText(l, t) {
+    const s0 = l.fs0, min = Math.max(8, Math.round(s0 * 0.6)), lh = l.lh || 1.15;
+    if (!l.fit) { const w = textW(l, t, s0); return { t, size: w <= l.w ? s0 : Math.max(min, Math.floor(s0 * (l.w / w) * 0.98)) }; }
+    const used = (x, s) => lineCount(l, x, s) * s * lh, fits = (x, s) => used(x, s) <= l.fh0 + 2;
+    for (let s = s0; s >= min; s -= Math.max(1, Math.round(s0 * 0.04))) if (fits(t, s)) return { t, size: s, used: used(t, s) };
+    const words = t.split(/\s+/);
+    while (words.length > 1 && !fits(words.join(' ') + '…', min)) words.pop();
+    const cut = words.join(' ').replace(/[\s,.;:–-]+$/, '') + '…';
+    return { t: cut, size: min, used: used(cut, min) };
+  }
+  const arFont = (f) => (/cairo|tajawal|arabic|almarai|amiri|changa|readex|vazir|rubik/i.test(f || '') ? f : brand().fonts.arabic || 'Cairo');
+  const mirror = (a) => ({ left: 'right', right: 'left' }[a] || a);
+  /** Writes the data into the page; returns true when something changed */
+  function apply(pg, items, cfg) {
+    let changed = false; const set = (l, k, v) => { if (l[k] !== v) { l[k] = v; changed = true; } };
+    const n = slots(pg), V = valuesFor(items, cfg, n), track = pg.layers.find((l) => l.name === 'Range track'), W = (pg.layers[0] && pg.layers[0].w) || 1080;
+    pg.layers.forEach((l) => {
+      if (l.tone && cfg.kind === 'price') {
+        const q = items[l.toneN || 0]; if (q) set(l, l.tone === 'fill' ? 'fill' : 'color', (q.change || q.changePct || 0) < 0 ? cfg.down : cfg.up);
+      }
+      if (!l.feed) return;
+      if (l.feed === '@image') {
+        if (l.feedFill0 === undefined) l.feedFill0 = l.fill;
+        const x = items[l.feedN || 0]; set(l, 'fill', x && x.photo ? `url('${x.photo}') center/cover no-repeat` : l.feedFill0); return;
+      }
+      if (l.feed === '@pos') {
+        const q = items[l.feedN || 0]; if (!q || !track || !(q.high > q.low)) return;
+        const t = Math.min(1, Math.max(0, (q.price - q.low) / (q.high - q.low))); set(l, 'x', Math.round((track.x + t * track.w - l.w / 2) * 10) / 10); return;
+      }
+      if (l.type !== 'text') return;
+      if (l.fs0 === undefined) Object.assign(l, { fs0: l.size, fh0: l.h, fa0: l.align || 'left', fd0: l.dir || 'ltr', ff0: l.font });
+      const tpl = cfg.lang === 'ar' && l.feedAr != null ? l.feedAr : l.feed, raw = fill(tpl, V).trim();
+      // an empty value (a headline without a summary) hides its text
+      if (!raw) { if (!l.hidden) { set(l, 'hidden', true); l.feedHid = 1; } return; }
+      if (l.feedHid) { set(l, 'hidden', false); delete l.feedHid; }
+      // Arabic texts run right to left; when the slide's language isn't the one it was designed in,
+      // wide texts (titles, prices) also flip to the other side of their box so the slide reads one way
+      const rtl = AR_RE.test(raw), flip = l.w >= W * 0.5 && cfg.lang !== (cfg.srcLang || 'en');
+      set(l, 'dir', rtl ? 'rtl' : l.fd0 === 'rtl' ? 'ltr' : l.fd0); set(l, 'align', flip ? mirror(l.fa0) : l.fa0); set(l, 'font', rtl ? arFont(l.ff0) : l.ff0);
+      const f = fitText(l, raw); set(l, 'text', f.t); set(l, 'size', f.size); set(l, 'h', l.fh0); l.fu = Math.round(f.used || l.fh0);
+      // a text that follows another one (the summary under the headline) moves up when the headline takes fewer lines
+      if (l.flow) {
+        if (l.fy0 === undefined) l.fy0 = l.y;
+        const above = pg.layers.filter((o) => o !== l && o.fit && o.feed && o.fh0 && o.y < l.fy0).sort((a, b) => b.y - a.y)[0];
+        if (above) set(l, 'y', Math.round(above.y + (above.hidden ? 0 : above.fu || above.fh0) + (l.fy0 - (above.y + above.fh0))));
+      }
+    });
+    return changed;
+  }
+  /** What a slide shows, in words (the API logs it with each published post) */
+  const shownOf = (items, cfg) => items.filter(Boolean).map((x, i) => (cfg.kind === 'price' ? `${nameOf(cfg.symbols[i], cfg, x)} ${num(x.price, decOf(cfg.symbols[i], cfg, x))} (${signed(x.changePct, 2)}%)` : x.title));
+
+  const busyPages = new WeakSet();
+  async function refresh(d, { silent = true, force = false } = {}) {
+    let changed = false, err = null, ran = 0;
+    for (const pg of feedPages(d)) {
+      const cfg = pg.live; if ((cfg.paused && !force) || busyPages.has(cfg)) continue;
+      busyPages.add(cfg); ran++;
+      try {
+        const r = await dataFor(cfg, slots(pg)), items = await itemsFor(pg, cfg, r);
+        cfg.events = r.items.filter(Boolean).map((x) => { const { photo, ...y } = x; return y; }); // the panel's list
+        cfg.feed = { source: r.source, missing: r.missing };
+        changed = apply(pg, items, cfg) || changed; cfg.at = Date.now(); cfg.err = '';
+      } catch (e) { err = e; cfg.err = e.message; } finally { busyPages.delete(cfg); }
+    }
+    if (changed) { d.upd = 'Just now'; save(); }
+    if (ran && ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data' && curP().live && curP().live.kind) panel($('#edPanel')); }
+    if (err && !silent) toast('Live data: ' + err.message);
+    return changed;
+  }
+  /** The design as a post published now would show it (a copy; paused slides keep their data) */
+  async function forPost(d) {
+    if (!feedPages(d).some((pg) => !pg.live.paused)) return d;
+    const c = JSON.parse(JSON.stringify(d)); c.liveUsed = [...(d.liveUsed || [])];
+    for (const [i, pg] of c.pages.entries()) {
+      if (!pg.live || !KINDS.includes(pg.live.kind) || pg.live.paused) continue;
+      try {
+        const r = await dataFor(pg.live, slots(pg)), items = await itemsFor(pg, pg.live, r); apply(pg, items, pg.live);
+        c.liveUsed.push({ page: i, kind: pg.live.kind, source: r.source, shown: shownOf(items, pg.live) });
+      } catch (e) { c.liveUsed.push({ page: i, kind: pg.live.kind, error: e.message }); /* keep the last data */ }
+    }
+    return c;
+  }
+  const cal = LIVE;
+  LIVE = {
+    forPost: async (d, post) => forPost(cal ? await cal.forPost(d, post) : d),
+    refresh: async (d, o) => { const a = cal ? await cal.refresh(d, o) : false, b = await refresh(d, o); return a || b; },
+  };
+
+  /* ---------- making a slide live ---------- */
+  function attach(pg, kind, o = {}) {
+    if (!KINDS.includes(kind) || !pg.layers.some((l) => l.feed)) return;
+    pg.live = { ...defaults(kind), srcLang: o.lang || 'en', ...o };
+  }
+  function unbind(pg) {
+    pg.layers.forEach((l) => {
+      if (l.feedHid) l.hidden = false;
+      LAYER_KEYS.forEach((k) => delete l[k]);
+    });
+    delete pg.live;
+  }
+  /** The Brand Kit look: dark, light or brand colours, the brand's fonts and website */
+  function look(style, lang) {
+    const b = brand(), col = (n, f) => ((b.colors.find((c) => c.name === n) || {}).hex || f);
+    const primary = col('Primary', '#FD0E35'), dark = col('Dark', '#0B1220'), light = col('Light', '#F8FAFC'), deep = shade(primary, -0.35);
+    const st = {
+      dark: { bg: `radial-gradient(ellipse 110% 55% at 88% 0%, ${primary}55 0%, transparent 62%), ${dark}`, base: dark, fg: '#FFFFFF', muted: 'rgba(255,255,255,.68)', card: 'rgba(255,255,255,.06)', line: 'rgba(255,255,255,.12)', accent: primary, onAccent: '#FFFFFF' },
+      light: { bg: light, base: light, fg: dark, muted: 'rgba(15,23,42,.62)', card: 'rgba(15,23,42,.045)', line: 'rgba(15,23,42,.1)', accent: primary, onAccent: '#FFFFFF' },
+      brand: { bg: `linear-gradient(160deg, ${primary}, ${deep})`, base: deep, fg: '#FFFFFF', muted: 'rgba(255,255,255,.8)', card: 'rgba(0,0,0,.16)', line: 'rgba(255,255,255,.2)', accent: '#FFFFFF', onAccent: primary },
+    }[style] || {};
+    return { ...st, head: b.fonts.heading || 'Plus Jakarta Sans', body: b.fonts.body || 'Inter', ar: b.fonts.arabic || 'Cairo', site: b.website || b.handle || b.name, lang };
+  }
+
+  /* ---------- panel ---------- */
+  const sec = (title, body, extra = '') => `<section class="lv-sec"><div class="lv-sec-h"><b>${title}</b>${extra}</div>${body}</section>`;
+  const field = (label, body) => `<div class="lv-f"><span class="lv-l">${label}</span>${body}</div>`;
+  const seg = (act, cur, opts) => `<div class="seg lv-seg">${opts.map(([v, l]) => `<button class="${cur === v ? 'on' : ''}" data-act="${act}" data-v="${v}" aria-pressed="${cur === v}">${l}</button>`).join('')}</div>`;
+  const stamp = (cfg) => (cfg.at && !cfg.err ? `<span class="lv-ok" title="Data from ${esc(SRC_NAME[(cfg.feed || {}).source] || '')}"><i></i>Updated ${esc(hhmm(cfg.at))} ${esc(tzShort())}</span>` : '');
+  const marketOpts = (cur) => MARKETS.map(([g, l]) => `<optgroup label="${esc(g)}">${l.map(([s, en]) => `<option value="${esc(s)}" ${s === cur ? 'selected' : ''}>${esc(en)}</option>`).join('')}</optgroup>`).join('');
+  const srcOpts = (cur) => NEWS_SRC.map(([v, l]) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`).join('');
+  function quoteCard(q, sym, cfg) {
+    if (!q) return `<p class="lv-note err">${ic('alert', 14)}<span>No price for ${esc(sym)}. Check the symbol (EXCHANGE:SYMBOL, as on TradingView).</span></p>`;
+    const dec = decOf(sym, cfg, q), down = (q.change || q.changePct || 0) < 0;
+    return `<div class="fd-quote"><div class="grow"><b>${esc(nameOf(sym, cfg, q))}</b><small>${esc(ticker(sym))} · ${esc(SRC_NAME[q.source] || q.source)}</small></div><div class="fd-q"><b>${num(q.price, dec)}</b><span class="${down ? 'dn' : 'up'}">${down ? '▼' : '▲'} ${signed(q.changePct, 2)}%</span></div></div>`;
+  }
+  function marketSec(pg, cfg) {
+    const n = slots(pg), qs = cfg.events || [];
+    const rows = Array.from({ length: n }, (_, i) => {
+      const sym = cfg.symbols[i] || '', preset = PRESET.has(sym), custom = (ED.fdCustom && ED.fdCustom[i]) || !preset, q = qs.find((x) => x.symbol === sym);
+      return `<div class="fd-mkt">${n > 1 ? `<span class="lv-l">Market ${i + 1} <em>{price${i ? i + 1 : ''}}</em></span>` : ''}
+        <select class="field sm" data-fdsym="${i}" aria-label="Market">${marketOpts(custom ? '' : sym)}<option value="__custom" ${custom ? 'selected' : ''}>Other symbol…</option></select>
+        ${custom ? `<input class="field sm" data-fdsymc="${i}" value="${esc(sym)}" placeholder="EXCHANGE:SYMBOL, e.g. NASDAQ:AMZN" spellcheck="false" autocomplete="off" aria-label="TradingView symbol">` : ''}
+        <div class="fd-two"><label class="lv-f"><span class="lv-l">Name on the slide</span><input class="field sm" data-fdlabel="${esc(sym)}" value="${esc((cfg.labels || {})[sym] || '')}" placeholder="${esc(nameOf(sym, { ...cfg, labels: {} }, q))}"></label>
+          <label class="lv-f"><span class="lv-l">Decimals</span><select class="field sm" data-fddec="${esc(sym)}"><option value="">Auto</option>${[0, 1, 2, 3, 4, 5].map((k) => `<option ${cfg.dec && cfg.dec[sym] === k ? 'selected' : ''}>${k}</option>`).join('')}</select></label></div>
+        ${cfg.events || cfg.err ? quoteCard(q, sym, cfg) : '<div class="skel" style="height:54px"></div>'}</div>`;
+    }).join('');
+    return sec('Market', rows
+      + field('Colours', `<div class="fd-cols"><label><input type="color" id="fdUp" value="${esc(cfg.up)}"><span>Price up</span></label><label><input type="color" id="fdDown" value="${esc(cfg.down)}"><span>Price down</span></label></div><p class="lv-hint">Shapes and texts marked “follows the direction” take these colours.</p>`)
+      + field('Language', seg('fdLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']])));
+  }
+  function newsSec(pg, cfg) {
+    const n = slots(pg), items = cfg.events || [], on = new Set(chooseNews(items, cfg, n).map((x) => x.id));
+    const list = items.length ? items.map((x) => `<button class="lv-ev ${on.has(x.id) ? 'on' : ''}" data-act="fdPick" data-id="${esc(x.id)}" aria-pressed="${on.has(x.id)}" title="${esc(x.title)}">
+        <span class="cbx ${on.has(x.id) ? 'on' : ''}">${on.has(x.id) ? ic('check', 12) : ''}</span>
+        <span class="lv-evb"><span class="fd-hl">${esc(x.title)}</span><span class="r2"><b class="t">${esc(ago(x.at, 'en'))}</b><span class="cc">${esc(x.source || '')}</span>${x.image ? `<span class="fd-img" title="Has a photo">${ic('image', 12)}</span>` : ''}</span></span></button>`).join('')
+      : cfg.err ? '' : '<div class="skel" style="height:44px"></div><div class="skel" style="height:44px"></div><div class="skel" style="height:44px"></div>';
+    const topic = cfg.src === 'google' || cfg.lang === 'ar';
+    return sec('News feed', field('Source', `<select class="field sm" id="fdSrc">${srcOpts(cfg.src)}</select>`)
+        + (topic ? field('Topic', `<input class="field sm" id="fdQ" value="${esc(cfg.q || '')}" placeholder="${cfg.lang === 'ar' ? 'الذهب، الدولار، النفط…' : 'gold, EUR/USD, oil…'}" autocomplete="off"><p class="lv-hint">Empty: the main market stories.${cfg.lang === 'ar' && cfg.src !== 'google' ? ' Arabic headlines come from Google News.' : ''}</p>`) : '')
+        + field('Language', seg('fdLang', cfg.lang, [['en', 'English'], ['ar', 'العربية']]))
+        + (pg.layers.some((l) => l.feed === '@image') ? `<div class="lv-swr"><div class="grow"><b>Headline photo</b><p>Use the story's photo when it has one.</p></div>${sw(cfg.photo, 'fdPhoto', '', 'Headline photo')}</div>` : ''))
+      + sec('Headlines', `<div class="lv-evs">${list}</div>`, `<span class="lv-count">${on.size} on the slide</span>${cfg.pick && cfg.pick.length ? '<button class="btn link sm lv-auto" data-act="fdAuto">Latest</button>' : '<span class="lv-tag">Latest</span>'}`);
+  }
+  function fieldsSec(pg, cfg) {
+    const ar = cfg.lang === 'ar', live = pg.layers.filter((l) => l.feed), keys = KEYS[cfg.kind];
+    const rows = live.map((l) => {
+      if (l.feed === '@image' || l.feed === '@pos') return `<div class="fd-fld"><span class="fd-n" title="${esc(l.name || '')}">${esc(l.name || 'Layer')}</span><span class="lv-fixed live">${l.feed === '@image' ? 'Headline photo' : 'Day range position'}</span><button class="btn ghost icon sm" data-act="fdUnlink" data-id="${l.id}" aria-label="Stop updating ${esc(l.name || 'this layer')}" title="Stop updating">${ic('x', 14)}</button></div>`;
+      const v = ar && l.feedAr != null ? l.feedAr : l.feed;
+      return `<div class="fd-fld"><span class="fd-n" title="${esc(l.name || '')}">${esc(l.name || 'Text')}</span><input class="field sm" data-fdtpl="${l.id}" value="${esc(v)}" spellcheck="false" autocomplete="off" aria-label="What ${esc(l.name || 'this text')} shows"><button class="btn ghost icon sm" data-act="fdUnlink" data-id="${l.id}" aria-label="Stop updating ${esc(l.name || 'this text')}" title="Stop updating">${ic('x', 14)}</button></div>`;
+    }).join('');
+    const free = pg.layers.filter((l) => !l.feed && !l.locked && (l.type === 'text' || (cfg.kind === 'news' && l.type !== 'text' && l.w > 160 && l.h > 120)));
+    const toned = cfg.kind === 'price' ? pg.layers.filter((l) => !l.locked && l.name !== 'Background') : [];
+    return sec('Fields', `${rows || '<p class="lv-empty">No layer is live yet: pick a text below.</p>'}
+        <div class="fd-chips" role="group" aria-label="Insert a field">${keys.map((k) => `<button class="fd-chip" data-act="fdIns" data-k="{${k}}">{${k}}</button>`).join('')}</div>
+        <p class="lv-hint">Click a field to put it in the last text you edited${ar ? ' (Arabic version)' : ''}. Fixed words are kept as you type them.</p>
+        ${free.length ? `<select class="field sm" id="fdAdd"><option value="">Make another layer live…</option>${free.map((l) => `<option value="${l.type === 'text' ? '' : 'img:'}${l.id}">${esc(l.type === 'text' ? (l.name || String(l.text || '').slice(0, 30)) : (l.name || 'Picture') + ' → headline photo')}</option>`).join('')}</select>` : ''}
+        ${toned.length ? `<details class="fd-tone"><summary>Follows the direction <em>${toned.filter((l) => l.tone).length}</em></summary>${toned.map((l) => `<label class="fd-tl"><input type="checkbox" data-fdtone="${l.id}" ${l.tone ? 'checked' : ''}><span>${esc(l.name || 'Layer')}</span></label>`).join('')}</details>` : ''}`);
+  }
+  function panel(p) {
+    if (!p) return; const d = ED.d, pg = curP(), cfg = pg.live;
+    const word = cfg.kind === 'price' ? 'This slide is a price alert: its texts follow the market.' : 'This slide is a news post: it shows the latest headlines.';
+    let h = `<header class="lv-head"><div class="row sp"><h3>Live data</h3>${stamp(cfg)}</div><p>${word}</p></header>`;
+    if (cfg.err) h += `<p class="lv-note err">${ic('alert', 14)}<span>${esc(cfg.err)}</span></p>`;
+    h += cfg.kind === 'price' ? marketSec(pg, cfg) : newsSec(pg, cfg);
+    h += fieldsSec(pg, cfg);
+    h += sec('Updates', `<div class="lv-sw"><div class="lv-swr"><div class="grow"><b>Update automatically</b><p>While the studio is open, and right before each scheduled post.</p></div>${sw(!cfg.paused, 'fdPause', '', 'Update automatically')}</div></div>`
+      + field('Check for new data every', `<select class="field sm" id="fdEvery" ${cfg.paused ? 'disabled' : ''}>${EVERY.map(([v, l]) => `<option value="${v}" ${+cfg.every === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`)
+      + `<button class="btn secondary lv-wide" data-act="fdRefresh">${ic('refresh', 16)}Refresh now</button>`);
+    h += `<div class="lv-row"><button class="btn ghost sm lv-danger" data-act="fdRemove">Remove live data</button></div>`;
+    const y = p.scrollTop, ey = ($('.lv-evs', p) || {}).scrollTop || 0;
+    p.innerHTML = h; p.scrollTop = y; p.classList.add('lv-panel'); const box = $('.lv-evs', p); if (box) box.scrollTop = ey;
+    if (!cfg.events && !cfg.err && !busyPages.has(cfg)) refresh(d, { force: true });
+  }
+  /** Brand Kit tab of an empty slide: build a price alert or news template */
+  function brandForm(d) {
+    const b = brand(), [w, h] = RATIOS[d.ratio], kind = ED.liveKind, st = ED.liveStyle || 'dark';
+    return `<div class="lv-card"><span class="lv-dots">${b.colors.slice(0, 5).map((c) => `<i style="background:${esc(c.hex)}"></i>`).join('')}</span><div><b>${esc(b.name)} Brand Kit</b><p>${esc(b.fonts.heading)} · ${esc(b.fonts.body)}<br>${w}×${h} · ${kind === 'price' ? 'live price, change and day range' : 'latest headline, photo and source'}</p></div></div>
+      ${field('Style', seg('lvStyle', st, [['dark', 'Dark'], ['light', 'Light'], ['brand', 'Brand']]))}
+      ${kind === 'price' ? field('Market', `<select class="field sm" id="fdBSym">${marketOpts(ED.fdSym || 'OANDA:XAUUSD')}</select>`) : field('Source', `<select class="field sm" id="fdBSrc">${srcOpts(ED.fdSrc || 'fxstreet')}</select>`)}
+      ${field('Language', seg('fdBLang', ED.fdLang || 'en', [['en', 'English'], ['ar', 'العربية']]))}
+      <div class="lv-cta"><button class="btn primary lv-go" data-act="fdBuild">${ic('wand', 18)}Build ${kind === 'price' ? 'price alert' : 'news post'}</button><p class="lv-hint c">Replaces this slide with a new template. You can undo it.</p></div>`;
+  }
+  /** "This slide" tab: keep the design and choose which texts show market data */
+  const slideOffer = () => `<div class="lv-or"><span>or show market data</span></div>
+    <div class="fd-offer"><button class="btn secondary" data-act="fdBind" data-k="price">${ic('trend', 16)}Price alert</button><button class="btn secondary" data-act="fdBind" data-k="news">${ic('doc', 16)}News post</button></div>
+    <p class="lv-hint">Keeps this slide. You choose which texts show the price or the headline.</p>`;
+
+  /* ---------- actions ---------- */
+  const cfgNow = () => curP().live;
+  const reapply = () => (ED.d ? refresh(ED.d, { force: true }) : Promise.resolve());
+  const layerOf = (id) => curP().layers.find((l) => l.id === id);
+  Object.assign(ACT, {
+    fdBuild: async () => {
+      if (!canEdit()) return; const d = ED.d, pg = curP(), [w, h] = RATIOS[d.ratio], kind = ED.liveKind, lang = ED.fdLang || 'en';
+      const layers = (kind === 'price' ? tplPrice : tplNews)(w, h, look(ED.liveStyle || 'dark', lang));
+      mutate(() => { pg.layers = layers; pg.bg = layers[0].fill; ED.sel = null; delete pg.live; attach(pg, kind, kind === 'price' ? { lang, symbols: [ED.fdSym || 'OANDA:XAUUSD'] } : { lang, src: ED.fdSrc || 'fxstreet' }); d.tpl = kind; });
+      toast(`${kind === 'price' ? 'Price alert' : 'News post'} built from your Brand Kit with live data`);
+      await refresh(d, { silent: false, force: true });
+    },
+    fdBind: (a) => {
+      if (!canEdit()) return; const pg = curP(), ar = pg.layers.some((l) => l.type === 'text' && AR_RE.test(String(l.text || '')));
+      mutate(() => { pg.live = { ...defaults(a.dataset.k), lang: ar ? 'ar' : 'en', srcLang: ar ? 'ar' : 'en' }; }); toast('Now choose which texts show live data');
+    },
+    fdRemove: () => { const pg = curP(); if (!pg.live) return; mutate(() => unbind(pg)); toast('Live data removed. The slide keeps what it shows now.'); },
+    fdRefresh: async (a) => { busy(a, true, 'Checking…'); cache.clear(); await refresh(ED.d, { silent: false, force: true }); a.isConnected && busy(a, false); },
+    fdLang: (a) => { const c = cfgNow(); if (c.lang === a.dataset.v) return; c.lang = a.dataset.v; c.pick = null; save(); reapply(); },
+    fdBLang: (a) => { ED.fdLang = a.dataset.v; edPanel(); },
+    fdPhoto: () => { const c = cfgNow(); c.photo = !c.photo; save(); reapply(); },
+    fdPause: () => { const c = cfgNow(); c.paused = !c.paused; save(); if (!c.paused) reapply(); else edPanel(); },
+    fdAuto: () => { cfgNow().pick = null; save(); reapply(); },
+    fdPick: (a) => {
+      const c = cfgNow(), n = slots(curP()), id = a.dataset.id, cur = chooseNews(c.events || [], c, n).map((x) => x.id);
+      const picked = c.pick && c.pick.length ? c.pick.filter((x) => (c.events || []).some((e) => e.id === x)) : [];
+      if (cur.includes(id) && picked.includes(id)) c.pick = picked.filter((x) => x !== id);
+      else if (n === 1) c.pick = [id];
+      else c.pick = [...picked.filter((x) => x !== id), id].slice(-n);
+      save(); reapply();
+    },
+    fdUnlink: (a) => { const l = layerOf(a.dataset.id); if (!l) return; mutate(() => { if (l.feedHid) l.hidden = false; LAYER_KEYS.forEach((k) => delete l[k]); }); },
+    fdIns: (a) => {
+      const f = ED.fdFocus, inp = f && $(`[data-fdtpl="${CSS.escape(f.id)}"]`); if (!inp) return toast('Click in a text field first');
+      const v = inp.value, s = f.s ?? v.length, e = f.e ?? v.length; inp.value = v.slice(0, s) + a.dataset.k + v.slice(e);
+      ED.fdFocus = { id: f.id, s: s + a.dataset.k.length, e: s + a.dataset.k.length };
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+  });
+  const remember = (e) => { const t = e.target; if (t && t.dataset && t.dataset.fdtpl) ED.fdFocus = { id: t.dataset.fdtpl, s: t.selectionStart, e: t.selectionEnd }; };
+  ['focusin', 'keyup', 'click', 'select'].forEach((ev) => document.addEventListener(ev, remember, true));
+  document.addEventListener('change', (e) => {
+    const t = e.target; if (!ED.d || ED.tab !== 'data' || !t || !t.dataset) return;
+    // the Brand Kit form, before the slide is live
+    if (t.id === 'fdBSym') { ED.fdSym = t.value; return; }
+    if (t.id === 'fdBSrc') { ED.fdSrc = t.value; return; }
+    const pg = curP(), c = pg.live; if (!c || !KINDS.includes(c.kind)) return;
+    const ds = t.dataset;
+    if (ds.fdsym != null) {
+      const i = +ds.fdsym; ED.fdCustom = ED.fdCustom || {};
+      if (t.value === '__custom') { ED.fdCustom[i] = true; return panel($('#edPanel')); }
+      ED.fdCustom[i] = false; c.symbols[i] = t.value; save(); return reapply();
+    }
+    if (ds.fdsymc != null) {
+      const v = t.value.trim().toUpperCase(); if (!SYM_RE.test(v)) return toast('Write the symbol as on TradingView: EXCHANGE:SYMBOL, e.g. NASDAQ:AMZN');
+      c.symbols[+ds.fdsymc] = v; save(); return reapply();
+    }
+    if (ds.fdlabel != null) { c.labels = c.labels || {}; const v = t.value.trim(); if (v) c.labels[ds.fdlabel] = v; else delete c.labels[ds.fdlabel]; save(); return reapply(); }
+    if (ds.fddec != null) { c.dec = c.dec || {}; if (t.value === '') delete c.dec[ds.fddec]; else c.dec[ds.fddec] = +t.value; save(); return reapply(); }
+    if (ds.fdtpl != null) {
+      const l = layerOf(ds.fdtpl); if (!l) return; const key = c.lang === 'ar' && l.feedAr != null ? 'feedAr' : c.lang === 'ar' && AR_RE.test(t.value) ? 'feedAr' : 'feed';
+      if ((l[key] ?? '') === t.value) return;
+      mutate(() => { l[key] = t.value; }, () => {}); return reapply();
+    }
+    if (ds.fdtone != null) { const l = layerOf(ds.fdtone); if (!l) return; mutate(() => { if (t.checked) l.tone = l.type === 'text' ? 'color' : 'fill'; else delete l.tone; }, () => {}); return reapply(); }
+    if (t.id === 'fdAdd' && t.value) {
+      const img = t.value.startsWith('img:'), l = layerOf(t.value.replace(/^img:/, '')); if (!l) return;
+      mutate(() => { l.feed = img ? '@image' : String(l.text || ''); });
+      if (!img) ED.fdFocus = { id: l.id }; return reapply();
+    }
+    if (t.id === 'fdUp' || t.id === 'fdDown') { c[t.id === 'fdUp' ? 'up' : 'down'] = t.value.toUpperCase(); save(); return reapply(); }
+    if (t.id === 'fdSrc') { c.src = t.value; c.pick = null; save(); return reapply(); }
+    if (t.id === 'fdQ') { c.q = t.value.trim().slice(0, 120); c.pick = null; save(); return reapply(); }
+    if (t.id === 'fdEvery') { c.every = +t.value; save(); }
+  });
+
+  /* ---------- automatic updates ---------- */
+  async function tick() {
+    if (document.hidden || persist.readOnly) return;
+    const now = Date.now();
+    for (const d of S.designs) {
+      const pages = feedPages(d); if (!pages.length) continue;
+      if (pages.some((pg) => !pg.live.paused && now - (pg.live.at || 0) >= (pg.live.every || 5) * 60_000)) await refresh(d);
+      // scheduled news posts: re-send their slides when the headlines on them change (prices change all the time:
+      // the API renders those right before publishing)
+      const news = pages.filter((pg) => pg.live.kind === 'news' && !pg.live.paused); if (!news.length || !PUB) continue;
+      for (const p of S.posts.filter((x) => x.d === d.id && x.status === 'Scheduled' && x.publish && x.publish.state === 'pending')) {
+        try {
+          const sig = (await Promise.all(news.map(async (pg) => chooseNews((await dataFor(pg.live, slots(pg))).items, pg.live, slots(pg)).map((x) => x.id).join(',')))).join('#');
+          if (p.feedSig !== sig) { const first = p.feedSig == null; p.feedSig = sig; save(); if (!first) PUB.prepare(p); }
+        } catch (e) { /* next tick */ }
+      }
+    }
+  }
+  setInterval(() => { tick(); }, 60_000);
+  setTimeout(() => { tick(); }, 5000);
+  const _oe24 = openEditor;
+  openEditor = function (id) { _oe24(id); const d = ED.d; if (d && feedPages(d).some((pg) => Date.now() - (pg.live.at || 0) > 60_000)) refresh(d); };
+
+  FEEDS = { panel, brandForm, slideOffer, attach, unbind };
+})();
+
+/* ============ headless: slides rendered by the API (live posts with no studio tab open) ============ */
 /* The server opens /social-media/render in a headless browser, boots this engine with that post's brand,
    design and settings, and calls renderPost: the same live data mapping and the same export renderer as
    "Schedule" in the studio, so the published file is identical to a studio export. */

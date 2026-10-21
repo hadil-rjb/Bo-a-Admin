@@ -5,13 +5,14 @@ import { useEffect } from "react";
 /**
  * Headless renderer for the API (backend/src/social/publishing/live-render.service.ts).
  *
- * A live calendar post scheduled with no studio tab open still has to go out with that day's events.
+ * A live post (economic calendar, price alert, news) scheduled with no studio tab open still has to go
+ * out with fresh data: that day's events, the latest price or the latest headlines.
  * The API opens this page in headless Chromium, calls bogaBoot() with the post's brand, design and
  * settings, then bogaRender(): the studio engine itself applies the live data and renders the slides,
  * so the files are identical to what "Schedule" in the studio uploads.
  *
  * The page holds no data and makes no API calls: requests the engine makes go to window.bogaApi,
- * which the API exposes to the page (only the calendar events are answered).
+ * which the API exposes to the page (only live data is answered: calendar events, quotes, news, photos).
  */
 type Renderer = { renderPost: (designId: string, postId: string) => Promise<{ images: string[]; live: unknown[] }> };
 type Win = Window & {
@@ -20,6 +21,9 @@ type Win = Window & {
   bogaRender?: (designId: string, postId: string) => Promise<{ images: string[]; live: unknown[] }>;
   bogaReady?: boolean;
 };
+
+/** The only requests the engine makes while rendering: live data */
+const LIVE_PATHS = /^\/social\/(calendar\/events|markets\/(quotes|news|photo))\?/;
 
 const persist = {
   readOnly: true,
@@ -40,7 +44,7 @@ export default function StudioRenderPage() {
       const { bootStudio } = await import("@/studio/engine");
       let renderer: Renderer | null = null;
       const api = async (path: string, o?: { method?: string }) => {
-        if ((!o?.method || o.method === "GET") && path.startsWith("/social/calendar/events") && w.bogaApi) return w.bogaApi(path);
+        if ((!o?.method || o.method === "GET") && LIVE_PATHS.test(path) && w.bogaApi) return w.bogaApi(path);
         throw new Error("Not available while rendering");
       };
       bootStudio({

@@ -4,6 +4,7 @@ import { InjectModel } from "@nestjs/mongoose";
 import { Model } from "mongoose";
 import type { Browser } from "puppeteer-core";
 import { CalendarService } from "../calendar/calendar.service";
+import { MarketsService } from "../markets/markets.service";
 import { SocialBrand } from "../schemas/brand.schema";
 import { SocialDesign } from "../schemas/design.schema";
 import { SocialPost } from "../schemas/post.schema";
@@ -16,23 +17,24 @@ const RENDER_TIMEOUT_MS = Number(process.env.SOCIAL_LIVE_RENDER_TIMEOUT_MS) || 1
 /** The browser is closed after this long without renders (it holds ~150–250 MB) */
 const IDLE_MS = 60_000;
 
-/** A page of a design is a live calendar template once the studio stored its mapping */
+/** A page of a design is a live template (economic calendar, price alert, news) once the studio stored its mapping */
 export const hasLive = (design: { pages?: any[] } | null | undefined) => !!design?.pages?.some((pg) => pg?.live?.map);
 
-/** Settings → Export & publishing → "Refresh live calendar posts on the server" (on unless switched off) */
+/** Settings → Export & publishing → "Refresh live posts on the server" (on unless switched off) */
 export const liveServerOn = (set: Record<string, unknown> | undefined) => set?.liveServer !== 0 && set?.liveServer !== false;
 
 export interface LiveRefresh { postId: string; brandId: string; ms: number; pages: any[] }
 
 /**
- * Live calendar posts, refreshed by the server just before they're published.
+ * Live posts (economic calendar, price alert, news), refreshed by the server just before they're published.
  *
  * The studio fills a live design with the events of the post's day and uploads the slides when it
  * schedules the post, and again whenever that day's data changes, but only while a studio tab is open.
  * So that a post scheduled days ahead still goes out with fresh data, the scheduler calls refresh()
  * right before publishing: the studio's own engine runs in headless Chromium (FRONTEND_URL +
- * /social-media/render), applies that day's events (fetched here, from TradingView / Forex Factory)
- * and renders the slides exactly like a studio export; they replace the post's media.
+ * /social-media/render), applies the data (that day's events from TradingView / Forex Factory, the latest
+ * prices, the latest headlines, all fetched here) and renders the slides exactly like a studio export;
+ * they replace the post's media.
  */
 @Injectable()
 export class LiveRenderService implements OnModuleDestroy {
@@ -47,6 +49,7 @@ export class LiveRenderService implements OnModuleDestroy {
     @InjectModel(SocialBrand.name) private brands: Model<SocialBrand>,
     @InjectModel(SocialWorkspace.name) private workspaces: Model<SocialWorkspace>,
     private calendar: CalendarService,
+    private markets: MarketsService,
     private publisher: PublisherService,
     private cfg: ConfigService,
   ) {}
@@ -90,6 +93,7 @@ export class LiveRenderService implements OnModuleDestroy {
     const r = { brandId, postId, ms: Date.now() - started, pages: live };
     for (const p of live) {
       if (p.error) this.log.warn(`Post ${postId} (${brandId}) slide ${p.page + 1}: live data unavailable (${p.error}), kept the last data`);
+      else if (p.kind) this.log.log(`Post ${postId} (${brandId}) slide ${p.page + 1}: ${p.kind} · ${p.source} · ${(p.shown || []).join(" | ") || "none"}`);
       else this.log.log(`Post ${postId} (${brandId}) slide ${p.page + 1}: ${p.date} · ${p.source} · ${p.shown.length}/${p.events} events: ${p.shown.join(" | ") || "none"}`);
     }
     this.log.log(`Refreshed live post ${postId} (${brandId}): ${images.length} slide(s) in ${r.ms} ms`);
@@ -111,10 +115,13 @@ export class LiveRenderService implements OnModuleDestroy {
     page.on("pageerror", (e) => errors.push(String((e as Error)?.message || e)));
     try {
       page.setDefaultTimeout(RENDER_TIMEOUT_MS);
-      // the engine's only request: the day's events, answered by this server
+      // the engine's only requests: live data, answered by this server
       await page.exposeFunction("bogaApi", async (path: string) => {
-        const q = new URL(path, "http://x").searchParams;
-        return this.calendar.events({ date: q.get("date") || "", tz: q.get("tz") || undefined, countries: q.get("countries") || undefined, source: q.get("source") || undefined });
+        const u = new URL(path, "http://x"), q = u.searchParams, opt = (k: string) => q.get(k) || undefined;
+        if (u.pathname === "/social/markets/quotes") return this.markets.quotes(opt("symbols"));
+        if (u.pathname === "/social/markets/photo") return this.markets.photo(opt("url"));
+        if (u.pathname === "/social/markets/news") return this.markets.news({ source: opt("source"), q: opt("q"), lang: opt("lang"), limit: opt("limit") });
+        return this.calendar.events({ date: q.get("date") || "", tz: opt("tz"), countries: opt("countries"), source: opt("source") });
       });
       await page.goto(`${this.studioUrl}/social-media/render`, { waitUntil: "load", timeout: RENDER_TIMEOUT_MS });
       await page.waitForFunction("window.bogaReady === true", { timeout: RENDER_TIMEOUT_MS });
