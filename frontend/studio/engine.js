@@ -3100,7 +3100,10 @@ Object.assign(IC, {
 
   /* ---------- planner ---------- */
   Object.assign(P, { view: 'week', mo: new Date(), fPf: null, fSt: 'All', best: true, bn: null });
-  try { if (localStorage.getItem('uxb.pside') === '0') P.side = false; } catch (e) {}
+  try { if (localStorage.getItem('uxb.pside') === '0') P.side = false; const bn = localStorage.getItem('uxb.pbest'); if (bn != null) P.bestNet = bn || null; } catch (e) {}
+  /** Networks offered for best times (the connected ones, else all), and the one shown (null = off) */
+  const bestNets = () => { const c = conn(); return c.length ? c : Object.keys(PLATFORMS); };
+  const bestNet = () => { const L = bestNets(); if (P.bestNet === null) return null; if (!P.bestNet || !L.includes(P.bestNet)) P.bestNet = L[0]; return P.bestNet; };
   const fvis = (p) => (P.fSt === 'All' || p.status === P.fSt) && (!P.fPf || p.pf.some((k) => P.fPf.has(k)));
   const fnets = () => (P.fPf ? [...P.fPf] : conn());
   const stDot = (s) => `<i class="sd7 ${s}"></i>`;
@@ -3127,7 +3130,8 @@ Object.assign(IC, {
   const HH = 56; // px per hour
   const narrow = () => innerWidth <= 760;
   function weekView() {
-    const all = [...Array(7)].map((_, i) => addD(P.ws, i)), today = iso(new Date()), now = new Date(), nets = fnets().length ? fnets() : ['ig', 'li', 'fb', 'x']; // no network yet: the usual ones
+    const all = [...Array(7)].map((_, i) => addD(P.ws, i)), today = iso(new Date()), now = new Date(), bn = bestNet(), nets = bn ? [bn] : bestNets();
+    P.best = !!bn;
     if (!P.focus || !all.some((d) => iso(d) === P.focus)) P.focus = all.some((d) => iso(d) === today) ? today : iso(all[0]);
     const days = narrow() ? all.filter((d) => iso(d) === P.focus) : all;
     // heat: each hour's score, relative to the best hour of the week
@@ -3154,7 +3158,7 @@ Object.assign(IC, {
       return `<div class="cal-col ${k === today ? 'today' : ''} ${we ? 'we' : ''}" data-date="${k}">${cells}${cards}${line}</div>`;
     };
     const strip = narrow() ? `<div class="cal-strip" role="tablist">${all.map((d) => { const k = iso(d), n = S.posts.filter((p) => p.date === k && fvis(p)).length; return `<button role="tab" aria-selected="${k === P.focus}" class="${k === P.focus ? 'on' : ''} ${k === today ? 'today' : ''}" data-act="pfocus" data-date="${k}"><small>${fmt(d, { weekday: 'short' })}</small><b>${d.getDate()}</b>${n ? '<i></i>' : ''}</button>`; }).join('')}</div>` : '';
-    return `${strip}<div class="cal ${narrow() ? 'one' : ''}" style="--hh:${HH}px;--days:${days.length}">
+    return `${strip}<div class="cal ${narrow() ? 'one' : ''}" style="--hh:${HH}px;--days:${days.length};--hc:${bn ? PLATFORMS[bn].c : '#3b82f6'}">
       <div class="cal-head"><div class="cal-gut"><small title="${esc(tzLabel(schedTz()))}">${esc((tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1])}</small></div>${days.map(head).join('')}</div>
       <div class="cal-body" id="calBody"><div class="cal-grid"><div class="cal-hours">${[...Array(24)].map((_, h) => `<span>${h ? pad(h) + ':00' : ''}</span>`).join('')}</div>${days.map(col).join('')}</div></div></div>`;
   }
@@ -3182,28 +3186,11 @@ Object.assign(IC, {
     });
     return `<div class="l7">${out}</div>`;
   }
-  function heat() {
-    const nets = conn(); if (!nets.length) return '<div class="empty7 sm">Connect a network in Settings to see best times.</div>';
-    P.bn = nets.includes(P.bn) ? P.bn : nets[0]; const hrs = [8, 10, 12, 14, 16, 18, 20, 22], order = [1, 2, 3, 4, 5, 6, 0], dn = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const nextFor = (dow) => { for (let i = 0; i < 7; i++) { const d = addD(new Date(), i); if (d.getDay() === dow) return iso(d); } };
-    const top = []; for (let i = 0; i < 7; i++) { const k = iso(addD(new Date(), i)); bestTimes([P.bn], k, 3).forEach((b) => { if (i > 0 || tmin(b.t) > new Date().getHours() * 60 + new Date().getMinutes() + 30) top.push({ k, ...b }); }); }
-    top.sort((a, b) => b.s - a.s);
-    return `<div class="chips">${nets.map((k) => `<button class="pnet ${P.bn === k ? 'on' : ''}" style="--c:${PLATFORMS[k].c}" data-act="pbn" data-k="${k}"><i></i>${PLATFORMS[k].n}</button>`).join('')}</div>
-      <div class="heat7"><small></small>${dn.map((d) => `<small>${d[0]}</small>`).join('')}${hrs.map((h) => `<small class="h">${pad(h)}</small>${order.map((dw) => { const s = score(P.bn, dw, h); return `<button style="--s:${s.toFixed(2)}" data-act="pnew" data-date="${nextFor(dw)}" data-time="${pad(h)}:00" title="${dn[order.indexOf(dw)]} ${pad(h)}:00 · ${level(s)}" aria-label="${dn[order.indexOf(dw)]} ${pad(h)}:00, ${level(s)} engagement"></button>`; }).join('')}`).join('')}</div>
-      <div><span class="label">Top slots this week</span><div class="top7">${top.slice(0, 3).map((x) => `<button data-act="pnew" data-date="${x.k}" data-time="${x.t}">${ic('studio', 14)}<b>${dlabel(x.k)}</b>${x.t}<small>${level(x.s)}</small></button>`).join('')}</div></div>
-      <p class="xs-t muted">Based on typical engagement patterns for each network. Connect analytics to use your own data.</p>`;
-  }
   function side() {
-    const tabs = `<div class="tabs">${[['designs', 'Designs'], ['ideas', 'Ideas'], ['best', 'Best times']].map(([k, l]) => `<button class="${P.tray === k ? 'on' : ''}" data-act="tray" data-t="${k}">${l}</button>`).join('')}</div>`;
-    let body;
-    if (P.tray === 'best') body = heat();
-    else if (P.tray === 'ideas') body = `<div class="tray">${S.ideas.map((i) => `<div class="idea"><p>${esc(i.t)}</p><div class="row sp"><span class="xs-t muted">${i.cat}</span><button class="btn secondary sm" data-act="fromTpl" data-tpl="${i.tpl}">Design it</button></div></div>`).join('')}</div>`;
-    else {
-      const free = S.designs.filter((d) => !S.posts.some((p) => p.d === d.id)), rest = S.designs.filter((d) => S.posts.some((p) => p.d === d.id));
-      const card = (d) => { const dd = getD(d.id); return `<div class="dcard" role="button" tabindex="0" draggable="true" data-drag="${d.id}" data-act="pnewd" data-id="${d.id}"><div class="thumbbox" style="width:52px;height:52px;background:transparent">${thumb(dd.pages[0], d.ratio, 48, 48)}</div><div class="grow"><p class="sm-t" style="font-weight:500;line-height:1.3">${esc(d.name)}</p><p class="xs-t muted">${ratioLabel(d.ratio)} · ${d.status}</p></div></div>`; };
-      body = `<p class="xs-t muted">Drag a design onto a day, or click it to schedule.</p><div class="tray">${free.map(card).join('') || '<p class="xs-t muted">Every design is scheduled.</p>'}</div>${rest.length ? `<span class="label" style="margin:4px 0 0">Already planned</span><div class="tray">${rest.map(card).join('')}</div>` : ''}`;
-    }
-    return `<div class="widget pside">${tabs}${body}</div>`;
+    const free = S.designs.filter((d) => !S.posts.some((p) => p.d === d.id)), rest = S.designs.filter((d) => S.posts.some((p) => p.d === d.id));
+    const card = (d) => { const dd = getD(d.id); return `<div class="dcard" role="button" tabindex="0" draggable="true" data-drag="${d.id}" data-act="pnewd" data-id="${d.id}"><div class="thumbbox" style="width:52px;height:52px;background:transparent">${thumb(dd.pages[0], d.ratio, 48, 48)}</div><div class="grow"><p class="sm-t">${esc(d.name)}</p><small class="xs-t muted">${d.ratio} · ${d.status}</small></div></div>`; };
+    return `<div class="widget pside"><div class="pside-h"><b>Designs</b><span class="xs-t muted">${S.designs.length}</span></div><p class="xs-t muted">Drag a design onto a time slot, or click it to schedule.</p>
+      <div class="pside-list">${free.length ? `<div class="tray">${free.map(card).join('')}</div>` : '<p class="xs-t muted">Every design is scheduled.</p>'}${rest.length ? `<span class="label">Already planned</span><div class="tray">${rest.map(card).join('')}</div>` : ''}</div></div>`;
   }
   PAGES.planner = {
     t: 'Social Media Planner', s: 'Plan, schedule and publish. Drag a post to another day to reschedule it.',
@@ -3220,7 +3207,7 @@ Object.assign(IC, {
       return `<div class="ptool"><b class="ttl">${title}</b>
         <div class="chips">${Object.entries(PLATFORMS).filter(([k]) => S.platforms[k]).map(([k, v]) => `<button class="pnet ${!P.fPf || P.fPf.has(k) ? 'on' : ''}" style="--c:${v.c}" data-act="pfn" data-k="${k}" aria-pressed="${!P.fPf || P.fPf.has(k)}"><i></i>${v.n}</button>`).join('')}</div>
         <select class="field sm" id="pSt" style="width:136px" aria-label="Status filter">${['All', 'Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((s) => `<option value="${s}" ${P.fSt === s ? 'selected' : ''}>${s === 'All' ? 'All statuses' : s}</option>`).join('')}</select>
-        ${P.view === 'week' ? `<span class="pswitch"><button class="switch ${P.best ? 'on' : ''}" data-act="pbest" role="switch" aria-checked="${P.best}" aria-label="Suggest best times"></button>Best times</span>` : ''}
+        ${P.view === 'week' ? (() => { const bn = bestNet(); return `<label class="pbest ${bn ? 'on' : ''}" style="--c:${bn ? PLATFORMS[bn].c : 'var(--text-3)'}" title="Best times to post, shown in the calendar"><i></i><span>Best times</span><select id="pBest" aria-label="Best times for">${bestNets().map((k) => `<option value="${k}" ${bn === k ? 'selected' : ''}>${PLATFORMS[k].n}</option>`).join('')}<option value="" ${bn ? '' : 'selected'}>Off</option></select>${ic('chevD', 14)}</label>`; })() : ''}
         <button class="btn secondary sm psidebtn ${P.side === false ? '' : 'on'}" data-act="pside" aria-pressed="${P.side !== false}" title="${P.side === false ? 'Show' : 'Hide'} designs, ideas and best times">${ic('layout', 16)}<span class="hide-sm">Panel</span></button></div>
         ${stats}<div class="pl7 ${P.side === false ? 'noside' : ''}"><div class="widget pcal ${P.view}" style="padding:${P.view === 'week' ? 0 : 10}px">${P.view === 'month' ? monthView() : P.view === 'list' ? listView() : weekView()}</div>${P.side === false ? '' : side()}</div>${P.view === 'week' ? (setTimeout(calScroll, 0), '') : ''}`;
     },
@@ -3229,8 +3216,6 @@ Object.assign(IC, {
     pnav: (a) => { const n = +a.dataset.n; if (P.view === 'month') P.mo = n === 0 ? new Date() : new Date(P.mo.getFullYear(), P.mo.getMonth() + n, 1); else P.ws = n === 0 ? monday(new Date()) : addD(P.ws, 7 * n); route(); },
     pview: (a) => { const v = a.dataset.v; if (v === 'month' && P.view !== 'month') P.mo = addD(P.ws, 3); if (v === 'week' && P.view === 'month') { const n = new Date(); P.ws = P.mo.getMonth() === n.getMonth() && P.mo.getFullYear() === n.getFullYear() ? monday(n) : monday(new Date(P.mo.getFullYear(), P.mo.getMonth(), 1)); } P.view = v; route(); },
     pfn: (a) => { const all = conn(), s = P.fPf ? new Set(P.fPf) : new Set(all), k = a.dataset.k; s.has(k) ? s.delete(k) : s.add(k); if (!s.size) s.add(k); P.fPf = all.every((x) => s.has(x)) ? null : s; route(); },
-    pbest: () => { P.best = !P.best; route(); },
-    pbn: (a) => { P.bn = a.dataset.k; route(); },
     pday: (a) => { P.view = 'week'; P.ws = monday(dparse(a.dataset.date)); P.focus = a.dataset.date; route(); },
     pfocus: (a) => { P.focus = a.dataset.date; route(); },
     pside: () => { P.side = P.side === false; try { localStorage.setItem('uxb.pside', P.side ? '1' : '0'); } catch (e) {} route(); },
@@ -3241,7 +3226,10 @@ Object.assign(IC, {
     pdel: (a) => { const i = S.posts.findIndex((x) => x.id === a.dataset.id); if (i < 0) return; const [p] = S.posts.splice(i, 1); save(); toastU('Post deleted', () => { S.posts.splice(Math.min(i, S.posts.length), 0, p); save(); route(); }); route(); },
     pnow: (a) => { const p = S.posts.find((x) => x.id === a.dataset.id); if (p) PUB.publishNow(p); },
   });
-  document.addEventListener('change', (e) => { if (e.target.id === 'pSt') { P.fSt = e.target.value; route(); } });
+  document.addEventListener('change', (e) => {
+    if (e.target.id === 'pSt') { P.fSt = e.target.value; route(); }
+    if (e.target.id === 'pBest') { P.bestNet = e.target.value || null; try { localStorage.setItem('uxb.pbest', e.target.value); } catch (x) {} route(); }
+  });
   document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.classList && (e.target.classList.contains('pc7') || e.target.classList.contains('mc7') || e.target.classList.contains('l7r') || e.target.classList.contains('dcard'))) { e.preventDefault(); e.target.click(); } });
 
   /* drag onto an hour slot of the week grid: a post moves to that day and time (on the half hour under the pointer), a design opens the scheduler there */

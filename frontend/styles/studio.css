@@ -1760,3 +1760,19 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 @container (max-width:150px){.cal-post .cp-th{display:none}}
 @container (max-width:110px){.cal-post .cp-f{display:none}.cal-post{padding-left:7px;gap:4px}.cal-cell .pct{font-size:9.5px}.cal-cell .plus i{display:none}}
 .cal.one .cal-head{display:none}
+/* best times in the calendar, in the chosen network's color (Metricool) */
+.cal-cell{background:color-mix(in srgb,var(--hc,#3b82f6) calc(var(--s) * var(--s) * 52%),transparent)}
+.pbest{position:relative;display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 10px 0 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);font-size:13px;color:var(--text-2);cursor:pointer}
+.pbest.on{border-color:color-mix(in srgb,var(--c) 55%,var(--border));color:var(--text-1)}
+.pbest i{width:9px;height:9px;border-radius:50%;background:var(--c);flex:none}
+.pbest select{appearance:none;-webkit-appearance:none;border:0;background:none;font:600 13px var(--sans);color:var(--text-1);padding:0 2px;cursor:pointer;outline:none}
+.pbest .ic{color:var(--text-3);pointer-events:none}
+.pbest:focus-within{box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 25%,transparent)}
+@media (max-width:560px){.pbest>span{display:none}}
+/* designs panel: its own scroll, next to the calendar */
+.pl7 .pside{position:sticky;top:12px;max-height:min(calc(100vh - 220px),1100px);min-height:0;overflow:hidden;gap:10px}
+.pside-h{display:flex;align-items:baseline;justify-content:space-between}
+.pside-h b{font:600 15px var(--jak)}
+.pside-list{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;margin:0 -6px;padding:0 6px 6px;scrollbar-width:thin;display:flex;flex-direction:column;gap:8px}
+.pside-list .label{margin:6px 0 0}
+@media (max-width:1180px){.pl7 .pside{position:static;max-height:none}.pside-list{max-height:none;overflow:visible}.pside-list .tray{flex-direction:row;overflow-x:auto}.pside-list .tray>*{flex:0 0 240px}}
