@@ -1985,3 +1985,6 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .pfilter .pdd-sep{margin:6px 4px}
 .pf-reset{margin-top:2px}
 .ddm.noanim{animation:none!important}
+/* sidebar: the workspace button shows the workspace, not the brand */
+.ws-ico{flex:none;width:36px;height:36px;display:grid;place-items:center;border-radius:10px;background:var(--accent);color:#fff;box-shadow:0 4px 12px rgba(253,14,53,.25)}
+.ws-btn .t{min-width:0}.ws-btn b,.ws-btn small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
