@@ -3199,8 +3199,8 @@ Object.assign(IC, {
     const over = document.documentElement.scrollHeight - innerHeight; if (over > 0 && h - over >= 420) g.style.setProperty('--plh', h - over + 'px');
   };
   addEventListener('resize', () => { if (/^#\/planner/.test(location.hash)) fitPlanner(); });
-  // first look at a week: start at 7:00 (or just before now); after that keep where the user scrolled
-  const calScroll = () => { const b = $('#calBody'); if (!b) return; const key = iso(P.ws) + (narrow() ? P.focus : ''); if (P.calKey !== key) { P.calKey = key; const h = iso(new Date()) >= iso(P.ws) && iso(new Date()) <= iso(addD(P.ws, 6)) ? Math.max(0, new Date().getHours() - 2) : 7; b.scrollTop = Math.min(h, 7) * HH; P.calY = b.scrollTop; } else b.scrollTop = P.calY || 0; b.addEventListener('scroll', () => { P.calY = b.scrollTop; }, { passive: true }); };
+  // first look at a week: the current time in the middle (this week), else 7:00 at the top; after that keep where the user scrolled
+  const calScroll = () => { const b = $('#calBody'); if (!b) return; const key = iso(P.ws) + (narrow() ? P.focus : ''); if (P.calKey !== key) { P.calKey = key; const n = new Date(), thisWeek = iso(n) >= iso(P.ws) && iso(n) <= iso(addD(P.ws, 6)); b.scrollTop = thisWeek ? ((n.getHours() * 60 + n.getMinutes()) / 60) * HH - b.clientHeight / 2 : 7 * HH; P.calY = b.scrollTop; } else b.scrollTop = P.calY || 0; b.addEventListener('scroll', () => { P.calY = b.scrollTop; }, { passive: true }); };
   // the grid follows the clock: move the "now" line every minute, and switch between day and week when the width crosses the phone size
   let calWide = !narrow();
   addEventListener('resize', () => { if (calWide !== !narrow() && /^#\/planner/.test(location.hash) && P.view === 'week') { calWide = !narrow(); route(); } });
@@ -3249,7 +3249,7 @@ Object.assign(IC, {
           <div class="pdd-h">Status</div>${[['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((x) => [x, x, ST_C[x]])].map(([v, l, c]) => fRow('pfst', `data-v="${v}"`, P.fSt === v, c, l, false)).join('')}
           ${active ? `<div class="pdd-sep"></div><button type="button" class="pf-reset" data-act="pfReset">Clear filters</button>` : ''}</div></div>`;
       const best = P.view === 'week' ? (() => { const bn = bestNet(); return pdd('best', 'Best Times', bn || '', [...bestNets().map((k) => [k, PLATFORMS[k].n, PLATFORMS[k].c]), ['', 'Off', '']], 'Best times for'); })() : '';
-      // tabs: every post, one network, or the failed ones (other statuses are in Filter)
+      // tabs: every post, one network (Best Times follows it), or the failed ones (other statuses are in Filter)
       const one = P.fPf && P.fPf.size === 1 ? [...P.fPf][0] : null, nFail = S.posts.filter((p) => p.status === 'Failed').length;
       const tab = (v, on, icon, label) => `<button role="tab" aria-selected="${on}" class="${on ? 'on' : ''}" data-act="ptab" data-v="${v}">${icon}<span>${label}</span></button>`;
       const tabs = `<div class="ptabs"><div class="ptabs-l" role="tablist" aria-label="Show">${tab('all', !P.fPf && P.fSt === 'All', ic('tbl', 18), 'All Posts')}${bestNets().map((k) => tab(k, one === k && P.fSt === 'All', ic('net_' + k, 18), PLATFORMS[k].n)).join('')}${tab('failed', !P.fPf && P.fSt === 'Failed', ic('xc', 18), `Failed (${nFail})`)}</div></div>`;
@@ -3268,7 +3268,7 @@ Object.assign(IC, {
     pfnAll: () => { P.fPf = null; route(); },
     pfst: (a) => { P.fSt = a.dataset.v; P.openDd = 'flt'; route(); },
     pfReset: () => { P.fSt = 'All'; route(); },
-    ptab: (a) => { const v = a.dataset.v; P.fPf = PLATFORMS[v] ? new Set([v]) : null; P.fSt = v === 'failed' ? 'Failed' : v === 'all' || PLATFORMS[v] ? 'All' : P.fSt; route(); },
+    ptab: (a) => { const v = a.dataset.v; P.fPf = PLATFORMS[v] ? new Set([v]) : null; P.fSt = v === 'failed' ? 'Failed' : v === 'all' || PLATFORMS[v] ? 'All' : P.fSt; if (PLATFORMS[v]) { P.bestNet = v; try { localStorage.setItem('uxb.pbest', v); } catch (x) {} } route(); },
     pday: (a) => { P.view = 'week'; P.ws = monday(dparse(a.dataset.date)); P.focus = a.dataset.date; route(); },
     pfocus: (a) => { P.focus = a.dataset.date; route(); },
     pddp: (a) => {
