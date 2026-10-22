@@ -2358,4 +2358,4 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .bm-list .it small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bm-list .it b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bm-none{padding:10px 8px;font-size:12.5px;color:var(--text-3)}
-.pbest .pnet-i .ic,.pbest .ddm .pnet-i .ic{color:#fff}
+.pbest .pnet-i .ic,.pbest .ddm .pnet-i .ic,.ptool-r .pdd[data-k="best"] .ddb .pnet-i .ic{color:#fff}
