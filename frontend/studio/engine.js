@@ -433,7 +433,7 @@ try { setTheme(JSON.parse(localStorage.getItem('uxb.t')) || 'dark'); } catch (e)
 
 /* ---------- Sidebar ---------- */
 const NAV = [
-  ['overview', 'Overview', 'grid'], ['planner', 'Planner', 'cal'], ['studio', 'Studio', 'studio', 'New'], ['brand', 'Brand kit', 'palette', 'New'], ['settings', 'Settings', 'settings'],
+  ['overview', 'Overview', 'grid'], ['studio', 'Studio', 'studio', 'New'], ['planner', 'Planner', 'cal'], ['brand', 'Brand kit', 'palette', 'New'], ['settings', 'Settings', 'settings'],
 ];
 function renderSide() {
   $('#side').innerHTML = `
@@ -483,8 +483,8 @@ function route() {
   $$('#nav a[data-k]').forEach((a) => a.classList.toggle('on', a.dataset.k === (PAGES[page] ? page : 'overview')));
   closeDrawer();
   $('#top').innerHTML = `<button class="btn secondary icon" data-act="menu" title="Menu" style="display:${innerWidth > 1024 ? 'none' : 'inline-flex'}">${ic('menu')}</button>
-    <div class="grow"><h1>${p.t}</h1><p class="sub">${p.s}</p></div><button class="bpill" data-act="manageBrands" title="Switch brand">${pillHTML()}</button>${p.actions ? p.actions() : ''}
-    <button class="btn secondary icon" data-act="theme" title="Toggle theme">${ic(S.theme === 'dark' ? 'sun' : 'moon')}</button>`;
+    <div class="grow"><h1>${p.t}</h1><p class="sub">${p.s}</p></div><button class="bpill" data-act="manageBrands" title="Switch brand">${pillHTML()}</button>${p.themeFirst ? '' : p.actions ? p.actions() : ''}
+    <button class="btn secondary icon" data-act="theme" title="Toggle theme">${ic(S.theme === 'dark' ? 'sun' : 'moon')}</button>${p.themeFirst && p.actions ? p.actions() : ''}`;
   $('#view').innerHTML = `<div class="page">${p.view()}</div>`; scrollTo(0, 0);
 }
 addEventListener('hashchange', route);
@@ -2682,6 +2682,8 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
 
 /* ---- v8: extra SVG icons (Lucide paths + simple network marks) ---- */
 Object.assign(IC, {
+  xc: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+  tbl: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/><path d="M12 3v18"/>',
   net_ig: '<rect width="20" height="20" x="2" y="2" rx="5"/><path d="M16 11.4A4 4 0 1 1 12.6 8 4 4 0 0 1 16 11.4Z"/><path d="M17.5 6.5h.01"/>',
   net_li: '<path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-4 0v7h-4v-7a6 6 0 0 1 6-6Z"/><rect width="4" height="12" x="2" y="9"/><circle cx="4" cy="4" r="2"/>',
   net_x: '<path d="M4 4l16 16"/><path d="M20 4 4 20"/>',
@@ -3113,7 +3115,7 @@ Object.assign(IC, {
   const dlabel = (k) => fmt(dparse(k), { weekday: 'short', day: 'numeric', month: 'short' });
 
   /* ---------- planner ---------- */
-  Object.assign(P, { view: 'week', mo: new Date(), fPf: null, fSt: 'All', best: true, bn: null });
+  Object.assign(P, { view: 'week', mo: new Date(), fPf: null, fSt: 'All', best: true, bn: null, q: '' });
   try { if (localStorage.getItem('uxb.pside') === '0') P.side = false; const bn = localStorage.getItem('uxb.pbest'); if (bn != null) P.bestNet = bn || null; } catch (e) {}
   /** Toolbar dropdown in the studio's style: a label, the current choice with its color dot, and a menu of choices */
   const ST_C = { Scheduled: '#3b82f6', Draft: '#94a3b8', Approved: '#8b5cf6', Published: '#16a34a', Failed: '#ef4444' };
@@ -3125,7 +3127,8 @@ Object.assign(IC, {
   /** Networks offered for best times (the connected ones, else all), and the one shown (null = off) */
   const bestNets = () => { const c = conn(); return c.length ? c : Object.keys(PLATFORMS); };
   const bestNet = () => { const L = bestNets(); if (P.bestNet === null) return null; if (!P.bestNet || !L.includes(P.bestNet)) P.bestNet = L[0]; return P.bestNet; };
-  const fvis = (p) => (P.fSt === 'All' || p.status === P.fSt) && (!P.fPf || p.pf.some((k) => P.fPf.has(k)));
+  const qhit = (p) => { const q = P.q.trim().toLowerCase(); if (!q) return true; const d = getD(p.d); return [p.cap, d && d.name, p.auto && p.auto.name].some((x) => String(x || '').toLowerCase().includes(q)); };
+  const fvis = (p) => (P.fSt === 'All' || p.status === P.fSt) && (!P.fPf || p.pf.some((k) => P.fPf.has(k))) && qhit(p);
   const fnets = () => (P.fPf ? [...P.fPf] : conn());
   const stDot = (s) => `<i class="sd7 ${s}"></i>`;
   const postCard = (p) => { const dd = getD(p.d); return `<div class="pc7 ${p.status}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}" aria-label="${esc(snip(p))}, ${p.time}, ${p.status}"${p.publish && p.publish.lastError ? ` title="${esc(p.publish.lastError)}"` : ''}>
@@ -3148,7 +3151,12 @@ Object.assign(IC, {
   /* ---------- week: an hour grid (Metricool / Notion calendar) ----------
      Hours down the side, days across; each hour cell is tinted by how good it is to post (best times, as a % of the
      week's best slot); posts sit at their time; click a free slot to plan a post there, drag a post to move it. */
-  const HH = 56; // px per hour
+  const HH = 104; // px per hour
+  /** A post on the week grid or in a month day: thumbnail, title, time and its networks, tinted by status */
+  const tile = (p, th, style = '') => { const dd = getD(p.d); return `<div class="cal-post ${p.status}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}"${style ? ` style="${style}"` : ''} aria-label="${esc(snip(p))}, ${p.time}, ${p.status}" title="${esc(snip(p))} · ${p.time}${p.publish && p.publish.lastError ? ' · ' + esc(p.publish.lastError) : ''}">
+    ${dd ? `<span class="cp-th">${thumb(dd.pages[0], dd.ratio, th, th)}</span>` : ''}<span class="cp-b"><span class="cp-t">${esc(snip(p))}</span><b>${p.time}</b></span><span class="cp-f">${p.pf.map((k) => `<span title="${PLATFORMS[k].n}">${ic('net_' + k, 15)}</span>`).join('')}</span></div>`; };
+  /** The bar on top of the week and month grids: previous / next, the period and how many posts it holds */
+  const calBar = (title, n, unit) => `<div class="cal-bar"><div class="cal-gut"><button data-act="pnav" data-n="-1" title="Previous ${unit}" aria-label="Previous ${unit}">${ic('chevL', 16)}</button><button data-act="pnav" data-n="1" title="Next ${unit}" aria-label="Next ${unit}">${ic('chevR', 16)}</button></div><b aria-live="polite">${title}</b><span>${n} post${n === 1 ? '' : 's'}</span></div>`;
   const narrow = () => innerWidth <= 760;
   function weekView() {
     const all = [...Array(7)].map((_, i) => addD(P.ws, i)), today = iso(new Date()), now = new Date(), bn = bestNet(), nets = bn ? [bn] : bestNets();
@@ -3159,8 +3167,8 @@ Object.assign(IC, {
     const sc = all.map((d) => [...Array(24)].map((_, h) => nsc(nets, d.getDay(), h + 0.5))), max = Math.max(...sc.flat(), 0.01);
     const pct = (d, h) => Math.round((sc[all.findIndex((x) => iso(x) === iso(d))][h] / max) * 100);
     const nowM = now.getHours() * 60 + now.getMinutes();
-    const head = (d) => { const k = iso(d), n = S.posts.filter((p) => p.date === k && fvis(p)).length, we = d.getDay() === 0 || d.getDay() === 6;
-      return `<div class="cal-dh ${k === today ? 'today' : ''} ${we ? 'we' : ''}"><span class="wd">${fmt(d, { weekday: 'short' })}</span><b>${d.getDate()}</b>${n ? `<em title="${n} post${n > 1 ? 's' : ''}">${n}</em>` : ''}</div>`; };
+    const head = (d) => { const k = iso(d), we = d.getDay() === 0 || d.getDay() === 6;
+      return `<div class="cal-dh ${k === today ? 'today' : ''} ${we ? 'we' : ''}">${d.getDate()} ${fmt(d, { weekday: 'short' })}</div>`; };
     const col = (d) => {
       const k = iso(d), we = d.getDay() === 0 || d.getDay() === 6, ps = S.posts.filter((p) => p.date === k && fvis(p)).sort(byT);
       const cells = [...Array(24)].map((_, h) => {
@@ -3171,17 +3179,17 @@ Object.assign(IC, {
       const groups = {}; ps.forEach((p) => { (groups[Math.floor(tmin(p.time) / 60)] ||= []).push(p); });
       const cards = ps.map((p) => {
         const g = groups[Math.floor(tmin(p.time) / 60)], i = g.indexOf(p), n = g.length, dd = getD(p.d), m = tmin(p.time);
-        const top = Math.min(24 * HH - 50, (m / 60) * HH + 2), w = 100 / n;
-        return `<div class="cal-post ${p.status}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}" style="top:${top}px;left:calc(${(i * w).toFixed(3)}% + 3px);width:calc(${w.toFixed(3)}% - 6px)" aria-label="${esc(snip(p))}, ${p.time}, ${p.status}" title="${esc(snip(p))} · ${p.time}${p.publish && p.publish.lastError ? ' · ' + esc(p.publish.lastError) : ''}">
-          ${dd ? `<span class="cp-th">${thumb(dd.pages[0], dd.ratio, 30, 30)}</span>` : ''}<span class="cp-b"><b>${p.time}</b><span>${esc(snip(p))}</span></span><span class="cp-f">${pfDots(p.pf)}</span></div>`;
+        const top = Math.min(24 * HH - 86, (m / 60) * HH + 10), w = 100 / n;
+        return tile(p, 52, `top:${top}px;left:calc(${(i * w).toFixed(3)}% + 3px);width:calc(${w.toFixed(3)}% - 6px)`);
       }).join('');
       const line = k === today ? `<div class="cal-now" style="top:${(nowM / 60) * HH}px"><i></i></div>` : '';
       return `<div class="cal-col ${k === today ? 'today' : ''} ${we ? 'we' : ''}" data-date="${k}">${cells}${cards}${line}</div>`;
     };
     const strip = narrow() ? `<div class="cal-strip" role="tablist">${all.map((d) => { const k = iso(d), n = S.posts.filter((p) => p.date === k && fvis(p)).length; return `<button role="tab" aria-selected="${k === P.focus}" class="${k === P.focus ? 'on' : ''} ${k === today ? 'today' : ''}" data-act="pfocus" data-date="${k}"><small>${fmt(d, { weekday: 'short' })}</small><b>${d.getDate()}</b>${n ? '<i></i>' : ''}</button>`; }).join('')}</div>` : '';
     return `${strip}<div class="cal ${narrow() ? 'one' : ''}" style="--hh:${HH}px;--days:${days.length};--hc:${bn ? PLATFORMS[bn].c : '#3b82f6'}">
+      ${calBar(all[0].getMonth() === all[6].getMonth() ? fmt(all[0], { month: 'long', year: 'numeric' }) : `${fmt(all[0], { month: 'short' })} – ${fmt(all[6], { month: 'short', year: 'numeric' })}`, S.posts.filter((p) => p.date >= iso(all[0]) && p.date <= iso(all[6]) && fvis(p)).length, 'week')}
       <div class="cal-head"><div class="cal-gut"><small title="${esc(tzLabel(schedTz()))}">${esc((tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1])}</small></div>${days.map(head).join('')}</div>
-      <div class="cal-body" id="calBody"><div class="cal-grid"><div class="cal-hours">${[...Array(24)].map((_, h) => `<span>${h ? pad(h) + ':00' : ''}</span>`).join('')}</div>${days.map(col).join('')}</div></div></div>`;
+      <div class="cal-body" id="calBody"><div class="cal-grid"><div class="cal-hours">${[...Array(24)].map((_, h) => `<span>${pad(h)}:00</span>`).join('')}</div>${days.map(col).join('')}</div></div></div>`;
   }
   /** The calendar and the designs panel fill the window: from where they start down to the bottom edge (a 24px margin) */
   const fitPlanner = () => {
@@ -3199,10 +3207,11 @@ Object.assign(IC, {
   setInterval(() => { const l = $('.cal-now'); if (l) { const n = new Date(); l.style.top = ((n.getHours() * 60 + n.getMinutes()) / 60) * HH + 'px'; } }, 60_000);
   function monthView() {
     const f = new Date(P.mo.getFullYear(), P.mo.getMonth(), 1), s = monday(f), today = iso(new Date()); let cells = [...Array(42)].map((_, i) => addD(s, i)); if (cells[35].getMonth() !== f.getMonth()) cells = cells.slice(0, 35);
-    return `<div class="mhead">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((x) => `<span>${x}</span>`).join('')}</div><div class="mgrid">${cells.map((d) => {
+    const n = S.posts.filter((p) => p.date.slice(0, 7) === iso(f).slice(0, 7) && fvis(p)).length;
+    return `<div class="cal mcal">${calBar(fmt(f, { month: 'long', year: 'numeric' }), n, 'month')}<div class="mc-head">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((x) => `<span>${x}</span>`).join('')}</div><div class="mc-grid" style="--rows:${cells.length / 7}">${cells.map((d) => {
       const k = iso(d), ps = S.posts.filter((p) => p.date === k && fvis(p)).sort(byT);
-      return `<div class="day m7 ${d.getMonth() !== f.getMonth() ? 'other' : ''} ${k === today ? 'today' : ''} ${k < today ? 'past' : ''}" data-date="${k}"><div class="dh"><b>${d.getDate()}</b><button class="add7" data-act="pnew" data-date="${k}" title="New post on ${dlabel(k)}" aria-label="New post on ${dlabel(k)}">${ic('plus', 14)}</button></div>${ps.slice(0, 3).map(chip).join('')}${ps.length > 3 ? `<button class="more7" data-act="pday" data-date="${k}">+${ps.length - 3} more</button>` : ''}</div>`;
-    }).join('')}</div>`;
+      return `<div class="day mcd ${d.getMonth() !== f.getMonth() ? 'other' : ''} ${k === today ? 'today' : ''} ${k < today ? 'past' : ''}" data-date="${k}"><div class="mcd-h"><b>${d.getDate()}</b>${ps.length ? `<small>${ps.length} post${ps.length > 1 ? 's' : ''}</small>` : ''}${k >= today ? `<button class="add7" data-act="pnew" data-date="${k}" title="New post on ${dlabel(k)}" aria-label="New post on ${dlabel(k)}">${ic('plus', 14)}</button>` : ''}</div>${ps.slice(0, 4).map((p) => tile(p, 30)).join('')}${ps.length > 4 ? `<button class="more7" data-act="pday" data-date="${k}">+${ps.length - 4} more</button>` : ''}</div>`;
+    }).join('')}</div></div>`;
   }
   function listView() {
     const ps = S.posts.filter(fvis).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)), today = iso(new Date());
@@ -3222,8 +3231,8 @@ Object.assign(IC, {
       <div class="pside-list">${free.length ? `<div class="tray">${free.map(card).join('')}</div>` : '<p class="xs-t muted">Every design is scheduled.</p>'}${rest.length ? `<span class="label">Already planned</span><div class="tray">${rest.map(card).join('')}</div>` : ''}</div></div>`;
   }
   PAGES.planner = {
-    t: 'Social Media Planner', s: 'Plan, schedule and publish. Drag a post to another day to reschedule it.',
-    actions: () => `<button class="btn primary" data-act="pnew">${ic('plus', 18)}<span class="hide-sm">New post</span></button>`,
+    t: 'Social Media Planner', s: 'Plan, schedule and publish. Drag a post to another day to reschedule it.', themeFirst: true,
+    actions: () => `<button class="btn secondary" data-act="figma">${ic('figma')}<span class="hide-sm">Import from Figma</span></button><button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
     view: () => {
       const days = [...Array(7)].map((_, i) => addD(P.ws, i)), today = iso(new Date());
       const title = P.view === 'month' ? fmt(P.mo, { month: 'long', year: 'numeric' }) : P.view === 'list' ? 'All posts' : `${fmt(days[0], { day: 'numeric', month: 'long' })} – ${fmt(days[6], { day: 'numeric', month: 'long', year: 'numeric' })}`;
@@ -3240,13 +3249,17 @@ Object.assign(IC, {
           ${nets.length > 1 ? `<div class="pdd-h">Networks</div>${nets.map((k) => fRow('pfn', `data-k="${k}"`, !P.fPf || P.fPf.has(k), PLATFORMS[k].c, PLATFORMS[k].n, true)).join('')}<div class="pdd-sep"></div>` : ''}
           <div class="pdd-h">Status</div>${[['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((x) => [x, x, ST_C[x]])].map(([v, l, c]) => fRow('pfst', `data-v="${v}"`, P.fSt === v, c, l, false)).join('')}
           ${active ? `<div class="pdd-sep"></div><button type="button" class="pf-reset" data-act="pfReset">Clear filters</button>` : ''}</div></div>`;
-      const best = P.view === 'week' ? (() => { const bn = bestNet(); return pdd('best', 'Best times', bn || '', [...bestNets().map((k) => [k, PLATFORMS[k].n, PLATFORMS[k].c]), ['', 'Off', '']], 'Best times for'); })() : '';
+      const best = P.view === 'week' ? (() => { const bn = bestNet(); return pdd('best', 'Best Times', bn || '', [...bestNets().map((k) => [k, PLATFORMS[k].n, PLATFORMS[k].c]), ['', 'Off', '']], 'Best times for'); })() : '';
+      // tabs: every post, one network, or the failed ones (other statuses are in Filter)
+      const one = P.fPf && P.fPf.size === 1 ? [...P.fPf][0] : null, nFail = S.posts.filter((p) => p.status === 'Failed').length;
+      const tab = (v, on, icon, label) => `<button role="tab" aria-selected="${on}" class="${on ? 'on' : ''}" data-act="ptab" data-v="${v}">${icon}<span>${label}</span></button>`;
+      const tabs = `<div class="ptabs"><div class="ptabs-l" role="tablist" aria-label="Show">${tab('all', !P.fPf && P.fSt === 'All', ic('tbl', 18), 'All Posts')}${bestNets().map((k) => tab(k, one === k && P.fSt === 'All', ic('net_' + k, 18), PLATFORMS[k].n)).join('')}${tab('failed', !P.fPf && P.fSt === 'Failed', ic('xc', 18), `Failed (${nFail})`)}</div></div>`;
       return `<div class="ptool">
-        <div class="ptool-l"><button class="btn secondary sm ptoday" data-act="pnav" data-n="0">Today</button><div class="pnav"><button class="pnav-b" data-act="pnav" data-n="-1" title="Previous ${unit}" aria-label="Previous ${unit}">${ic('chevL', 18)}</button><button class="pnav-b" data-act="pnav" data-n="1" title="Next ${unit}" aria-label="Next ${unit}">${ic('chevR', 18)}</button></div>
-          <h2 class="ptitle" aria-live="polite">${short}</h2></div>
-        <div class="ptool-r"><div class="seg pviews" role="tablist">${[['week', 'Week'], ['month', 'Month'], ['list', 'List']].map(([k, l]) => `<button role="tab" aria-selected="${P.view === k}" class="${P.view === k ? 'on' : ''}" data-act="pview" data-v="${k}">${l}</button>`).join('')}</div>
-          ${filter}${best}<button class="picon ${P.side === false ? '' : 'on'}" data-act="pside" aria-pressed="${P.side !== false}" title="${P.side === false ? 'Show' : 'Hide'} the designs panel" aria-label="Designs panel">${ic('panelR', 18)}</button></div></div>
-        <div class="pl7 ${P.side === false ? 'noside' : ''}"><div class="widget pcal ${P.view}" style="padding:${P.view === 'week' ? 0 : 10}px">${P.view === 'month' ? monthView() : P.view === 'list' ? listView() : weekView()}</div>${P.side === false ? '' : side()}</div>${(setTimeout(() => { fitPlanner(); if (P.view === 'week') calScroll(); }, 0), '')}`;
+        <div class="ptool-l"><button class="btn secondary ptoday" data-act="pnav" data-n="0">Today</button><div class="pviews" role="tablist">${[['week', 'Week'], ['month', 'Month'], ['list', 'List']].map(([k, l]) => `<button role="tab" aria-selected="${P.view === k}" class="${P.view === k ? 'on' : ''}" data-act="pview" data-v="${k}">${l}</button>`).join('')}</div></div>
+        <div class="ptool-r"><label class="psearch">${ic('search', 18)}<input id="pQ" type="search" placeholder="Search..." value="${esc(P.q)}" aria-label="Search posts" autocomplete="off"><kbd>${/Mac|iP/.test(navigator.platform) ? '⌘' : 'Ctrl '}1</kbd></label>
+          ${best}${filter}<button class="picon ${P.side === false ? '' : 'on'}" data-act="pside" aria-pressed="${P.side !== false}" title="${P.side === false ? 'Show' : 'Hide'} the designs panel" aria-label="Designs panel">${ic('panelR', 18)}</button></div></div>
+        ${tabs}
+        <div class="pl7 ${P.side === false ? 'noside' : ''}"><div class="widget pcal ${P.view}" style="padding:${P.view === 'list' ? 10 : 0}px">${P.view === 'month' ? monthView() : P.view === 'list' ? listView() : weekView()}</div>${P.side === false ? '' : side()}</div>${(setTimeout(() => { fitPlanner(); if (P.view === 'week') calScroll(); }, 0), '')}`;
     },
   };
   Object.assign(ACT, {
@@ -3256,6 +3269,7 @@ Object.assign(IC, {
     pfnAll: () => { P.fPf = null; route(); },
     pfst: (a) => { P.fSt = a.dataset.v; P.openDd = 'flt'; route(); },
     pfReset: () => { P.fPf = null; P.fSt = 'All'; route(); },
+    ptab: (a) => { const v = a.dataset.v; P.fPf = PLATFORMS[v] ? new Set([v]) : null; P.fSt = v === 'failed' ? 'Failed' : v === 'all' || PLATFORMS[v] ? 'All' : P.fSt; route(); },
     pday: (a) => { P.view = 'week'; P.ws = monday(dparse(a.dataset.date)); P.focus = a.dataset.date; route(); },
     pfocus: (a) => { P.focus = a.dataset.date; route(); },
     pddp: (a) => {
@@ -3276,6 +3290,9 @@ Object.assign(IC, {
     if (e.target.id === 'pSt') { P.fSt = e.target.value; route(); }
     if (e.target.id === 'pBest') { P.bestNet = e.target.value || null; try { localStorage.setItem('uxb.pbest', e.target.value); } catch (x) {} route(); }
   });
+  // search: the view redraws as you type, the box keeps its focus and caret
+  document.addEventListener('input', (e) => { if (e.target.id !== 'pQ') return; P.q = e.target.value; const at = e.target.selectionEnd; route(); const q = $('#pQ'); if (q) { q.focus(); q.setSelectionRange(at, at); } });
+  document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === '1' && /^#\/planner/.test(location.hash)) { const q = $('#pQ'); if (q) { e.preventDefault(); q.focus(); q.select(); } } });
   document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.classList && (e.target.classList.contains('pc7') || e.target.classList.contains('mc7') || e.target.classList.contains('l7r') || e.target.classList.contains('dcard'))) { e.preventDefault(); e.target.click(); } });
 
   /* drag onto an hour slot of the week grid: a post moves to that day and time (on the half hour under the pointer), a design opens the scheduler there */
@@ -7148,9 +7165,6 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     },
   };
   NAV.splice(NAV.findIndex((n) => n[0] === 'planner') + 1, 0, ['automations', 'Automations', 'refresh', 'New']);
-  // the planner links here
-  const pa = PAGES.planner.actions;
-  PAGES.planner.actions = () => `<a class="btn secondary" href="#/automations">${ic('refresh', 16)}<span class="hide-sm">Automations</span></a>` + pa();
 
   /* ---------- editor ---------- */
   function openAuto(a, preset) {

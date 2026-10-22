@@ -74,3 +74,8 @@
   --dot: #d5dce8;
   --warn: #d97706;
 }
+
+/* Social Media workspace, light theme: the page itself is white (cards keep their borders) */
+[data-ws="social"][data-theme="light"] {
+  --bg: #fff;
+}
