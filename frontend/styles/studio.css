@@ -2020,7 +2020,7 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .pdd .ddm button .ic{color:var(--accent)}
 @keyframes pddIn{from{opacity:0;transform:translateY(-4px) scale(.98)}}
 @media (max-width:700px){.ptool-r{margin-left:0;width:100%;justify-content:flex-start}.pdd .ddm{left:0;right:auto}.ptool-r .pdd:last-of-type .ddm{left:auto;right:0}}
-.ptool{position:relative;z-index:25}
+.ptool{position:relative;z-index:6}
 /* ---------- Date and time pickers (replace the browser's) ---------- */
 .dtp-native{display:none!important}
 .dtp-btn{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:left;cursor:pointer;font-variant-numeric:tabular-nums}
@@ -2243,7 +2243,7 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ptool-r .picon:hover{border-color:var(--text-3)}
 .ptool .ptitle{font-size:16px}
 /* tabs */
-.ptabs{position:relative;z-index:24;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);margin-top:4px}
+.ptabs{position:relative;z-index:5;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);margin-top:4px}
 .ptabs-l{flex:1;display:flex;gap:28px;overflow-x:auto;scrollbar-width:none}
 .ptabs-l::-webkit-scrollbar{display:none}
 .ptabs-l button{position:relative;flex:none;display:inline-flex;align-items:center;gap:8px;height:46px;padding:0 2px;font-size:15px;font-weight:500;color:var(--text-2);white-space:nowrap;transition:color .12s}
