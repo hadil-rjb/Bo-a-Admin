@@ -2331,3 +2331,37 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 @media (max-width:760px){.pl7 .cal-body{height:calc(var(--plh) - 110px)}}
 /* the planner runs to the bottom of the window: only a 16px margin under the calendar */
 .page:has(> .ptool){padding-bottom:16px}
+
+/* ---------- Planner v10: Best Times menu, neutral toolbar borders, status checkboxes ---------- */
+.ptool-r .pdd.pdd-on .ddb,.ptool-r .pdd .ddb:has(+ .ddm:not([hidden])){border-color:var(--border)}
+.ptool-r .pdd .ddb:hover{border-color:var(--text-3)}
+.pnet-i{flex:none;display:grid;place-items:center;width:20px;height:20px;border-radius:6px;background:var(--c);color:#fff}
+.pbest .ddb{gap:9px;padding:0 12px}
+.pbest .ddb>.ic:first-child{color:var(--text-2)}
+.pbest .ddb>span:not(.pnet-i){color:var(--text-1)}
+.pbest .ddm{min-width:260px;padding:6px}
+.pbest .pb-it{display:flex;align-items:center;gap:12px;width:100%;min-height:44px;padding:8px 12px;border-radius:10px;font-size:15px;color:var(--text-1);text-align:left;transition:background .1s}
+.pbest .pb-it:hover{background:var(--pill)}
+.pbest .pb-it.on{background:var(--pill);font-weight:600}
+.pbest .pb-it>.ic:first-child{color:var(--text-1)}
+.pbest .pb-it>.ic:last-child{color:var(--text-1)}
+.pbest .pb-it .pnet-i{width:22px;height:22px}
+.pbest .pdd-sep{margin:6px 4px}
+.pb-sw{display:flex;align-items:center;gap:12px;width:100%;min-height:44px;padding:8px 12px;border-radius:10px;font-size:14.5px;color:var(--text-1);text-align:left}
+.pb-sw:hover:not(:disabled){background:var(--pill)}
+.pb-sw:disabled{opacity:.45;cursor:default}
+.sw7{flex:none;position:relative;width:36px;height:20px;border-radius:99px;background:var(--border);transition:background .15s}
+.sw7 i{position:absolute;left:2px;top:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(15,23,42,.25);transition:transform .15s}
+.sw7.on{background:var(--accent)}.sw7.on i{transform:translateX(16px)}
+.pfilter .pf-check.on{background:var(--accent)}
+.pfilter .pf-row .pdot{margin-left:-2px}
+/* sidebar: the workspace mark sits flat */
+.ws-ico{box-shadow:none}
+/* brand switcher: a search box past five brands, the list scrolls */
+.bm-q{display:flex;align-items:center;gap:8px;margin:0 4px 6px;height:34px;padding:0 10px;border:1px solid var(--border);border-radius:9px;color:var(--text-3);background:var(--surface)}
+.bm-q:focus-within{border-color:var(--accent)}
+.bm-q input{flex:1;min-width:0;border:0;outline:0;background:none;font-size:13px;color:var(--text-1)}
+.bm-list{max-height:min(272px,40vh);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;display:flex;flex-direction:column;gap:2px}
+.bm-list .it small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bm-list .it b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bm-none{padding:10px 8px;font-size:12.5px;color:var(--text-3)}

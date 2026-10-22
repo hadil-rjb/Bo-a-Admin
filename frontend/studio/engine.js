@@ -317,7 +317,9 @@ function brandMenu() {
   const all = allOn();
   return `<div class="div"></div><div class="cap">Switch brand</div>`
     + (S.brands.length > 1 ? `<button class="it ${all ? 'on' : ''}" data-act="allBrands">${allAv('sm')}<span class="grow"><b>All brands</b><small>Every brand in one workspace</small></span>${all ? ic('check', 14, 'faint') : ''}</button>` : '')
-    + S.brands.map((b) => `<button class="it ${!all && b.id === S.active ? 'on' : ''}" data-act="switchBrand" data-id="${b.id}">${brandAv(b, 'sm')}<span class="grow"><b>${esc(b.name)}</b><small>${esc(b.industry || 'Brand')} designs</small></span>${!all && b.id === S.active ? ic('check', 14, 'faint') : ''}</button>`).join('')
+    // many brands: a search box, and the list scrolls (about five rows show)
+    + (S.brands.length > 5 ? `<label class="bm-q">${ic('search', 15)}<input type="search" id="bmQ" placeholder="Search ${S.brands.length} brands" aria-label="Search brands" autocomplete="off"></label>` : '')
+    + `<div class="bm-list">${S.brands.map((b) => `<button class="it ${!all && b.id === S.active ? 'on' : ''}" data-act="switchBrand" data-id="${b.id}" data-name="${esc((b.name + ' ' + (b.industry || '')).toLowerCase())}">${brandAv(b, 'sm')}<span class="grow"><b>${esc(b.name)}</b><small>${esc(b.industry || 'Brand')} designs</small></span>${!all && b.id === S.active ? ic('check', 14, 'faint') : ''}</button>`).join('')}<p class="bm-none" hidden>No brand matches.</p></div>`
     + `<div class="div"></div><button class="it addb" data-act="addBrand"><span class="ico">${ic('plus', 16)}</span><span class="grow"><b>Add brand</b><small>New workspace &amp; brand kit</small></span></button><button class="it" data-act="manageBrands"><span class="ico">${ic('layers', 16)}</span><span class="grow"><b>Manage brands</b><small>${S.brands.length} brands</small></span></button>`;
 }
 /* Brand templates are stored by the API, one document each (social_templates) */
@@ -467,7 +469,11 @@ ACT.me = () => { const m = $('#meMenu'); m.hidden = !m.hidden; };
 /* Profile opens inside this workspace (#/profile), like the Blog Admin's /profile */
 ACT.goProfile = (a, e) => { e && e.preventDefault(); closeDrawer(); if (location.hash === '#/profile') route(); else location.hash = '#/profile'; };
 ACT.signOut = () => { persist.signOut(); navigate('/login'); };
-ACT.ws = () => { const m = $('#wsMenu'); if (m.hidden) $('#brandMenu').innerHTML = brandMenu(); m.hidden = !m.hidden; };
+ACT.ws = () => { const m = $('#wsMenu'); if (m.hidden) $('#brandMenu').innerHTML = brandMenu(); m.hidden = !m.hidden; if (!m.hidden) { const on = m.querySelector('.bm-list .it.on'); on && on.scrollIntoView({ block: 'nearest' }); } };
+document.addEventListener('input', (e) => {
+  if (e.target.id !== 'bmQ') return; const q = e.target.value.trim().toLowerCase(), L = e.target.closest('#brandMenu').querySelector('.bm-list'); let n = 0;
+  L.querySelectorAll('.it').forEach((b) => { const hit = !q || b.dataset.name.includes(q); b.hidden = !hit; n += hit; }); L.querySelector('.bm-none').hidden = n > 0;
+});
 ACT.noop = (a, e) => { e.preventDefault(); toast('Not part of this demo'); $('#wsMenu') && ($('#wsMenu').hidden = true); };
 ACT.menu = () => { $('#side').classList.add('open'); $('#scrim').hidden = false; };
 ACT.theme = () => { setTheme(S.theme === 'dark' ? 'light' : 'dark'); route(); };
@@ -2683,6 +2689,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
 /* ---- v8: extra SVG icons (Lucide paths + simple network marks) ---- */
 Object.assign(IC, {
   xc: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+  calClock: '<path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h5"/><path d="M17.5 17.5 16 16.3V14"/><circle cx="16" cy="16" r="6"/>',
   tbl: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 12h18"/><path d="M12 3v18"/>',
   net_ig: '<rect width="20" height="20" x="2" y="2" rx="5"/><path d="M16 11.4A4 4 0 1 1 12.6 8 4 4 0 0 1 16 11.4Z"/><path d="M17.5 6.5h.01"/>',
   net_li: '<path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-4 0v7h-4v-7a6 6 0 0 1 6-6Z"/><rect width="4" height="12" x="2" y="9"/><circle cx="4" cy="4" r="2"/>',
@@ -3115,8 +3122,8 @@ Object.assign(IC, {
   const dlabel = (k) => fmt(dparse(k), { weekday: 'short', day: 'numeric', month: 'short' });
 
   /* ---------- planner ---------- */
-  Object.assign(P, { view: 'week', mo: new Date(), fPf: null, fSt: 'All', best: true, bn: null, q: '' });
-  try { if (localStorage.getItem('uxb.pside') === '0') P.side = false; const bn = localStorage.getItem('uxb.pbest'); if (bn != null) P.bestNet = bn || null; } catch (e) {}
+  Object.assign(P, { view: 'week', mo: new Date(), fPf: null, fSt: null, best: true, bn: null, q: '' }); // fSt: the statuses shown (a Set), null = all
+  try { if (localStorage.getItem('uxb.pside') === '0') P.side = false; const bn = localStorage.getItem('uxb.pbest'); if (bn != null) P.bestNet = bn || null; P.pct = localStorage.getItem('uxb.ppct') === '1'; } catch (e) {}
   /** Toolbar dropdown in the studio's style: a label, the current choice with its color dot, and a menu of choices */
   const ST_C = { Scheduled: '#3b82f6', Draft: '#94a3b8', Approved: '#8b5cf6', Published: '#16a34a', Failed: '#ef4444' };
   const pdd = (k, label, val, opts, head) => { const cur = opts.find((o) => o[0] === val) || opts[0], picked = val && val !== 'All';
@@ -3126,9 +3133,11 @@ Object.assign(IC, {
       <div class="ddm" role="listbox" aria-label="${esc(head)}" hidden><div class="pdd-h">${esc(head)}</div>${(k === 'st' ? extra : []).map(item).join('')}${k === 'st' ? '<div class="pdd-sep"></div>' : ''}${main.map(item).join('')}${k !== 'st' ? '<div class="pdd-sep"></div>' + extra.map(item).join('') : ''}</div></div>`; };
   /** Networks offered for best times (the connected ones, else all), and the one shown (null = off) */
   const bestNets = () => { const c = conn(); return c.length ? c : Object.keys(PLATFORMS); };
+  /** A network's mark: its icon in white on its color */
+  const netIc = (k) => `<span class="pnet-i" style="--c:${PLATFORMS[k].c}">${ic('net_' + k, 12)}</span>`;
   const bestNet = () => { const L = bestNets(); if (P.bestNet === null) return null; if (!P.bestNet || !L.includes(P.bestNet)) P.bestNet = L[0]; return P.bestNet; };
   const qhit = (p) => { const q = P.q.trim().toLowerCase(); if (!q) return true; const d = getD(p.d); return [p.cap, d && d.name, p.auto && p.auto.name].some((x) => String(x || '').toLowerCase().includes(q)); };
-  const fvis = (p) => (P.fSt === 'All' || p.status === P.fSt) && (!P.fPf || p.pf.some((k) => P.fPf.has(k))) && qhit(p);
+  const fvis = (p) => (!P.fSt || P.fSt.has(p.status)) && (!P.fPf || p.pf.some((k) => P.fPf.has(k))) && qhit(p);
   const fnets = () => (P.fPf ? [...P.fPf] : conn());
   const stDot = (s) => `<i class="sd7 ${s}"></i>`;
   const postCard = (p) => { const dd = getD(p.d); return `<div class="pc7 ${p.status}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}" aria-label="${esc(snip(p))}, ${p.time}, ${p.status}"${p.publish && p.publish.lastError ? ` title="${esc(p.publish.lastError)}"` : ''}>
@@ -3152,6 +3161,8 @@ Object.assign(IC, {
      Hours down the side, days across; each hour cell is tinted by how good it is to post (best times, as a % of the
      week's best slot); posts sit at their time; click a free slot to plan a post there, drag a post to move it. */
   const HH = 104; // px per hour
+  /** A new post in the hour going on starts now: the next 5-minute mark (HH:MM) */
+  const nowSlot = () => { const n = new Date(), m = Math.min(23 * 60 + 59, Math.ceil((n.getHours() * 60 + n.getMinutes() + 1) / 5) * 5); return pad(Math.floor(m / 60)) + ':' + pad(m % 60); };
   /** A post on the week grid or in a month day: thumbnail, title, time and its networks, tinted by status */
   const tile = (p, th, style = '') => { const dd = getD(p.d); return `<div class="cal-post ${p.status}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}"${style ? ` style="${style}"` : ''} aria-label="${esc(snip(p))}, ${p.time}, ${p.status}" title="${esc(snip(p))} · ${p.time}${p.publish && p.publish.lastError ? ' · ' + esc(p.publish.lastError) : ''}">
     ${dd ? `<span class="cp-th">${thumb(dd.pages[0], dd.ratio, th, th)}</span>` : ''}<span class="cp-b"><span class="cp-t">${esc(snip(p))}</span><b>${p.time}</b></span><span class="cp-f">${p.pf.map((k) => `<span title="${PLATFORMS[k].n}">${ic('net_' + k, 15)}</span>`).join('')}</span></div>`; };
@@ -3172,8 +3183,8 @@ Object.assign(IC, {
     const col = (d) => {
       const k = iso(d), we = d.getDay() === 0 || d.getDay() === 6, ps = S.posts.filter((p) => p.date === k && fvis(p)).sort(byT);
       const cells = [...Array(24)].map((_, h) => {
-        const past = k < today || (k === today && (h + 1) * 60 <= nowM), v = pct(d, h), t = pad(h) + ':00';
-        return `<div class="cal-cell ${past ? 'past' : ''}" data-date="${k}" data-h="${h}" style="--s:${P.best ? (v / 100).toFixed(2) : 0}" ${past ? '' : `data-act="pnew" data-time="${t}" role="button" tabindex="-1" aria-label="New post on ${dlabel(k)} at ${t}"`}>${P.best && !past ? `<span class="pct">${v}%</span>` : ''}${past ? '' : `<span class="plus">${ic('plus', 14)}<i>${t}</i></span>`}</div>`;
+        const past = k < today || (k === today && (h + 1) * 60 <= nowM), cur = k === today && h === now.getHours(), v = pct(d, h), t = cur ? nowSlot() : pad(h) + ':00';
+        return `<div class="cal-cell ${past ? 'past' : ''}" data-date="${k}" data-h="${h}"${cur ? ' data-cur' : ''} style="--s:${P.best ? (v / 100).toFixed(2) : 0}" ${past ? '' : `data-act="pnew" data-time="${t}" role="button" tabindex="-1" aria-label="New post on ${dlabel(k)} at ${t}"`}>${P.best && P.pct && !past ? `<span class="pct">${v}%</span>` : ''}${past ? '' : `<span class="plus">${ic('plus', 14)}<i>${t}</i></span>`}</div>`;
       }).join('');
       // posts in the same hour share its width
       const groups = {}; ps.forEach((p) => { (groups[Math.floor(tmin(p.time) / 60)] ||= []).push(p); });
@@ -3204,7 +3215,11 @@ Object.assign(IC, {
   // the grid follows the clock: move the "now" line every minute, and switch between day and week when the width crosses the phone size
   let calWide = !narrow();
   addEventListener('resize', () => { if (calWide !== !narrow() && /^#\/planner/.test(location.hash) && P.view === 'week') { calWide = !narrow(); route(); } });
-  setInterval(() => { const l = $('.cal-now'); if (l) { const n = new Date(); l.style.top = ((n.getHours() * 60 + n.getMinutes()) / 60) * HH + 'px'; } }, 60_000);
+  setInterval(() => {
+    const l = $('.cal-now'); if (l) { const n = new Date(); l.style.top = ((n.getHours() * 60 + n.getMinutes()) / 60) * HH + 'px'; }
+    // the hour going on offers the time from now
+    const c = $('.cal-cell[data-cur]'); if (c && c.dataset.time) { const t = nowSlot(); c.dataset.time = t; c.setAttribute('aria-label', `New post on ${dlabel(c.dataset.date)} at ${t}`); const i = c.querySelector('.plus i'); if (i) i.textContent = t; }
+  }, 30_000);
   function monthView() {
     const f = new Date(P.mo.getFullYear(), P.mo.getMonth(), 1), s = monday(f), today = iso(new Date()); let cells = [...Array(42)].map((_, i) => addD(s, i)); if (cells[35].getMonth() !== f.getMonth()) cells = cells.slice(0, 35);
     const n = S.posts.filter((p) => p.date.slice(0, 7) === iso(f).slice(0, 7) && fvis(p)).length;
@@ -3241,18 +3256,23 @@ Object.assign(IC, {
       const unit = P.view === 'month' ? 'month' : 'week';
       const short = P.view === 'week' ? (days[0].getMonth() === days[6].getMonth() ? `${fmt(days[0], { month: 'long' })} ${days[0].getDate()} – ${days[6].getDate()}, ${days[6].getFullYear()}` : `${fmt(days[0], { month: 'short', day: 'numeric' })} – ${fmt(days[6], { month: 'short', day: 'numeric' })}, ${days[6].getFullYear()}`) : title;
       // the Filter menu: post status (networks are the tabs), with a count when one is picked
-      const active = P.fSt !== 'All' ? 1 : 0, openK = P.openDd; P.openDd = null;
-      // each status: a radio and the status color
-      const fRow = (act, attrs, on, dot, label, multi) => `<button type="button" role="${multi ? 'menuitemcheckbox' : 'menuitemradio'}" aria-checked="${on}" data-act="${act}" ${attrs} class="pf-row ${on ? 'on' : ''}" style="--c:${dot || 'var(--accent)'}">${multi ? `<span class="pf-check ${on ? 'on' : ''}" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>` : `<span class="pf-radio ${on ? 'on' : ''}" aria-hidden="true"></span>${dot ? '<i class="pdot"></i>' : ''}`}<span class="grow">${label}</span></button>`;
+      const active = P.fSt ? P.fSt.size : 0, openK = P.openDd; P.openDd = null;
+      // each status: a checkbox and the status color (several can be on; none = all)
+      const fRow = (act, attrs, on, dot, label, multi) => `<button type="button" role="${multi ? 'menuitemcheckbox' : 'menuitemradio'}" aria-checked="${on}" data-act="${act}" ${attrs} class="pf-row ${on ? 'on' : ''}" style="--c:${dot || 'var(--accent)'}">${multi ? `<span class="pf-check ${on ? 'on' : ''}" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>` : `<span class="pf-radio ${on ? 'on' : ''}" aria-hidden="true"></span>`}${dot ? '<i class="pdot"></i>' : ''}<span class="grow">${label}</span></button>`;
       const filter = `<div class="dd pdd pfilter ${active ? 'pdd-on' : ''}" data-k="flt"><button type="button" class="ddb" data-act="ddt" aria-haspopup="menu" aria-label="Filter posts${active ? `, ${active} active` : ''}">${ic('filter', 15)}<span>Filter</span>${active ? `<em class="pf-n">${active}</em>` : ''}</button>
         <div class="ddm ${openK === 'flt' ? 'noanim' : ''}" role="menu" ${openK === 'flt' ? '' : 'hidden'}>
-          <div class="pdd-h">Status</div>${[['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((x) => [x, x, ST_C[x]])].map(([v, l, c]) => fRow('pfst', `data-v="${v}"`, P.fSt === v, c, l, false)).join('')}
+          <div class="pdd-h">Status</div>${[['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((x) => [x, x, ST_C[x]])].map(([v, l, c]) => fRow('pfst', `data-v="${v}"`, v === 'All' ? !P.fSt : !!P.fSt && P.fSt.has(v), c, l, true)).join('')}
           ${active ? `<div class="pdd-sep"></div><button type="button" class="pf-reset" data-act="pfReset">Clear filters</button>` : ''}</div></div>`;
-      const best = P.view === 'week' ? (() => { const bn = bestNet(); return pdd('best', 'Best Times', bn || '', [...bestNets().map((k) => [k, PLATFORMS[k].n, PLATFORMS[k].c]), ['', 'Off', '']], 'Best times for'); })() : '';
+      // Best Times: the network whose hours tint the grid (or none), and whether each hour shows its %
+      const best = P.view === 'week' ? (() => { const bn = bestNet(), o = openK === 'best';
+        const it = (v, icon, label) => `<button type="button" role="menuitemradio" aria-checked="${(bn || '') === v}" data-act="pddp" data-k="best" data-v="${v}" class="pb-it ${(bn || '') === v ? 'on' : ''}">${icon}<span class="grow">${label}</span>${(bn || '') === v ? ic('check', 16) : ''}</button>`;
+        return `<div class="dd pdd pbest" data-k="best"><button type="button" class="ddb" data-act="ddt" aria-haspopup="menu" aria-label="Best times: ${bn ? PLATFORMS[bn].n : 'none'}">${bn ? netIc(bn) : ic('calClock', 18)}<span>Best Times</span>${ic('chevD', 14)}</button>
+          <div class="ddm ${o ? 'noanim' : ''}" role="menu" ${o ? '' : 'hidden'}>${it('', ic('calClock', 20), 'None')}${bestNets().map((k) => it(k, netIc(k), PLATFORMS[k].n)).join('')}<div class="pdd-sep"></div>
+            <button type="button" role="menuitemcheckbox" aria-checked="${!!P.pct}" class="pb-sw" data-act="ppct" ${bn ? '' : 'disabled'}><span class="grow">Show as percentage</span><span class="sw7 ${P.pct ? 'on' : ''}" aria-hidden="true"><i></i></span></button></div></div>`; })() : '';
       // tabs: every post, one network (Best Times follows it), or the failed ones (other statuses are in Filter)
       const one = P.fPf && P.fPf.size === 1 ? [...P.fPf][0] : null, nFail = S.posts.filter((p) => p.status === 'Failed').length;
       const tab = (v, on, icon, label) => `<button role="tab" aria-selected="${on}" class="${on ? 'on' : ''}" data-act="ptab" data-v="${v}">${icon}<span>${label}</span></button>`;
-      const tabs = `<div class="ptabs"><div class="ptabs-l" role="tablist" aria-label="Show">${tab('all', !P.fPf && P.fSt === 'All', ic('tbl', 18), 'All Posts')}${bestNets().map((k) => tab(k, one === k && P.fSt === 'All', ic('net_' + k, 18), PLATFORMS[k].n)).join('')}${tab('failed', !P.fPf && P.fSt === 'Failed', ic('xc', 18), `Failed (${nFail})`)}</div></div>`;
+      const tabs = `<div class="ptabs"><div class="ptabs-l" role="tablist" aria-label="Show">${tab('all', !P.fPf && !P.fSt, ic('tbl', 18), 'All Posts')}${bestNets().map((k) => tab(k, one === k && !P.fSt, ic('net_' + k, 18), PLATFORMS[k].n)).join('')}${tab('failed', !P.fPf && !!P.fSt && P.fSt.size === 1 && P.fSt.has('Failed'), ic('xc', 18), `Failed (${nFail})`)}</div></div>`;
       return `<div class="ptool">
         <div class="ptool-l"><button class="btn secondary ptoday" data-act="pnav" data-n="0">Today</button><div class="pviews" role="tablist">${[['week', 'Week'], ['month', 'Month'], ['list', 'List']].map(([k, l]) => `<button role="tab" aria-selected="${P.view === k}" class="${P.view === k ? 'on' : ''}" data-act="pview" data-v="${k}">${l}</button>`).join('')}</div></div>
         <div class="ptool-r"><label class="psearch">${ic('search', 18)}<input id="pQ" type="search" placeholder="Search..." value="${esc(P.q)}" aria-label="Search posts" autocomplete="off"><kbd>${/Mac|iP/.test(navigator.platform) ? '⌘' : 'Ctrl '}1</kbd></label>
@@ -3266,14 +3286,15 @@ Object.assign(IC, {
     pview: (a) => { const v = a.dataset.v; if (v === 'month' && P.view !== 'month') P.mo = addD(P.ws, 3); if (v === 'week' && P.view === 'month') { const n = new Date(); P.ws = P.mo.getMonth() === n.getMonth() && P.mo.getFullYear() === n.getFullYear() ? monday(n) : monday(new Date(P.mo.getFullYear(), P.mo.getMonth(), 1)); } P.view = v; route(); },
     pfn: (a) => { const all = conn(), s = P.fPf ? new Set(P.fPf) : new Set(all), k = a.dataset.k; s.has(k) ? s.delete(k) : s.add(k); if (!s.size) s.add(k); P.fPf = all.every((x) => s.has(x)) ? null : s; if (a.closest('.ddm')) P.openDd = 'flt'; route(); },
     pfnAll: () => { P.fPf = null; route(); },
-    pfst: (a) => { P.fSt = a.dataset.v; P.openDd = 'flt'; route(); },
-    pfReset: () => { P.fSt = 'All'; route(); },
-    ptab: (a) => { const v = a.dataset.v; P.fPf = PLATFORMS[v] ? new Set([v]) : null; P.fSt = v === 'failed' ? 'Failed' : v === 'all' || PLATFORMS[v] ? 'All' : P.fSt; if (PLATFORMS[v]) { P.bestNet = v; try { localStorage.setItem('uxb.pbest', v); } catch (x) {} } route(); },
+    pfst: (a) => { const v = a.dataset.v; if (v === 'All') P.fSt = null; else { const s = new Set(P.fSt || []); s.has(v) ? s.delete(v) : s.add(v); P.fSt = s.size ? s : null; } P.openDd = 'flt'; route(); },
+    pfReset: () => { P.fSt = null; route(); },
+    ppct: () => { P.pct = !P.pct; try { localStorage.setItem('uxb.ppct', P.pct ? '1' : '0'); } catch (e) {} P.openDd = 'best'; route(); },
+    ptab: (a) => { const v = a.dataset.v; P.fPf = PLATFORMS[v] ? new Set([v]) : null; P.fSt = v === 'failed' ? new Set(['Failed']) : v === 'all' || PLATFORMS[v] ? null : P.fSt; if (PLATFORMS[v]) { P.bestNet = v; try { localStorage.setItem('uxb.pbest', v); } catch (x) {} } route(); },
     pday: (a) => { P.view = 'week'; P.ws = monday(dparse(a.dataset.date)); P.focus = a.dataset.date; route(); },
     pfocus: (a) => { P.focus = a.dataset.date; route(); },
     pddp: (a) => {
       const k = a.dataset.k, v = a.dataset.v;
-      if (k === 'st') P.fSt = v;
+      if (k === 'st') P.fSt = v === 'All' ? null : new Set([v]);
       if (k === 'best') { P.bestNet = v || null; try { localStorage.setItem('uxb.pbest', v); } catch (x) {} }
       route();
     },
@@ -3286,7 +3307,7 @@ Object.assign(IC, {
     pnow: (a) => { const p = S.posts.find((x) => x.id === a.dataset.id); if (p) PUB.publishNow(p); },
   });
   document.addEventListener('change', (e) => {
-    if (e.target.id === 'pSt') { P.fSt = e.target.value; route(); }
+    if (e.target.id === 'pSt') { P.fSt = e.target.value === 'All' ? null : new Set([e.target.value]); route(); }
     if (e.target.id === 'pBest') { P.bestNet = e.target.value || null; try { localStorage.setItem('uxb.pbest', e.target.value); } catch (x) {} route(); }
   });
   // search: the view redraws as you type, the box keeps its focus and caret
@@ -3295,7 +3316,7 @@ Object.assign(IC, {
   document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.classList && (e.target.classList.contains('pc7') || e.target.classList.contains('mc7') || e.target.classList.contains('l7r') || e.target.classList.contains('dcard'))) { e.preventDefault(); e.target.click(); } });
 
   /* drag onto an hour slot of the week grid: a post moves to that day and time (on the half hour under the pointer), a design opens the scheduler there */
-  const slotTime = (cell, e) => { const r = cell.getBoundingClientRect(), half = e.clientY - r.top > r.height / 2; return pad(+cell.dataset.h) + (half ? ':30' : ':00'); };
+  const slotTime = (cell, e) => { const r = cell.getBoundingClientRect(), half = e.clientY - r.top > r.height / 2, t = pad(+cell.dataset.h) + (half ? ':30' : ':00'); return cell.hasAttribute('data-cur') && t < nowSlot() ? nowSlot() : t; };
   document.addEventListener('dragover', (e) => { const c = e.target.closest && e.target.closest('.cal-cell'); $$('.cal-cell.over').forEach((x) => x !== c && x.classList.remove('over')); if (c && !c.classList.contains('past')) { e.preventDefault(); c.classList.add('over'); } }, true);
   document.addEventListener('drop', (e) => {
     const c = e.target.closest && e.target.closest('.cal-cell'); if (!c) return; e.preventDefault(); e.stopImmediatePropagation(); $$('.cal-cell.over').forEach((x) => x.classList.remove('over'));
