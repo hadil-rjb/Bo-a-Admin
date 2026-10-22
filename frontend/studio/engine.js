@@ -3197,8 +3197,8 @@ Object.assign(IC, {
       return `<div class="cal-col ${k === today ? 'today' : ''} ${we ? 'we' : ''}" data-date="${k}">${cells}${cards}${line}</div>`;
     };
     const strip = narrow() ? `<div class="cal-strip" role="tablist">${all.map((d) => { const k = iso(d), n = S.posts.filter((p) => p.date === k && fvis(p)).length; return `<button role="tab" aria-selected="${k === P.focus}" class="${k === P.focus ? 'on' : ''} ${k === today ? 'today' : ''}" data-act="pfocus" data-date="${k}"><small>${fmt(d, { weekday: 'short' })}</small><b>${d.getDate()}</b>${n ? '<i></i>' : ''}</button>`; }).join('')}</div>` : '';
-    return `${strip}<div class="cal ${narrow() ? 'one' : ''}" style="--hh:${HH}px;--days:${days.length};--hc:${bn ? PLATFORMS[bn].c : '#3b82f6'}">
-      ${calBar(all[0].getMonth() === all[6].getMonth() ? fmt(all[0], { month: 'long', year: 'numeric' }) : `${fmt(all[0], { month: 'short' })} – ${fmt(all[6], { month: 'short', year: 'numeric' })}`, S.posts.filter((p) => p.date >= iso(all[0]) && p.date <= iso(all[6]) && fvis(p)).length, 'week')}
+    return `<div class="cal ${narrow() ? 'one' : ''}" style="--hh:${HH}px;--days:${days.length};--hc:${bn ? PLATFORMS[bn].c : '#3b82f6'}">
+      ${calBar(all[0].getMonth() === all[6].getMonth() ? fmt(all[0], { month: 'long', year: 'numeric' }) : `${fmt(all[0], { month: 'short' })} – ${fmt(all[6], { month: 'short', year: 'numeric' })}`, S.posts.filter((p) => p.date >= iso(all[0]) && p.date <= iso(all[6]) && fvis(p)).length, 'week')}${strip}
       <div class="cal-head"><div class="cal-gut"><small title="${esc(tzLabel(schedTz()))}">${esc((tzLabel(schedTz()).match(/\(([^)]+)\)/) || [, ''])[1])}</small></div>${days.map(head).join('')}</div>
       <div class="cal-body" id="calBody"><div class="cal-grid"><div class="cal-hours">${[...Array(24)].map((_, h) => `<span>${pad(h)}:00</span>`).join('')}</div>${days.map(col).join('')}</div></div></div>`;
   }
