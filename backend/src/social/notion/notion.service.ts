@@ -22,7 +22,7 @@ export class SocialNotionPage {
   @Prop({ required: true }) pageId!: string;
   @Prop() date?: string;
   @Prop() hash?: string;
-  /** The pictures it shows (cover and body), and the image blocks this sync added to the page */
+  /** The pictures it shows in its body ("v2|" once the page has no cover), and the image blocks this sync added to the page */
   @Prop() imgHash?: string;
   @Prop({ type: [String], default: [] }) blocks?: string[];
 }
@@ -193,14 +193,15 @@ export class NotionService {
         const props = this.props(p, db, await nameOf(p.brandId), p.auto?.name || (await designOf(p.brandId, p.d)), validTz(p.tz || "") ? p.tz : validTz(wsTz) ? wsTz : "UTC");
         const hash = createHash("sha1").update(JSON.stringify(props)).digest("hex"), link = links.get(k);
         // the design: the post's own slides once it has them, the automation's preview before
-        const imgs = this.images(p, p.auto ? autos.get(`${p.brandId}|${p.auto.id}`) : null), imgHash = imgs.join("|");
+        // pages carry no cover: the pictures only go in the body ("v2|" makes pages synced with a cover drop it once)
+        const imgs = this.images(p, p.auto ? autos.get(`${p.brandId}|${p.auto.id}`) : null), imgHash = "v2|" + imgs.join("|");
         if (!link) {
-          const page: any = await c.call("POST", "/pages", { parent: { database_id: db.id }, icon: { type: "emoji", emoji: p.auto ? "🔁" : "📣" }, ...(imgs[0] ? { cover: ext(imgs[0]) } : {}), properties: props, children: imgs.map(imageBlock) });
+          const page: any = await c.call("POST", "/pages", { parent: { database_id: db.id }, icon: { type: "emoji", emoji: p.auto ? "🔁" : "📣" }, properties: props, children: imgs.map(imageBlock) });
           const blocks = imgs.length ? ((await c.call("GET", `/blocks/${page.id}/children?page_size=50`)).results || []).filter((b: any) => b.type === "image").map((b: any) => b.id) : [];
           await this.links.updateOne({ brandId: p.brandId, postId: p.id }, { $set: { pageId: page.id, date: p.date, hash, imgHash, blocks } }, { upsert: true }); made++;
         } else if (link.hash !== hash || (link.imgHash || "") !== imgHash) {
           const imgChanged = (link.imgHash || "") !== imgHash;
-          await c.call("PATCH", `/pages/${link.pageId}`, { properties: props, archived: false, ...(imgChanged ? { cover: imgs[0] ? ext(imgs[0]) : null } : {}) });
+          await c.call("PATCH", `/pages/${link.pageId}`, { properties: props, archived: false, ...(imgChanged ? { cover: null } : {}) });
           let blocks: string[] = link.blocks || [];
           if (imgChanged) {
             // only the image blocks this sync added are replaced: notes written in the page stay
