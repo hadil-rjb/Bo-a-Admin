@@ -2295,16 +2295,18 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 @media (max-width:1100px){.psearch{flex:1 1 200px;width:auto}}
 @media (max-width:760px){.cal{--gut:56px}.cal-hours span{font-size:12px}.ptabs-l{gap:20px}.ptool-r .pdd[data-k="best"] .pdd-l{display:inline}.ptool .pviews button{padding:0 14px}}
 
-/* week cells stay white: best times only show as the faint % in each hour */
-.cal-cell{background:var(--surface)}
+/* week cells: tinted in the best-times network color, stronger the better the hour (white when Best Times is off) */
+.cal-cell{background:color-mix(in srgb,var(--hc,#3b82f6) calc(var(--s) * var(--s) * 48%),var(--surface))}
+.cal-cell .pct{font-style:normal;font-weight:500;color:color-mix(in srgb,var(--text-2) 80%,transparent)}
 /* month: same frame as the week */
 .pcal.month{display:block;overflow:hidden;border-radius:16px}
 .mcal{height:var(--plh);min-height:520px}
 .mc-head{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--pill) 55%,var(--surface))}
 .mc-head span{display:grid;place-items:center;height:42px;font-size:13px;font-weight:500;letter-spacing:.02em;text-transform:uppercase;color:var(--text-3)}
 .mc-head span+span{border-left:1px solid var(--border)}
-.mc-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(110px,1fr));overflow-y:auto;scrollbar-width:thin}
-.pcal .day.mcd{min-height:0;display:flex;flex-direction:column;gap:6px;padding:8px;border:0;border-radius:0;border-right:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface);overflow:hidden;container-type:inline-size;transition:background .12s}
+.mcal{display:flex;flex-direction:column}
+.mc-grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(min-content,1fr));overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.pcal .day.mcd{min-height:112px;display:flex;flex-direction:column;gap:6px;padding:8px;border:0;border-radius:0;border-right:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--surface);container-type:inline-size;transition:background .12s}
 .pcal .day.mcd:nth-child(7n){border-right:0}
 .pcal .day.mcd.other{background:color-mix(in srgb,var(--pill) 55%,var(--surface))}
 .pcal .day.mcd.over{background:color-mix(in srgb,var(--accent) 6%,var(--surface));box-shadow:inset 0 0 0 2px var(--accent)}
@@ -2323,7 +2325,9 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .mcal .cal-post .cp-f .ic{width:13px;height:13px}
 .mcal .more7{flex:none}
 @container (max-width:150px){.mcal .cal-post .cp-th{display:none}}
-@media (max-width:760px){.mc-grid{grid-template-rows:repeat(var(--rows),minmax(72px,1fr))}.pcal .day.mcd{padding:4px}.mcd-h small{display:none}.mcal .cal-post{min-height:0;padding:3px 5px}.mcal .cal-post .cp-b b,.mcal .cal-post .cp-f{display:none}}
+@media (max-width:760px){.pcal .day.mcd{min-height:72px;padding:4px}.mcd-h small{display:none}.mcal .cal-post{min-height:0;padding:3px 5px}.mcal .cal-post .cp-b b,.mcal .cal-post .cp-f{display:none}}
 .cal-head .cal-gut{background:color-mix(in srgb,var(--pill) 55%,var(--surface))}
 .pl7 .cal-body{height:calc(var(--plh) - 88px)}
 @media (max-width:760px){.pl7 .cal-body{height:calc(var(--plh) - 110px)}}
+/* the planner runs to the bottom of the window: only a 16px margin under the calendar */
+.page:has(> .ptool){padding-bottom:16px}

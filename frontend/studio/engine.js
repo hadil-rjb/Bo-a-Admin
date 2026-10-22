@@ -447,7 +447,7 @@ function renderSide() {
       <div id="brandMenu">${brandMenu()}</div>
     </div>
   </div>
-  <nav class="nav" id="nav">${NAV.map(([k, l, i, n]) => `<a href="#/${k}" data-k="${k}">${ic(i)}${l}${n ? `<span class="new">${n}</span>` : ''}</a>`).join('')}</nav>
+  <nav class="nav" id="nav">${NAV.map(([k, l, i]) => `<a href="#/${k}" data-k="${k}">${ic(i)}${l}</a>`).join('')}</nav>
   <div class="me">
     <div class="menu" id="meMenu" hidden>
       <div class="row" style="gap:10px;padding:8px">${userAv()}<span class="grow"><b style="font-size:14px;font-weight:500;display:block">${esc(user.name)}</b><small class="muted xs-t">${esc(user.email)}</small></span></div>
@@ -3194,7 +3194,7 @@ Object.assign(IC, {
   /** The calendar and the designs panel fill the window: from where they start down to the bottom edge (a 24px margin) */
   const fitPlanner = () => {
     const g = $('.pl7'); if (!g) return; const top = g.getBoundingClientRect().top + scrollY;
-    let h = Math.max(420, Math.round(innerHeight - top - 20)); g.style.setProperty('--plh', h + 'px');
+    let h = Math.max(420, Math.round(innerHeight - top - 16)); g.style.setProperty('--plh', h + 'px');
     // the page's own bottom padding must not make the window scroll: take back what overflows
     const over = document.documentElement.scrollHeight - innerHeight; if (over > 0 && h - over >= 420) g.style.setProperty('--plh', h - over + 'px');
   };
@@ -3210,7 +3210,7 @@ Object.assign(IC, {
     const n = S.posts.filter((p) => p.date.slice(0, 7) === iso(f).slice(0, 7) && fvis(p)).length;
     return `<div class="cal mcal">${calBar(fmt(f, { month: 'long', year: 'numeric' }), n, 'month')}<div class="mc-head">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((x) => `<span>${x}</span>`).join('')}</div><div class="mc-grid" style="--rows:${cells.length / 7}">${cells.map((d) => {
       const k = iso(d), ps = S.posts.filter((p) => p.date === k && fvis(p)).sort(byT);
-      return `<div class="day mcd ${d.getMonth() !== f.getMonth() ? 'other' : ''} ${k === today ? 'today' : ''} ${k < today ? 'past' : ''}" data-date="${k}"><div class="mcd-h"><b>${d.getDate()}</b>${ps.length ? `<small>${ps.length} post${ps.length > 1 ? 's' : ''}</small>` : ''}${k >= today ? `<button class="add7" data-act="pnew" data-date="${k}" title="New post on ${dlabel(k)}" aria-label="New post on ${dlabel(k)}">${ic('plus', 14)}</button>` : ''}</div>${ps.slice(0, 4).map((p) => tile(p, 30)).join('')}${ps.length > 4 ? `<button class="more7" data-act="pday" data-date="${k}">+${ps.length - 4} more</button>` : ''}</div>`;
+      return `<div class="day mcd ${d.getMonth() !== f.getMonth() ? 'other' : ''} ${k === today ? 'today' : ''} ${k < today ? 'past' : ''}" data-date="${k}"><div class="mcd-h"><b>${d.getDate()}</b>${ps.length ? `<small>${ps.length} post${ps.length > 1 ? 's' : ''}</small>` : ''}${k >= today ? `<button class="add7" data-act="pnew" data-date="${k}" title="New post on ${dlabel(k)}" aria-label="New post on ${dlabel(k)}">${ic('plus', 14)}</button>` : ''}</div>${ps.slice(0, ps.length > 3 ? 2 : 3).map((p) => tile(p, 30)).join('')}${ps.length > 3 ? `<button class="more7" data-act="pday" data-date="${k}">+${ps.length - 2} more</button>` : ''}</div>`;
     }).join('')}</div></div>`;
   }
   function listView() {
@@ -3240,13 +3240,12 @@ Object.assign(IC, {
       const span = P.view === 'week' ? days.map(iso) : P.view === 'month' ? [...Array(new Date(P.mo.getFullYear(), P.mo.getMonth() + 1, 0).getDate())].map((_, i) => iso(new Date(P.mo.getFullYear(), P.mo.getMonth(), i + 1))) : [], open = span.filter((k) => k >= today && !S.posts.some((p) => p.date === k && fvis(p))).length;
       const unit = P.view === 'month' ? 'month' : 'week';
       const short = P.view === 'week' ? (days[0].getMonth() === days[6].getMonth() ? `${fmt(days[0], { month: 'long' })} ${days[0].getDate()} – ${days[6].getDate()}, ${days[6].getFullYear()}` : `${fmt(days[0], { month: 'short', day: 'numeric' })} – ${fmt(days[6], { month: 'short', day: 'numeric' })}, ${days[6].getFullYear()}`) : title;
-      // one Filter menu: networks (when several are connected) and status, with a count of what's active
-      const nets = conn(), active = (P.fPf ? 1 : 0) + (P.fSt !== 'All' ? 1 : 0), openK = P.openDd; P.openDd = null;
-      // networks: a checkbox in the network's own color; statuses: a radio and the status color
+      // the Filter menu: post status (networks are the tabs), with a count when one is picked
+      const active = P.fSt !== 'All' ? 1 : 0, openK = P.openDd; P.openDd = null;
+      // each status: a radio and the status color
       const fRow = (act, attrs, on, dot, label, multi) => `<button type="button" role="${multi ? 'menuitemcheckbox' : 'menuitemradio'}" aria-checked="${on}" data-act="${act}" ${attrs} class="pf-row ${on ? 'on' : ''}" style="--c:${dot || 'var(--accent)'}">${multi ? `<span class="pf-check ${on ? 'on' : ''}" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>` : `<span class="pf-radio ${on ? 'on' : ''}" aria-hidden="true"></span>${dot ? '<i class="pdot"></i>' : ''}`}<span class="grow">${label}</span></button>`;
       const filter = `<div class="dd pdd pfilter ${active ? 'pdd-on' : ''}" data-k="flt"><button type="button" class="ddb" data-act="ddt" aria-haspopup="menu" aria-label="Filter posts${active ? `, ${active} active` : ''}">${ic('filter', 15)}<span>Filter</span>${active ? `<em class="pf-n">${active}</em>` : ''}</button>
         <div class="ddm ${openK === 'flt' ? 'noanim' : ''}" role="menu" ${openK === 'flt' ? '' : 'hidden'}>
-          ${nets.length > 1 ? `<div class="pdd-h">Networks</div>${nets.map((k) => fRow('pfn', `data-k="${k}"`, !P.fPf || P.fPf.has(k), PLATFORMS[k].c, PLATFORMS[k].n, true)).join('')}<div class="pdd-sep"></div>` : ''}
           <div class="pdd-h">Status</div>${[['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((x) => [x, x, ST_C[x]])].map(([v, l, c]) => fRow('pfst', `data-v="${v}"`, P.fSt === v, c, l, false)).join('')}
           ${active ? `<div class="pdd-sep"></div><button type="button" class="pf-reset" data-act="pfReset">Clear filters</button>` : ''}</div></div>`;
       const best = P.view === 'week' ? (() => { const bn = bestNet(); return pdd('best', 'Best Times', bn || '', [...bestNets().map((k) => [k, PLATFORMS[k].n, PLATFORMS[k].c]), ['', 'Off', '']], 'Best times for'); })() : '';
@@ -3268,7 +3267,7 @@ Object.assign(IC, {
     pfn: (a) => { const all = conn(), s = P.fPf ? new Set(P.fPf) : new Set(all), k = a.dataset.k; s.has(k) ? s.delete(k) : s.add(k); if (!s.size) s.add(k); P.fPf = all.every((x) => s.has(x)) ? null : s; if (a.closest('.ddm')) P.openDd = 'flt'; route(); },
     pfnAll: () => { P.fPf = null; route(); },
     pfst: (a) => { P.fSt = a.dataset.v; P.openDd = 'flt'; route(); },
-    pfReset: () => { P.fPf = null; P.fSt = 'All'; route(); },
+    pfReset: () => { P.fSt = 'All'; route(); },
     ptab: (a) => { const v = a.dataset.v; P.fPf = PLATFORMS[v] ? new Set([v]) : null; P.fSt = v === 'failed' ? 'Failed' : v === 'all' || PLATFORMS[v] ? 'All' : P.fSt; route(); },
     pday: (a) => { P.view = 'week'; P.ws = monday(dparse(a.dataset.date)); P.focus = a.dataset.date; route(); },
     pfocus: (a) => { P.focus = a.dataset.date; route(); },
