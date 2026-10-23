@@ -86,7 +86,7 @@ let fxReady = async () => {};
 /** Text of a text layer as HTML (plain, or spans for mixed styles: set by the mixed text section) */
 let textHTML = (l) => esc(l.text);
 /** Mixed text hooks: apply(prop, value) styles the selected characters (true when it handled the change) */
-const RT = { apply: () => false, loadFont: () => {}, treeLive: () => {}, topGroup: () => null, selUnits: (pg, ids) => ids, tree: null }; // tree hooks: v31
+const RT = { apply: () => false, loadFont: () => {}, treeLive: () => {}, topGroup: () => null, selUnits: (pg, ids) => ids, tree: null, dragOn: () => false }; // tree hooks: v31
 /** Publishing client (v14 section): render + upload slides, publish now, poll results */
 let PUB = null;
 /** Connected accounts of the active brand (from the API). `S.platforms` mirrors them for the planner. */
@@ -8583,38 +8583,89 @@ function normalizeOrder(pg) {
   if (out.length === L.length && out.every((l, i) => l === L[i])) return false;
   L.splice(0, L.length, ...out); return true;
 }
+/** Where a frame's child goes when the frame's box changes: its constraint (left / right / both / center / scale per axis) */
+function constrain(k, O, N) {
+  [['h', 'x', 'w'], ['v', 'y', 'h']].forEach(([ax, P, S]) => {
+    const c = (k.ct && k.ct[ax]) || 'start', o0 = O[P], os = O[S], n0 = N[P], ns = N[S];
+    if (c === 'end') k[P] += n0 + ns - (o0 + os);
+    else if (c === 'center') k[P] += n0 + ns / 2 - (o0 + os / 2);
+    else if (c === 'both') { k[P] += n0 - o0; k[S] = Math.max(1, k[S] + ns - os); }
+    else if (c === 'scale' && os) { k[P] = n0 + ((k[P] - o0) * ns) / os; k[S] = Math.max(1, (k[S] * ns) / os); }
+    else k[P] += n0 - o0; // start: keeps its distance to the left / top edge
+  });
+}
 /**
- * Keeps a page's tree true; returns the layers whose drawing changed (to refresh while dragging).
- * 1) a container moved or resized directly (panel, arrows, the agent, a drag): its content follows (a group's is scaled);
- * 2) groups take their content's bounds, empty groups go; 3) every container remembers its box.
+ * Auto layout (frame.al = { d: 'h' | 'v', g: gap, p: [top, right, bottom, left], m: main 'start' | 'center' | 'end' | 'between',
+ * c: cross 'start' | 'center' | 'end', hw / hh: hug width / height }): places the frame's children in a row or a column.
+ * A child can fill the main axis (gr), stretch across (stc) or stay out of the flow (ab: positioned by its constraints).
+ */
+function layoutFrame(f, kids, keep) { // keep: layers being dragged, they hold their slot but aren't moved
+  const a = f.al, H = a.d !== 'v', [pt, pr, pb, pl] = a.p || [0, 0, 0, 0], gap = a.g || 0, n = kids.length;
+  const M = H ? 'x' : 'y', C = H ? 'y' : 'x', MS = H ? 'w' : 'h', CS = H ? 'h' : 'w', m0 = H ? pl : pt, m1 = H ? pr : pb, c0 = H ? pt : pl, c1 = H ? pb : pr;
+  const hugM = H ? a.hw : a.hh, hugC = H ? a.hh : a.hw, between = a.m === 'between' && n > 1;
+  if (hugM) f[MS] = Math.max(1, m0 + m1 + kids.reduce((s, k) => s + k[MS], 0) + gap * Math.max(0, n - 1));
+  if (hugC) f[CS] = Math.max(1, c0 + c1 + Math.max(0, ...kids.filter((k) => !k.stc).map((k) => k[CS])));
+  const innerM = f[MS] - m0 - m1, innerC = f[CS] - c0 - c1, grows = hugM ? [] : kids.filter((k) => k.gr);
+  if (grows.length) { const fixed = kids.filter((k) => !k.gr).reduce((s, k) => s + k[MS], 0), each = Math.max(1, (innerM - fixed - gap * Math.max(0, n - 1)) / grows.length); grows.forEach((k) => { k[MS] = each; }); }
+  const sum = kids.reduce((s, k) => s + k[MS], 0), g = between && !grows.length ? (innerM - sum) / (n - 1) : gap, rest = innerM - sum - g * Math.max(0, n - 1);
+  let cur = f[M] + m0 + (grows.length || between ? 0 : a.m === 'center' ? rest / 2 : a.m === 'end' ? rest : 0);
+  kids.forEach((k) => {
+    if (keep && keep.has(k.id)) { cur += k[MS] + g; return; }
+    if (k.stc) k[CS] = Math.max(1, innerC);
+    k[M] = cur; cur += k[MS] + g;
+    k[C] = f[C] + c0 + (a.c === 'center' ? (innerC - k[CS]) / 2 : a.c === 'end' ? innerC - k[CS] : 0);
+  });
+}
+/**
+ * Keeps a page's tree true; returns the layers whose drawing changed (to refresh while dragging). Repeats until stable:
+ * 1) a container moved or resized directly (panel, arrows, the agent, a drag, a parent's auto layout): its children follow,
+ *    a group's by the same move and scale, a frame's by their constraints; nested containers pass it on to their own content;
+ * 2) groups take their content's bounds, empty groups go; 3) auto layout frames place their children (innermost first).
+ * Containers remember their box in _x/_y/_w/_h. Layers being dragged float (they drop into the flow on release).
  */
 function syncTree(pg) {
   if (!pg || !pg.layers) return [];
   if (pg.layers.some((l) => l.gid)) migrateGroups(pg);
   normalizeOrder(pg);
-  const T = treeOf(pg), changed = new Set();
-  const visit = (k) => (T.kids.get(k) || []).forEach((c) => {
-    if (isContainer(c) && c._w != null) {
-      const sx = c.type === 'group' && c._w ? c.w / c._w : 1, sy = c.type === 'group' && c._h ? c.h / c._h : 1, dx = c.x - c._x, dy = c.y - c._y;
-      const moved = Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6, scaled = Math.abs(sx - 1) > 1e-6 || Math.abs(sy - 1) > 1e-6;
-      if (moved || scaled || (c.type === 'frame' && (c.w !== c._w || c.h !== c._h))) descendantsT(T, c.id).forEach((d) => {
-        if (moved || scaled) {
-          const map = (x, y) => [c.x + (x - c._x) * sx, c.y + (y - c._y) * sy];
-          [d.x, d.y] = map(d.x, d.y); d.w *= sx; d.h *= sy;
-          if (isContainer(d) && d._w != null) { [d._x, d._y] = map(d._x, d._y); d._w *= sx; d._h *= sy; } // so it doesn't move its content twice
-        }
-        changed.add(d); // a frame's new box changes its content's clipping too
-      });
+  const changed = new Set(), r2 = (v) => Math.round(v * 100) / 100;
+  const floating = RT.dragOn() ? new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []) : null;
+  const boxOf = (l) => [l.x, l.y, l.w, l.h].join(',');
+  for (let pass = 0; pass < 6; pass++) {
+    const T = treeOf(pg), before = new Map(pg.layers.map((l) => [l, boxOf(l)]));
+    // 1) top-down: direct children follow their container
+    const visit = (k) => (T.kids.get(k) || []).forEach((c) => {
+      if (isContainer(c) && c._w != null && (c.x !== c._x || c.y !== c._y || c.w !== c._w || c.h !== c._h)) {
+        const O = { x: c._x, y: c._y, w: c._w, h: c._h }, sx = c._w ? c.w / c._w : 1, sy = c._h ? c.h / c._h : 1;
+        (T.kids.get(c.id) || []).forEach((d) => {
+          if (c.type === 'group') { d.x = c.x + (d.x - O.x) * sx; d.y = c.y + (d.y - O.y) * sy; d.w *= sx; d.h *= sy; }
+          else constrain(d, O, c);
+        });
+        descendantsT(T, c.id).forEach((d) => changed.add(d)); // a frame's new box changes its content's clipping too
+        c._x = c.x; c._y = c.y; c._w = c.w; c._h = c.h;
+      }
+      visit(c.id);
+    });
+    visit('');
+    // 2) groups wrap their content (innermost first); empty groups go
+    for (const g of [...pg.layers].reverse()) {
+      if (g.type !== 'group') continue;
+      const ks = treeOf(pg).kids.get(g.id) || [], vis = ks.filter((x) => !x.hidden), use = vis.length ? vis : ks;
+      if (!ks.length) { pg.layers.splice(pg.layers.indexOf(g), 1); if (ED.sel === g.id) ED.sel = null; continue; }
+      const bs = use.map(aabb), x = Math.min(...bs.map((b) => b.x)), y = Math.min(...bs.map((b) => b.y)), w = Math.max(...bs.map((b) => b.x + b.w)) - x, h = Math.max(...bs.map((b) => b.y + b.h)) - y;
+      if (g.x !== x || g.y !== y || g.w !== w || g.h !== h) { Object.assign(g, { x, y, w, h, rot: 0 }); g._x = x; g._y = y; g._w = w; g._h = h; }
     }
-    visit(c.id);
-  });
-  visit('');
-  for (const g of [...pg.layers].reverse()) { // children before their parents
-    if (g.type !== 'group') continue;
-    const ks = T.kids.get(g.id) || [], vis = ks.filter((x) => !x.hidden), use = vis.length ? vis : ks;
-    if (!ks.length) { pg.layers.splice(pg.layers.indexOf(g), 1); if (ED.sel === g.id) ED.sel = null; continue; }
-    const bs = use.map(aabb), x = Math.min(...bs.map((b) => b.x)), y = Math.min(...bs.map((b) => b.y)), w = Math.max(...bs.map((b) => b.x + b.w)) - x, h = Math.max(...bs.map((b) => b.y + b.h)) - y;
-    if (g.x !== x || g.y !== y || g.w !== w || g.h !== h) { Object.assign(g, { x, y, w, h, rot: 0 }); changed.add(g); }
+    // 3) auto layout, innermost frames first (a hugging frame is sized before its parent places it)
+    const T2 = treeOf(pg);
+    [...pg.layers].reverse().forEach((f) => {
+      if (f.type !== 'frame' || !f.al) return;
+      const kids = (T2.kids.get(f.id) || []).filter((k) => !k.hidden && !k.ab);
+      const fw = f.w, fh = f.h; layoutFrame(f, kids, floating);
+      kids.forEach((k) => { k.x = r2(k.x); k.y = r2(k.y); k.w = r2(k.w); k.h = r2(k.h); });
+      if (f.w !== fw || f.h !== fh) { f.w = r2(f.w); f.h = r2(f.h); }
+    });
+    let moved = false;
+    pg.layers.forEach((l) => { if (before.get(l) !== boxOf(l)) { changed.add(l); moved = true; } });
+    if (!moved && pass > 0) break;
   }
   pg.layers.forEach((c) => { if (isContainer(c)) { c._x = c.x; c._y = c.y; c._w = c.w; c._h = c.h; if (c.rot) c.rot = 0; } });
   return [...changed];
@@ -8725,6 +8776,7 @@ function clipCss(l, frames) {
     const freed = [];
     mutate(() => { cs.forEach((c) => { (T.kids.get(c.id) || []).forEach((k) => { if (c.pid) k.pid = c.pid; else delete k.pid; freed.push(k.id); }); pg.layers.splice(pg.layers.indexOf(c), 1); }); syncTree(pg); ED.sel = freed.length === 1 ? freed[0] : null; ED.ms = freed.length > 1 ? freed : []; });
   }
+  RT.wrapSel = wrapSel; // Shift A: a new auto layout frame (v32)
   Object.assign(ACT, {
     msGroup: () => wrapSel('group'), msUngroup: unwrapSel, t31Frame: () => wrapSel('frame'), t31Unwrap: unwrapSel,
     t31Clip: () => { const l = curL(); l && l.type === 'frame' && mutate(() => { if (l.noclip) delete l.noclip; else l.noclip = true; }); },
@@ -8734,20 +8786,25 @@ function clipCss(l, frames) {
 
   /* ---------- dragging a layer onto a frame puts it inside; off its frame takes it out (one undo step with the move) ---------- */
   const DRAG = { on: false, pt: null };
+  RT.dragOn = () => DRAG.on && !!DRAG.pt; // a layer is being dragged: it floats above an auto layout (syncTree)
   function reparent() {
     const pg = P(), T = treeOf(pg), pt = DRAG.pt; if (!pt) return;
+    DRAG.on = false; // dropped: back into any auto layout flow
     const ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; // what the drag moved: the selection by now
     const tops = RT.selUnits(pg, ids).map((id) => T.byId.get(id)).filter(Boolean); let any = false;
     tops.forEach((l) => {
       const par = l.pid && T.byId.get(l.pid); if (par && par.type === 'group') return; // groups keep their content
       const mine = new Set([l.id, ...descendantsT(T, l.id).map((d) => d.id)]);
       const target = [...pg.layers].reverse().find((f) => f.type === 'frame' && !mine.has(f.id) && !f.hidden && !f.locked && pt[0] >= f.x && pt[0] <= f.x + f.w && pt[1] >= f.y && pt[1] <= f.y + f.h);
-      const to = target ? target.id : '';
-      if ((l.pid || '') === to) return;
-      if (to) l.pid = to; else delete l.pid;
-      const L = pg.layers, block = [l, ...descendantsT(T, l.id)]; L.splice(L.indexOf(l), block.length); L.push(...block); any = true; // on top of its new siblings
+      const to = target ? target.id : '', L = pg.layers, block = [l, ...descendantsT(T, l.id)];
+      if ((l.pid || '') !== to) { if (to) l.pid = to; else delete l.pid; L.splice(L.indexOf(l), block.length); L.push(...block); any = true; } // on top of its new siblings
+      if (target && target.al && !l.ab) { // an auto layout: the drop point picks its place in the row or column
+        const H = target.al.d !== 'v', sib = (treeOf(pg).kids.get(target.id) || []).filter((k) => k !== l && !k.ab), at = H ? pt[0] : pt[1];
+        const before = sib.find((k) => at < (H ? k.x + k.w / 2 : k.y + k.h / 2));
+        L.splice(L.indexOf(l), block.length); L.splice(before ? L.indexOf(before) : L.indexOf(sib.length ? sib[sib.length - 1] : target) + (sib.length ? descendantsT(treeOf(pg), sib[sib.length - 1].id).length + 1 : 1), 0, ...block); any = true;
+      }
     });
-    if (any) { syncTree(pg); edStage(); edPages(); }
+    syncTree(pg); edStage(); edPages(); // the dropped layer joins the flow again even when nothing changed
   }
   const _commit31 = commit;
   commit = function () { if (DRAG.on && ED.d) reparent(); return _commit31.apply(this, arguments); };
@@ -8888,6 +8945,101 @@ function clipCss(l, frames) {
     if (p && ED.tab === 'elements') { const g = p.querySelector('[data-act=vPen]'); g && g.insertAdjacentHTML('beforebegin', `<button class="el7${FRM.on ? ' on' : ''}" data-n="frame artboard container layout" data-act="t31Tool" title="Frame (F)" aria-pressed="${FRM.on}">${ic('frame31', 22)}</button>`); }
     return r;
   };
+})();
+
+/* ============ v32 · auto layout and constraints (Figma's frame layout) ============ */
+/* The layout itself runs in syncTree (layoutFrame, constrain); this section is the panel, Shift A and the actions. */
+(function () {
+  const P = () => curP(), T0 = () => treeOf(P()), parentOf = (l) => l && l.pid && T0().byId.get(l.pid);
+  const AXN = { start: ['Left', 'Top'], end: ['Right', 'Bottom'], both: ['Left and right', 'Top and bottom'], center: ['Center', 'Center'], scale: ['Scale', 'Scale'] };
+  /** Auto layout guessed from how a frame's children sit: row or column, the usual gap, the padding around them */
+  function inferAL(f, kids) {
+    if (!kids.length) return { d: 'v', g: 16, p: [24, 24, 24, 24], m: 'start', c: 'start', hw: false, hh: true };
+    const cx = kids.map((k) => k.x + k.w / 2), cy = kids.map((k) => k.y + k.h / 2), H = Math.max(...cx) - Math.min(...cx) >= Math.max(...cy) - Math.min(...cy);
+    const s = [...kids].sort((a, b) => (H ? a.x - b.x : a.y - b.y)), gaps = s.slice(1).map((k, i) => (H ? k.x - (s[i].x + s[i].w) : k.y - (s[i].y + s[i].h)));
+    const x0 = Math.min(...kids.map((k) => k.x)), y0 = Math.min(...kids.map((k) => k.y)), x1 = Math.max(...kids.map((k) => k.x + k.w)), y1 = Math.max(...kids.map((k) => k.y + k.h));
+    const pad = [y0 - f.y, f.x + f.w - x1, f.y + f.h - y1, x0 - f.x].map((v) => Math.max(0, Math.round(v)));
+    return { order: s, al: { d: H ? 'h' : 'v', g: gaps.length ? Math.max(0, Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length)) : 16, p: pad, m: 'start', c: 'start', hw: true, hh: true } };
+  }
+  /** Turns auto layout on for a frame: children in the order they're seen, then laid out */
+  function addAL(f) {
+    const pg = P(), T = treeOf(pg), kids = (T.kids.get(f.id) || []).filter((k) => !k.hidden), r = inferAL(f, kids);
+    mutate(() => {
+      f.al = r.al || r;
+      if (r.order) { // flow order = the visual order (left to right, or top to bottom)
+        const L = pg.layers, blocks = r.order.map((k) => [k, ...descendantsT(T, k.id)]);
+        blocks.forEach((b) => L.splice(L.indexOf(b[0]), b.length));
+        L.splice(L.indexOf(f) + 1, 0, ...blocks.flat()); // hidden children keep their places after them (the tree keeps relative order)
+      }
+      syncTree(pg);
+    });
+    toast('Auto layout on. Drag a layer inside it to change its place.');
+  }
+  const setAL = (fn) => { const f = curL(); f && f.al && mutate(() => { fn(f.al, f); syncTree(P()); }); };
+  const setChild = (fn) => { const l = curL(); l && mutate(() => { fn(l); syncTree(P()); }); };
+  Object.assign(ACT, {
+    al32Add: () => { const f = curL(); if (f && f.type === 'frame' && !f.al) addAL(f); },
+    al32Remove: () => setAL((a, f) => { delete f.al; }),
+    al32Dir: (b) => setAL((a) => { a.d = b.dataset.v; }),
+    al32Align: (b) => setAL((a) => { if (a.m !== 'between') a.m = b.dataset.m; a.c = b.dataset.c; }),
+    al32Between: () => setAL((a) => { a.m = a.m === 'between' ? 'start' : 'between'; }),
+    al32Hug: (b) => setAL((a) => { a[b.dataset.k] = b.dataset.v === 'hug'; }),
+    al32Child: (b) => setChild((l) => { const k = b.dataset.k; if (l[k]) delete l[k]; else l[k] = true; if (k === 'ab' && l.ab) { delete l.gr; delete l.stc; } }),
+  });
+  document.addEventListener('input', (e) => { // gap and padding: live, committed on change (property inputs)
+    const t = e.target; if (!t.dataset || !t.dataset.a32 || !t.closest('#edProps')) return;
+    const f = curL(); if (!f || !f.al) return; if (!ED.pre) ED.pre = snap();
+    const v = Math.max(0, +t.value || 0), p = f.al.p || (f.al.p = [0, 0, 0, 0]);
+    if (t.dataset.a32 === 'g') f.al.g = v; if (t.dataset.a32 === 'ph') { p[1] = p[3] = v; } if (t.dataset.a32 === 'pv') { p[0] = p[2] = v; }
+    refreshL(f); drawSel();
+  });
+  document.addEventListener('change', (e) => {
+    const t = e.target; if (!t.dataset || !t.dataset.c32 || !t.closest('#edProps')) return;
+    const l = curL(); if (!l) return; mutate(() => { l.ct = { ...(l.ct || {}), [t.dataset.c32]: t.value }; if (l.ct.h === 'start') delete l.ct.h; if (l.ct.v === 'start') delete l.ct.v; if (!Object.keys(l.ct).length) delete l.ct; });
+  });
+
+  const sec = (key, title, body) => `<section class="ps9" data-sec="${key}"><div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="${key}" aria-expanded="true">${title}${ic('chevD', 14)}</button><span class="ps9-a"></span></div><div class="ps9-b">${body}</div></section>`;
+  const sw = (act, k, on, label, hint) => `<div class="row sp"><span class="sm-t">${label}${hint ? `<br><span class="xs-t muted">${hint}</span>` : ''}</span><button class="switch ${on ? 'on' : ''}" data-act="${act}" data-k="${k}" aria-label="${label}"></button></div>`;
+  function alHTML(f) {
+    if (!f.al) return `<button class="btn secondary sm" data-act="al32Add">${ic('plus', 16)}Add auto layout<span class="kbd" style="margin-left:6px">Shift A</span></button><p class="xs-t muted">Stacks the frame’s layers in a row or a column, with even gaps and padding.</p>`;
+    const a = f.al, p = a.p || [0, 0, 0, 0], H = a.d !== 'v', bt = a.m === 'between';
+    const grid = ['start', 'center', 'end'].map((cv) => ['start', 'center', 'end'].map((mv) => { const on = a.c === cv && (bt || a.m === mv); return `<button type="button" class="a32${on ? ' on' : ''}" data-act="al32Align" data-m="${mv}" data-c="${cv}" aria-label="Align ${H ? `${mv} / ${cv}` : `${cv} / ${mv}`}"><i></i></button>`; }));
+    // the grid is drawn rows × columns: for a row, columns are the main axis; for a column, rows are
+    const cells = H ? grid.flat() : [0, 1, 2].flatMap((r) => [0, 1, 2].map((c) => grid[c][r]));
+    const hug = (k, lbl) => `<div class="lab">${lbl}<div class="seg">${[['fixed', 'Fixed'], ['hug', 'Hug']].map(([v, t]) => `<button type="button" class="${(a[k] ? 'hug' : 'fixed') === v ? 'on' : ''}" data-act="al32Hug" data-k="${k}" data-v="${v}">${t}</button>`).join('')}</div></div>`;
+    return `<div class="seg">${[['h', 'Row →'], ['v', 'Column ↓']].map(([v, t]) => `<button type="button" class="${(a.d || 'h') === v ? 'on' : ''}" data-act="al32Dir" data-v="${v}">${t}</button>`).join('')}</div>`
+      + `<div class="r32"><div class="g32">${cells.join('')}</div><div class="c32"><label class="n30"><span>Gap</span><input class="field sm" type="number" min="0" data-a32="g" value="${a.g || 0}"${bt ? ' disabled' : ''}></label><button type="button" class="chip${bt ? ' on' : ''}" data-act="al32Between">Space between</button>`
+      + `<label class="n30"><span>Padding ↔</span><input class="field sm" type="number" min="0" data-a32="ph" value="${p[3]}"></label><label class="n30"><span>Padding ↕</span><input class="field sm" type="number" min="0" data-a32="pv" value="${p[0]}"></label></div></div>`
+      + `<div class="g2f">${hug('hw', 'Width')}${hug('hh', 'Height')}</div><button class="btn ghost sm" data-act="al32Remove">Remove auto layout</button>`;
+  }
+  const _ep32 = edProps;
+  edProps = function () {
+    const r = _ep32.apply(this, arguments), l = curL(), b = $('#edProps .body');
+    if (!l || ED.rtab !== 'design' || !b || !b.querySelector('.ps9')) return r;
+    const par = parentOf(l), after = b.querySelector('.ps9[data-sec=tree]') || b.querySelector('.ps9[data-sec=pos]'), html = [];
+    if (l.type === 'frame') html.push(sec('al', 'Auto layout', alHTML(l)));
+    if (par && par.type === 'frame' && par.al) {
+      const H = par.al.d !== 'v';
+      html.push(sec('alc', 'In auto layout', (l.ab ? '' : sw('al32Child', 'gr', l.gr, H ? 'Fill width' : 'Fill height', 'Takes the room left in the ' + (H ? 'row' : 'column')) + sw('al32Child', 'stc', l.stc, H ? 'Fill height' : 'Fill width', 'Stretches across'))
+        + sw('al32Child', 'ab', l.ab, 'Ignore auto layout', 'Stays where you put it')));
+    }
+    if (par && par.type === 'frame' && (!par.al || l.ab)) {
+      const opt = (ax, i) => Object.keys(AXN).map((k) => `<option value="${k}" ${((l.ct && l.ct[ax]) || 'start') === k ? 'selected' : ''}>${AXN[k][i]}</option>`).join('');
+      html.push(sec('ct', 'Constraints', `<p class="xs-t muted">When “${esc(par.name || 'the frame')}” is resized</p><div class="g2f"><label class="lab">Horizontal<select class="field sm" data-c32="h">${opt('h', 0)}</select></label><label class="lab">Vertical<select class="field sm" data-c32="v">${opt('v', 1)}</select></label></div>`));
+    }
+    if (html.length) { const tmp = document.createElement('div'); tmp.innerHTML = html.join(''); const nodes = [...tmp.children]; if (after) after.after(...nodes); else b.prepend(...nodes); }
+    return r;
+  };
+  // Shift A: auto layout on the selected frame, or a new auto layout frame around the selection
+  addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('in-editor') || ED.editing || $('#cmdk')) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    if (!(e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && e.code === 'KeyA')) return;
+    const l = curL(), ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; if (!ids.length) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (l && l.type === 'frame' && !l.al) return addAL(l);
+    RT.wrapSel('frame'); const f = curL(); if (f && f.type === 'frame') addAL(f);
+  }, true);
 })();
 
 /* ============ first paint, with every renderer installed ============ */

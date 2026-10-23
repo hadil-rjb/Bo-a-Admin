@@ -2406,3 +2406,10 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .lr31-in{flex:1;height:24px}
 .lr31.dragging{opacity:.4}
 .lr31.d-above{box-shadow:0 -2px 0 var(--accent)}.lr31.d-below{box-shadow:0 2px 0 var(--accent)}.lr31.d-in{outline:2px solid var(--accent);outline-offset:-2px}
+/* v32 · auto layout panel */
+.r32{display:flex;gap:10px;align-items:flex-start}
+.g32{display:grid;grid-template-columns:repeat(3,22px);grid-template-rows:repeat(3,22px);gap:2px;padding:4px;border-radius:8px;background:var(--pill);flex-shrink:0}
+.a32{display:grid;place-items:center;border-radius:4px}.a32 i{width:4px;height:4px;border-radius:50%;background:var(--text-3)}
+.a32:hover{background:var(--border-soft)}.a32.on i{width:10px;height:10px;border-radius:2px;background:var(--accent)}
+.c32{display:flex;flex-direction:column;gap:6px;flex:1;min-width:0}
+.c32 .n30 input{width:100%}
