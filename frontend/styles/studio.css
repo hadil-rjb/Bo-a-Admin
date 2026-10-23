@@ -178,6 +178,17 @@ body.in-editor #shell{display:none}
 #measure .mbox{position:absolute;outline:calc(1.5px*var(--z)) dashed #f43f5e}
 .mguide{position:absolute;background:#f43f5e;pointer-events:none}
 .mlabel{position:absolute;transform:translate(-50%,-50%);background:#f43f5e;color:#fff;font:600 calc(11px*var(--z))/1 var(--sans);padding:calc(3px*var(--z)) calc(5px*var(--z));border-radius:calc(4px*var(--z));white-space:nowrap;pointer-events:none}
+/* vector (path) layers draw an inline SVG; strokes may reach past the box */
+.ly.path{overflow:visible}
+.ly.path>svg.pv{position:absolute;left:0;top:0;overflow:visible;display:block}
+/* pen tool and point editing overlay */
+#vec{position:absolute;inset:0;pointer-events:none}
+#vec .ve-box{position:absolute;transform-origin:center}
+#vec svg{position:absolute;overflow:visible}
+#vec [data-ve]{pointer-events:all;cursor:move}
+#vec [data-ve=edge]{pointer-events:stroke;stroke-width:calc(10px*var(--z));stroke:transparent;cursor:copy}
+.ed-scroll.pen-on,.ed-scroll.pen-on *{cursor:crosshair!important}
+.el7.on{outline:2px solid var(--accent);outline-offset:-2px;color:var(--accent)}
 /* rulers (Shift R) over the top and left of the canvas */
 .ed-stage{position:relative}
 .rul{position:absolute;z-index:4;pointer-events:none;display:block}
