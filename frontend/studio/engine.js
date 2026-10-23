@@ -2618,8 +2618,10 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
   /** Largest scale the browser can rasterize for this canvas (canvas area / side limits) */
   const maxScale = (w, h) => Math.max(0.1, Math.min(16384 / w, 16384 / h, Math.sqrt(64e6 / (w * h))));
   /** Renders slide i of design d to a canvas at scale s */
-  async function renderCanvas(d, i, s, opaque) {
-    const pg = d.pages[i], [w, h] = RATIOS[d.ratio]; await fxReady(pg);
+  async function renderCanvas(d, i, s, opaque) { const [w, h] = RATIOS[d.ratio]; return renderPage(d.pages[i], w, h, s, opaque); }
+  /** Renders a page-like { bg, layers } of w × h at scale s (slides, and exported selections) */
+  async function renderPage(pg, w, h, s, opaque) {
+    await fxReady(pg);
     s = Math.min(s, maxScale(w, h));
     const W = Math.round(w * s), H = Math.round(h * s);
     const body = await inlineUrls(posterHTML(pg)), bg = await inlineUrls(String(pg.bg || 'transparent')), css = await fontCSS(body);
@@ -2642,6 +2644,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     return toBlob(c, 'image/' + fmt, fmt === 'jpeg' ? 0.95 : undefined);
   }
   renderSlide = renderBlob;
+  Object.assign(RT, { renderPage, toBlob }); // export of a selection (v34)
 
   /* ---- files: ZIP (several slides in one download) and PDF (carousel document) ---- */
   const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
@@ -2682,6 +2685,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     return new Blob(chunks, { type: 'application/pdf' });
   }
   const fileBase = (d) => (d.name || 'design').trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60) || 'design';
+  RT.fileBase = (d) => fileBase(d); RT.download = (b, n) => download(b, n);
   function download(blob, name) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
@@ -2710,7 +2714,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[pi], d.ratio, 96, 120)}<div class="grow" style="display:flex;flex-direction:column;gap:12px">
       <div class="g2f"><label class="lab">Format<select class="field" id="exF">${fmtOpt('png', 'PNG · lossless')}${fmtOpt('jpeg', 'JPG · smaller file')}${fmtOpt('pdf', 'PDF · document')}${fmtOpt('svg', 'SVG · vector')}</select></label>
       <label class="lab">Size<select class="field" id="exS">${scales.map((x) => `<option value="${x}" ${x === defS ? 'selected' : ''}>${x}× · ${Math.round(w * x)} × ${Math.round(h * x)} px</option>`).join('')}</select></label></div>
-      <label class="lab">Slides<select class="field" id="exP"><option value="cur">Current slide (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} slides</option>` : ''}</select></label></div></div>
+      <label class="lab">Slides<select class="field" id="exP"><option value="cur">Current slide (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} slides</option>` : ''}${RT.selCount && RT.selCount() ? `<option value="sel">Selection (${RT.selCount()} layer${RT.selCount() === 1 ? '' : 's'})</option>` : ''}</select></label></div></div>
       <p class="xs-t muted" id="exM">Same layout, fonts and images as the canvas.</p></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="exGo">${ic('download', 18)}Download</button></div>`, {
       onMount: (bg, close) => {
@@ -2718,10 +2722,11 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
         bg.addEventListener('change', hint); hint();
         bg.addEventListener('click', async (e) => {
           const go = e.target.closest('#exGo'); if (!go || go.disabled) return;
-          const f = $('#exF', bg).value, s = +$('#exS', bg).value, pgs = $('#exP', bg).value === 'all' ? d.pages.map((p, i) => i) : [pi];
+          const f = $('#exF', bg).value, s = +$('#exS', bg).value, what = $('#exP', bg).value, pgs = what === 'all' ? d.pages.map((p, i) => i) : [pi];
           S.set.fmt = FMT_SET[f]; S.set.quality = s + 'x'; save();
           busy(go, true, 'Rendering…');
           try {
+            if (what === 'sel') { await RT.exportSelection(d, f, s); close(); toast('Selection downloaded'); return; }
             await runExport(d, pgs, s, f, (k, t) => { $('#exM', bg).textContent = t > 1 ? `Rendering slide ${k + 1} of ${t}…` : 'Rendering…'; });
             close(); toast(f === 'pdf' ? 'PDF downloaded' : pgs.length > 1 ? `${pgs.length} slides downloaded as a ZIP` : 'Image downloaded');
           } catch (x) { busy(go, false); $('#exM', bg).textContent = 'Export failed: ' + String((x && x.message) || 'this browser could not render the design').replace(/\.$/, '') + '. Try Chrome, Edge or Firefox.'; }
@@ -8326,8 +8331,10 @@ function zoomToSelection() {
   /* ---------- SVG export: real vector shapes and text, images embedded ---------- */
   /** Top-level comma split (commas inside parentheses stay) */
   const splitTop = (v) => { const out = []; let d = 0, cur = ''; for (const ch of String(v)) { if (ch === '(') d++; else if (ch === ')') d--; if (ch === ',' && !d) { out.push(cur.trim()); cur = ''; } else cur += ch; } if (cur.trim()) out.push(cur.trim()); return out; };
-  async function slideSVG(d, i) {
-    const pg = d.pages[i], [W, H] = RATIOS[d.ratio], defs = []; let n = 0; const nid = () => 'e' + ++n;
+  async function slideSVG(d, i) { const [W, H] = RATIOS[d.ratio]; return pageSVG(d.pages[i], W, H); }
+  /** SVG of a page-like { bg, layers } of W × H (a slide, or an exported selection) */
+  async function pageSVG(pg, W, H) {
+    const defs = []; let n = 0; const nid = () => 'e' + ++n;
     const host = document.createElement('div'); host.setAttribute('aria-hidden', 'true');
     host.style.cssText = `position:fixed;left:-100000px;top:0;width:${W}px;height:${H}px;visibility:hidden;pointer-events:none`;
     host.innerHTML = `<div class="poster" style="width:${W}px;height:${H}px">${posterHTML(pg)}</div>`; document.body.append(host);
@@ -8422,7 +8429,7 @@ function zoomToSelection() {
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${fonts ? `<style>${fonts}</style>` : ''}<defs>${defs.join('')}</defs>${body.join('')}</svg>`;
     } finally { host.remove(); }
   }
-  RT.slideSVG = slideSVG;
+  RT.slideSVG = slideSVG; RT.pageSVG = pageSVG;
 })();
 
 /* ============ v30 · strokes and effects as lists (Figma's Stroke and Effects sections) ============ */
@@ -8787,6 +8794,7 @@ function clipCss(l, frames) {
   /* ---------- dragging a layer onto a frame puts it inside; off its frame takes it out (one undo step with the move) ---------- */
   const DRAG = { on: false, pt: null };
   RT.dragOn = () => DRAG.on && !!DRAG.pt; // a layer is being dragged: it floats above an auto layout (syncTree)
+  RT.dragPt = () => (DRAG.on ? DRAG.pt : null); RT.dragEnd = () => { DRAG.on = false; }; // dropping onto another slide (v34)
   function reparent() {
     const pg = P(), T = treeOf(pg), pt = DRAG.pt; if (!pt) return;
     DRAG.on = false; // dropped: back into any auto layout flow
@@ -9261,6 +9269,125 @@ function clipCss(l, frames) {
     const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
     if ((e.ctrlKey || e.metaKey) && e.altKey && e.code === 'KeyK') { e.preventDefault(); e.stopImmediatePropagation(); ACT.cp33Make(); }
   }, true);
+})();
+
+/* ============ v34 · all slides on one canvas, export of a selection, export presets ============ */
+/* All slides: the current slide stays the editable one (#poster, page coordinates unchanged); the others are drawn beside it
+   in the same space (#others), and a click on one makes it current. Dropping layers on another slide moves them there. */
+(function () {
+  Object.assign(IC, { slides34: '<rect x="2" y="6" width="6" height="12" rx="1"/><rect x="9" y="4" width="6" height="16" rx="1"/><rect x="16" y="6" width="6" height="12" rx="1"/>' });
+  const GAP = 120; // between slides, page px
+  const ALL = { on: (() => { try { return localStorage.getItem('boga.allSlides') === '1'; } catch (e) { return false; } })() };
+  const many = () => ED.d && ED.d.pages.length > 1, on = () => ALL.on && many();
+  const off = (j) => { const [W] = dim(); return (j - ED.pi) * (W + GAP); }; // a slide's x in the current slide's coordinates
+  function drawOthers() {
+    const sca = $('#scaler'); if (!sca) return;
+    let box = $('#others'); if (!box) { sca.insertAdjacentHTML('afterbegin', '<div id="others"></div>'); box = $('#others'); }
+    if (!on()) { box.innerHTML = ''; return; }
+    const [W, H] = dim(), z = 1 / ED.zoom;
+    box.innerHTML = ED.d.pages.map((pg, j) => (j === ED.pi
+      ? `<span class="oth34-l on" style="left:0;top:${-28 * z}px;font-size:${13 * z}px">Slide ${j + 1}</span>`
+      : `<div class="oth34" data-i="${j}" style="left:${off(j)}px;width:${W}px;height:${H}px" title="Slide ${j + 1}: click to edit"><div class="poster" style="width:${W}px;height:${H}px;background:${pg.bg || '#ffffff'}">${posterHTML(pg)}</div><span class="oth34-l" style="top:${-28 * z}px;font-size:${13 * z}px">Slide ${j + 1}</span></div>`)).join('');
+  }
+  function place() { // the stage holds every slide; the current one sits at its place in the row
+    const cw = $('#cwrap'), sca = $('#scaler'); if (!cw || !sca) return;
+    if (!on()) { sca.style.left = ''; return; }
+    const [W, H] = dim(), n = ED.d.pages.length, z = ED.zoom;
+    cw.style.width = (n * W + (n - 1) * GAP) * z + 'px'; cw.style.height = H * z + 'px'; sca.style.left = ED.pi * (W + GAP) * z + 'px';
+  }
+  const _az34 = applyZoom; applyZoom = function () { _az34.apply(this, arguments); place(); drawOthers(); };
+  const _st34 = edStage; edStage = function () { const r = _st34.apply(this, arguments); place(); drawOthers(); return r; };
+  /** Makes slide j current. Every slide keeps its place in the row, so nothing scrolls. */
+  function goTo(j) { if (j === ED.pi) return; ED.pi = j; ED.sel = null; ED.ms = []; edAll(); }
+  function toggle() {
+    ALL.on = !ALL.on; try { localStorage.setItem('boga.allSlides', ALL.on ? '1' : '0'); } catch (e) {}
+    const b = $('#edAll34'); b && b.classList.toggle('on', ALL.on);
+    if (!many()) return toast(ALL.on ? 'All slides: shows every slide side by side once the design has more than one' : 'One slide at a time');
+    applyZoom(); const s = $('#edScroll'), [W] = dim(); if (s && on()) s.scrollLeft = Math.max(0, (ED.pi * (W + GAP) * ED.zoom) - (s.clientWidth - W * ED.zoom) / 2);
+    toast(ALL.on ? 'All slides side by side. Click a slide to edit it; drop layers on one to move them there.' : 'One slide at a time');
+  }
+  Object.assign(ACT, { all34: toggle });
+  // a click on another slide makes it current (before any layer handler: its layers aren't the current slide's)
+  addEventListener('pointerdown', (e) => {
+    const o = e.target.closest && e.target.closest('#others .oth34'); if (!o || e.button !== 0 || ED.space) return;
+    e.preventDefault(); e.stopImmediatePropagation(); goTo(+o.dataset.i);
+  }, true);
+  /** Layers dropped on another slide move there (one undo step with the move) */
+  const _c34 = commit;
+  commit = function () {
+    const pt = on() && RT.dragPt && RT.dragPt();
+    if (pt) {
+      const [W, H] = dim(), j = ED.d.pages.findIndex((pg, k) => k !== ED.pi && pt[0] >= off(k) && pt[0] <= off(k) + W && pt[1] >= 0 && pt[1] <= H);
+      if (j >= 0) {
+        const src = curP(), dst = ED.d.pages[j], T = treeOf(src), ids = RT.selUnits(src, ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []);
+        const moving = new Set(ids.flatMap((id) => [id, ...descendantsT(T, id).map((x) => x.id)])), dx = off(j);
+        const block = src.layers.filter((l) => moving.has(l.id) && !(l.locked && l.name === 'Background'));
+        if (block.length) {
+          src.layers = src.layers.filter((l) => !block.includes(l));
+          block.forEach((l) => { l.x -= dx; if (l._x != null) l._x -= dx; if (l.pid && !moving.has(l.pid)) delete l.pid; });
+          dst.layers.push(...block); RT.dragEnd(); ED.pi = j; ED.ms = []; ED.sel = ids.length === 1 ? ids[0] : null; if (ids.length > 1) ED.ms = ids;
+          const r = _c34.apply(this, arguments); edAll();
+          toast(`Moved to slide ${j + 1}`); return r;
+        }
+      }
+    }
+    return _c34.apply(this, arguments);
+  };
+  const _oe34 = openEditor;
+  openEditor = function () {
+    _oe34.apply(this, arguments);
+    const r = $('#edRulers') || $('#edGrid'); r && r.insertAdjacentHTML('afterend', `<button class="btn ghost icon sm${ALL.on ? ' on' : ''}" id="edAll34" data-act="all34" title="All slides side by side">${ic('slides34', 18)}</button>`);
+    if (on()) requestAnimationFrame(() => { const s = $('#edScroll'), [W] = dim(); if (s) s.scrollLeft = Math.max(0, ED.pi * (W + GAP) * ED.zoom - (s.clientWidth - W * ED.zoom) / 2); });
+  };
+
+  /* ---------- export of a selection: the selected layers alone, cropped to their box, transparent around ---------- */
+  const selIds = () => (ED.d ? RT.selUnits(curP(), ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []) : []);
+  RT.selCount = () => selIds().length;
+  function selectionPage() {
+    const pg = curP(), T = treeOf(pg), ids = selIds(); if (!ids.length) return null;
+    const set = new Set(ids.flatMap((id) => [id, ...descendantsT(T, id).map((x) => x.id)]));
+    const tops = ids.map((id) => T.byId.get(id)), bs = tops.map(aabb);
+    const x = Math.floor(Math.min(...bs.map((b) => b.x))), y = Math.floor(Math.min(...bs.map((b) => b.y))), w = Math.ceil(Math.max(...bs.map((b) => b.x + b.w)) - x), h = Math.ceil(Math.max(...bs.map((b) => b.y + b.h)) - y);
+    const layers = pg.layers.filter((l) => set.has(l.id)).map((l) => { const c = JSON.parse(JSON.stringify(l)); c.x -= x; c.y -= y; if (c._x != null) { c._x -= x; c._y -= y; } if (c.pid && !set.has(c.pid)) delete c.pid; return c; });
+    return { pg: { id: 'sel', bg: 'transparent', layers }, w: Math.max(1, w), h: Math.max(1, h), name: ids.length === 1 ? tops[0].name : ids.length + '-layers' };
+  }
+  RT.exportSelection = async (d, fmt, s) => {
+    const sp = selectionPage(); if (!sp) throw new Error('Nothing is selected');
+    const base = RT.fileBase(d) + '-' + String(sp.name || 'selection').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 40);
+    if (fmt === 'svg') return RT.download(new Blob([await RT.pageSVG(sp.pg, sp.w, sp.h)], { type: 'image/svg+xml' }), base + '.svg');
+    const f = fmt === 'jpeg' ? 'jpeg' : 'png', c = await RT.renderPage(sp.pg, sp.w, sp.h, s, f === 'jpeg'); // a PDF of a selection: a PNG
+    RT.download(await RT.toBlob(c, 'image/' + f, f === 'jpeg' ? 0.95 : undefined), base + (f === 'jpeg' ? '.jpg' : '.png'));
+  };
+
+  /* ---------- export presets: named format, size and slides, one click ---------- */
+  const presets = () => S.set.exportPresets || (S.set.exportPresets = []);
+  const _ox34 = openExport;
+  openExport = function () {
+    const r = _ox34.apply(this, arguments), F = $('#exF'); if (!F) return r;
+    const box = F.closest('.mb'), draw = () => {
+      let row = $('#ex34'); if (!row) { box.insertAdjacentHTML('afterbegin', '<div id="ex34" class="ex34"></div>'); row = $('#ex34'); }
+      row.innerHTML = `<span class="label" style="margin:0">Presets</span><div class="chips">${presets().map((p, i) => `<span class="chip ex34-p"><button type="button" data-ex34="${i}" title="${esc(p.f.toUpperCase())} · ${p.s}× · ${p.p === 'all' ? 'all slides' : p.p === 'sel' ? 'selection' : 'current slide'}">${esc(p.name)}</button><button type="button" class="ex34-x" data-ex34x="${i}" aria-label="Remove preset ${esc(p.name)}">×</button></span>`).join('')}<button type="button" class="chip" data-ex34new>${ic('plus', 14)}Save current as preset</button></div>`;
+    };
+    draw();
+    box.addEventListener('click', (e) => {
+      const use = e.target.closest('[data-ex34]'), del = e.target.closest('[data-ex34x]'), add = e.target.closest('[data-ex34new]');
+      if (use) {
+        const p = presets()[+use.dataset.ex34], set = (id, v) => { const el = $(id); if (el && [...el.options].some((o) => o.value === String(v))) { el.value = String(v); el.dispatchEvent(new Event('change', { bubbles: true })); } };
+        set('#exF', p.f); set('#exS', p.s); set('#exP', p.p); toast(`Preset “${p.name}”`);
+      }
+      if (del) { presets().splice(+del.dataset.ex34x, 1); save(); draw(); }
+      if (add) {
+        const row = $('#ex34'); row.insertAdjacentHTML('beforeend', '<input class="field sm ex34-in" placeholder="Preset name, then Enter" aria-label="Preset name">');
+        const inp = $('.ex34-in', row); inp.focus();
+        inp.addEventListener('keydown', (ev) => {
+          ev.stopPropagation();
+          if (ev.key === 'Enter' && inp.value.trim()) { presets().push({ name: inp.value.trim().slice(0, 30), f: $('#exF').value, s: +$('#exS').value, p: $('#exP').value }); save(); draw(); }
+          if (ev.key === 'Escape') draw();
+        });
+      }
+    });
+    return r;
+  };
 })();
 
 /* ============ first paint, with every renderer installed ============ */
