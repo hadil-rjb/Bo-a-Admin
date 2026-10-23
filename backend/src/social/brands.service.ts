@@ -10,6 +10,7 @@ import { SocialWorkspace, WORKSPACE_ID } from "./schemas/workspace.schema";
 import { hashOf, newId, strip } from "./social.util";
 import { ConnectionsService } from "./publishing/connections.service";
 import { PublisherService } from "./publishing/publisher.service";
+import { VersionsService } from "./versions.service";
 
 /** Fields a client may not overwrite through PATCH */
 const LOCKED = ["_id", "id", "brandId", "order", "hash", "rev", "createdAt", "updatedAt", "publish", "media"];
@@ -34,6 +35,7 @@ export class BrandsService implements OnModuleInit {
     @InjectModel(SocialWorkspace.name) private readonly workspaces: Model<SocialWorkspace>,
     private readonly conns: ConnectionsService,
     private readonly publisher: PublisherService,
+    private readonly versions: VersionsService,
   ) {}
 
   /**
@@ -158,6 +160,7 @@ export class BrandsService implements OnModuleInit {
     const r = await this.designs.deleteOne({ brandId, id });
     if (!r.deletedCount) throw new NotFoundException(`Design "${id}" not found`);
     await this.posts.deleteMany({ brandId, d: id });
+    await this.versions.removeFor([{ brandId, id }]);
     return { ok: true };
   }
 

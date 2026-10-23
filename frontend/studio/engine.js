@@ -9390,6 +9390,102 @@ function clipCss(l, frames) {
   };
 })();
 
+/* ============ v35 · version history: named versions, autosaves, preview and restore ============ */
+/* Versions are snapshots the API takes of the design as saved (the studio sends what's pending first), so a restore gives
+   back exactly that. Opening a design takes an autosave when it changed since the last version. Restoring is one undo step,
+   and the design as it was before is saved as a version first. */
+(function () {
+  const H = { list: null, for: null, loading: false, err: '', naming: false, renaming: null, del: null };
+  const vPath = (d = ED.d) => `/social/brands/${encodeURIComponent(S.active)}/designs/${encodeURIComponent(d.id)}/versions`;
+  const canEdit = () => !persist.readOnly;
+  const ago = (t) => {
+    const s = (Date.now() - new Date(t).getTime()) / 1000; if (s < 60) return 'Just now'; if (s < 3600) return Math.round(s / 60) + ' min ago'; if (s < 86400) return Math.round(s / 3600) + ' h ago';
+    const d = new Date(t); return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + ', ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  };
+  const render = () => { if (ED.d && ED.rtab === 'history') edProps(); };
+  async function load(force) {
+    if (!ED.d || (!force && H.for === ED.d.id && H.list)) return;
+    H.for = ED.d.id; H.loading = true; H.err = ''; render();
+    try { H.list = await api(vPath()); } catch (e) { H.list = H.list || []; H.err = 'The history couldn’t be loaded. Check the connection and try again.'; }
+    H.loading = false; render();
+  }
+  /** Sends pending changes, then asks the API to snapshot the design */
+  async function saveVersion(name, auto, d = ED.d) { if (!canEdit() || !d) return null; await persist.flush(); return api(vPath(d), { method: 'POST', body: { name, auto: !!auto } }); }
+  async function restore(id) {
+    let v; try { v = await api(`${vPath()}/${id}`); } catch (e) { return toast('This version couldn’t be loaded'); }
+    if (!v.pages || !v.pages.length) return toast('This version has no slides to restore');
+    try { await saveVersion(`Before restoring “${v.name}”`, false); } catch (e) { /* restoring still works; undo also brings it back */ }
+    const ratioChanged = v.ratio && v.ratio !== ED.d.ratio;
+    mutate(() => { ED.d.pages = JSON.parse(JSON.stringify(v.pages)); if (ratioChanged) ED.d.ratio = ensureRatio(v.ratio); ED.pi = 0; ED.sel = null; ED.ms = []; }, () => { edAll(); if (ratioChanged) fitZoom(); });
+    toast(`Restored “${v.name}”. Undo brings back what you had.`); load(true);
+  }
+  async function preview(id) {
+    let v; try { v = await api(`${vPath()}/${id}`); } catch (e) { return toast('This version couldn’t be loaded'); }
+    const ratio = ensureRatio(v.ratio || ED.d.ratio);
+    modal(`<div class="mh"><h2>${esc(v.name)}</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb"><p class="xs-t muted">${ago(v.createdAt)}${v.createdByName ? ' · ' + esc(v.createdByName) : ''} · ${v.pages.length} slide${v.pages.length === 1 ? '' : 's'}</p>
+      <div class="hv35-pv">${v.pages.map((pg, i) => `<figure>${thumb(pg, ratio, 200, 250)}<figcaption>Slide ${i + 1}</figcaption></figure>`).join('')}</div></div>
+      <div class="mf"><button class="btn secondary" data-close>Close</button>${canEdit() ? `<button class="btn primary" id="hv35Go">${ic('history', 18)}Restore this version</button>` : ''}</div>`, {
+      onMount: (bg, close) => { const go = $('#hv35Go', bg); go && go.addEventListener('click', () => { close(); restore(id); }); },
+    });
+  }
+  Object.assign(ACT, {
+    hv35Save: () => { H.naming = true; render(); const i = $('#edProps .hv35-in'); i && i.focus(); },
+    hv35Preview: (a) => preview(a.dataset.id),
+    hv35Restore: (a) => restore(a.dataset.id),
+    hv35Rename: (a) => { H.renaming = a.dataset.id; render(); const i = $('#edProps .hv35-rn'); i && (i.focus(), i.select()); },
+    hv35Del: (a) => { H.del = a.dataset.id; render(); },
+    hv35DelNo: () => { H.del = null; render(); },
+    hv35DelYes: async (a) => { H.del = null; try { await api(`${vPath()}/${a.dataset.id}`, { method: 'DELETE' }); toast('Version deleted'); } catch (e) { toast('The version couldn’t be deleted'); } load(true); },
+    hv35Retry: () => load(true),
+  });
+  document.addEventListener('keydown', async (e) => {
+    const i = e.target.closest && e.target.closest('#edProps .hv35-in, #edProps .hv35-rn'); if (!i) return;
+    e.stopPropagation(); if (e.key === 'Escape') { H.naming = false; H.renaming = null; return render(); } if (e.key !== 'Enter') return;
+    const name = i.value.trim();
+    if (i.classList.contains('hv35-in')) {
+      H.naming = false; render();
+      try { const v = await saveVersion(name || 'Version', false); toast(`Saved “${(v && v.name) || name || 'Version'}”`); } catch (x) { toast('The version couldn’t be saved'); }
+    } else {
+      const id = H.renaming; H.renaming = null; render();
+      if (name) try { await api(`${vPath()}/${id}`, { method: 'PATCH', body: { name } }); } catch (x) { toast('The version couldn’t be renamed'); }
+    }
+    load(true);
+  }, true);
+
+  function historyHTML() {
+    const L = H.list || [], edit = canEdit();
+    const head = (edit ? (H.naming ? '<input class="field sm hv35-in" placeholder="Name this version, then Enter" aria-label="Version name">' : `<button class="btn primary sm" data-act="hv35Save">${ic('plus', 16)}Save version</button>`) : '')
+      + '<p class="xs-t muted">Saved versions of this design. One is taken automatically when you open it; give it a name to keep it.</p>';
+    if (H.loading && !H.list) return head + '<p class="sm-t muted">Loading…</p>';
+    if (H.err) return head + `<div class="note warn"><span>${H.err} <button class="btn link sm" data-act="hv35Retry">Try again</button></span></div>`;
+    if (!L.length) return head + '<p class="sm-t muted">No versions yet.</p>';
+    return head + `<div class="hv35-l">${L.map((v) => `<div class="hv35-i${v.auto ? ' auto' : ''}">`
+      + (H.renaming === v.id ? `<input class="field sm hv35-rn" value="${esc(v.name)}" aria-label="Version name">` : `<button type="button" class="hv35-n" data-act="hv35Preview" data-id="${v.id}"><b>${esc(v.name)}</b><small>${ago(v.createdAt)}${v.createdByName ? ' · ' + esc(v.createdByName) : ''}${v.auto ? ' · autosave' : ''}</small></button>`)
+      + (H.del === v.id ? `<div class="hv35-a"><span class="xs-t">Delete?</span><button class="btn link sm" data-act="hv35DelYes" data-id="${v.id}" style="color:var(--neg)">Delete</button><button class="btn link sm" data-act="hv35DelNo">Keep</button></div>`
+        : `<div class="hv35-a"><button class="btn ghost icon sm" data-act="hv35Preview" data-id="${v.id}" data-tip="Preview">${ic('eye', 15)}</button>${edit ? `<button class="btn ghost icon sm" data-act="hv35Restore" data-id="${v.id}" data-tip="Restore">${ic('history', 15)}</button><button class="btn ghost icon sm" data-act="hv35Rename" data-id="${v.id}" data-tip="${v.auto ? 'Name it to keep it' : 'Rename'}">${ic('type', 15)}</button><button class="btn ghost icon sm" data-act="hv35Del" data-id="${v.id}" data-tip="Delete">${ic('trash', 15)}</button>` : ''}</div>`)
+      + '</div>').join('')}</div>`;
+  }
+  const _ep35 = edProps;
+  edProps = function () {
+    const r = _ep35.apply(this, arguments), tabs = $('#edProps .tabs');
+    if (tabs && !tabs.querySelector('[data-k=history]')) tabs.insertAdjacentHTML('beforeend', `<button class="${ED.rtab === 'history' ? 'on' : ''}" data-act="edRTab" data-k="history">History</button>`);
+    if (ED.rtab === 'history') {
+      tabs && tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.k === 'history'));
+      const b = $('#edProps .body'); if (b) { b.className = 'body hv35'; b.innerHTML = historyHTML(); }
+      if (H.for !== (ED.d && ED.d.id)) setTimeout(() => load(), 0);
+    }
+    return r;
+  };
+  // opening a design: an autosave of it as it is now (skipped by the API when nothing changed since the last version)
+  const _oe35 = openEditor;
+  openEditor = function () {
+    _oe35.apply(this, arguments); H.list = null; H.for = null; H.naming = false; H.renaming = null; H.del = null;
+    const d = ED.d; if (!d || !canEdit()) return;
+    setTimeout(() => saveVersion('', true, d).then(() => { if (ED.d === d && ED.rtab === 'history') load(true); }).catch(() => {}), 1200);
+  };
+})();
+
 /* ============ first paint, with every renderer installed ============ */
 /* The page was first drawn halfway through boot, before the later sections replaced textHTML / lstyle
    (mixed text runs, text effects, image adjustments, Google Fonts…). Draw it again so the canvas,

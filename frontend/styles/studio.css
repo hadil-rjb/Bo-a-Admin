@@ -2443,3 +2443,17 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ex34{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
 .ex34-p{display:inline-flex;align-items:center;gap:2px;padding:0 4px 0 10px}
 .ex34-x{color:var(--text-3);padding:0 4px}.ex34-x:hover{color:var(--neg)}
+/* v35 · version history */
+.hv35{gap:10px!important}
+.hv35-l{display:flex;flex-direction:column;gap:2px}
+.hv35-i{display:flex;align-items:center;gap:6px;padding:6px;border-radius:8px}
+.hv35-i:hover{background:var(--pill)}
+.hv35-n{flex:1;min-width:0;display:flex;flex-direction:column;text-align:left;gap:2px}
+.hv35-n b{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hv35-n small{font-size:11px;color:var(--text-3)}
+.hv35-i.auto .hv35-n b{font-weight:500;color:var(--text-2)}
+.hv35-a{display:flex;align-items:center;gap:2px;flex-shrink:0}
+.hv35-rn{flex:1}
+.hv35-pv{display:flex;gap:12px;overflow-x:auto;padding:4px 0}
+.hv35-pv figure{margin:0;display:flex;flex-direction:column;gap:6px;align-items:center;flex-shrink:0}
+.hv35-pv figcaption{font-size:12px;color:var(--text-3)}

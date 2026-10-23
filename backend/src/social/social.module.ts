@@ -30,6 +30,9 @@ import { NotionController } from "./notion/notion.controller";
 import { NotionService, SocialNotionPage, SocialNotionPageSchema } from "./notion/notion.service";
 import { SocialAutomation, SocialAutomationSchema } from "./schemas/automation.schema";
 import { MarketsService } from "./markets/markets.service";
+import { SocialDesignVersion, SocialDesignVersionSchema } from "./schemas/version.schema";
+import { VersionsController } from "./versions.controller";
+import { VersionsService } from "./versions.service";
 
 /** Social Media workspace: brands, designs, posts, settings, connected accounts, publishing and Figma import (collections prefixed social_). */
 @Module({
@@ -47,9 +50,10 @@ import { MarketsService } from "./markets/markets.service";
       { name: SocialIntegration.name, schema: SocialIntegrationSchema },
       { name: SocialAutomation.name, schema: SocialAutomationSchema },
       { name: SocialNotionPage.name, schema: SocialNotionPageSchema },
+      { name: SocialDesignVersion.name, schema: SocialDesignVersionSchema },
     ]),
   ],
-  controllers: [SocialWorkspaceController, SocialBrandsController, PublishingController, FigmaController, CalendarController, MarketsController, AutomationsController, NotionController, BrandGuideController],
-  providers: [WorkspaceService, BrandsService, ConnectionsService, PublisherService, PublishScheduler, LiveRenderService, FigmaService, CalendarService, MarketsService, AutomationsService, NotionService],
+  controllers: [SocialWorkspaceController, SocialBrandsController, VersionsController, PublishingController, FigmaController, CalendarController, MarketsController, AutomationsController, NotionController, BrandGuideController],
+  providers: [WorkspaceService, BrandsService, VersionsService, ConnectionsService, PublisherService, PublishScheduler, LiveRenderService, FigmaService, CalendarService, MarketsService, AutomationsService, NotionService],
 })
 export class SocialModule {}
