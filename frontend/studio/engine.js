@@ -86,7 +86,7 @@ let fxReady = async () => {};
 /** Text of a text layer as HTML (plain, or spans for mixed styles: set by the mixed text section) */
 let textHTML = (l) => esc(l.text);
 /** Mixed text hooks: apply(prop, value) styles the selected characters (true when it handled the change) */
-const RT = { apply: () => false, loadFont: () => {} };
+const RT = { apply: () => false, loadFont: () => {}, treeLive: () => {}, topGroup: () => null, selUnits: (pg, ids) => ids, tree: null }; // tree hooks: v31
 /** Publishing client (v14 section): render + upload slides, publish now, poll results */
 let PUB = null;
 /** Connected accounts of the active brand (from the API). `S.platforms` mirrors them for the planner. */
@@ -469,8 +469,8 @@ function pathHTML(l, o = {}) {
   // xmlns: exports and publishing parse the slide as XML (SVG foreignObject), where an <svg> needs its namespace to draw
   return `<svg xmlns="http://www.w3.org/2000/svg" class="pv" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"${st} aria-hidden="true">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}${body.join('')}</svg>`;
 }
-const layerHTML = (l) => `<div class="ly ${l.type}${l.locked ? ' locked' : ''}" data-id="${l.id}" style="${lstyle(l)}">${l.type === 'text' ? textHTML(l) : l.type === 'path' ? pathHTML(l) : ''}</div>`;
-const posterHTML = (pg) => pg.layers.map(layerHTML).join('');
+const layerHTML = (l) => (l.type === 'group' ? '' : `<div class="ly ${l.type}${l.locked ? ' locked' : ''}" data-id="${l.id}" style="${lstyle(l)}">${l.type === 'text' ? textHTML(l) : l.type === 'path' ? pathHTML(l) : ''}</div>`);
+const posterHTML = (pg) => withTree(pg, () => pg.layers.map(layerHTML).join('')); // frames clip their content (v31)
 /** Scaled, static preview of a page (used on cards, planner, template pickers) */
 function thumb(pg, ratio, boxW, boxH) {
   const [w, h] = RATIOS[ratio], k = Math.min(boxW / w, boxH / h);
@@ -2110,7 +2110,7 @@ function startMove(e, l) {
   const mv = (ev) => {
     if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return; moved = true;
     const m = snapBox(b, (ev.clientX - sx) / ED.zoom, (ev.clientY - sy) / ED.zoom, T, !ev.altKey);
-    l.x = Math.round(ox + m.dx); l.y = Math.round(oy + m.dy); el.style.left = l.x + 'px'; el.style.top = l.y + 'px'; showGuides(m.gx, m.gy, m.marks); drawSel();
+    l.x = Math.round(ox + m.dx); l.y = Math.round(oy + m.dy); el.style.left = l.x + 'px'; el.style.top = l.y + 'px'; RT.treeLive(); showGuides(m.gx, m.gy, m.marks); drawSel();
     $$('#edProps input[data-p=x]').forEach((i) => (i.value = l.x)); $$('#edProps input[data-p=y]').forEach((i) => (i.value = l.y));
   };
   const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); $('#guides').innerHTML = ''; commit(ED.pre); ED.pre = null; if (moved) { edPages(); edProps(); } };
@@ -2851,9 +2851,10 @@ Object.assign(IC, {
   const msIds = () => (ED.ms && ED.ms.length > 1 ? ED.ms.filter((id) => byId(id)) : []);
   const msL = () => msIds().map(byId);
   const bbox = (ls) => { ls = ls.map(aabb); const x = Math.min(...ls.map((l) => l.x)), y = Math.min(...ls.map((l) => l.y)), x1 = Math.max(...ls.map((l) => l.x + l.w)), y1 = Math.max(...ls.map((l) => l.y + l.h)); return { x, y, w: x1 - x, h: y1 - y, x1, y1 }; };
-  const members = (id) => { const l = byId(id); return l && l.gid ? L().filter((x) => x.gid === l.gid).map((x) => x.id) : [id]; };
+  const members = (id) => { const l = byId(id); if (l && l.gid) return L().filter((x) => x.gid === l.gid).map((x) => x.id); const g = l && RT.topGroup(curP(), l); return g ? [g.id] : [id]; };
   const expand = (ids) => [...new Set(ids.flatMap(members))];
   function setSel(ids) {
+    ids = RT.selUnits(curP(), ids); // a group's content selects the group; nothing together with its own container
     ids = ids.filter((id) => { const l = byId(id); return l && !l.hidden; });
     if (ids.length > 1) { ED.ms = ids; ED.sel = null; } else { ED.ms = []; ED.sel = ids[0] || null; }
     drawSel(); edProps();
@@ -2896,7 +2897,7 @@ Object.assign(IC, {
   }
   function placeMtb(ls) {
     const t = $('#mtb'), bx = $('#msel b'); if (!t || !bx) return;
-    const any = ls.some((l) => l.gid), key = ls.length + '|' + any;
+    const any = ls.some((l) => l.gid || l.type === 'group'), key = ls.length + '|' + any;
     if (t.dataset.k !== key) {
       t.dataset.k = key;
       const rot = (i) => `<span style="display:grid;transform:rotate(90deg)">${ic(i, 16)}</span>`;
@@ -2963,11 +2964,11 @@ Object.assign(IC, {
       if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return; moved = true;
       const m = snapBox(b, (ev.clientX - sx) / ED.zoom, (ev.clientY - sy) / ED.zoom, T, !ev.altKey);
       o.forEach(([l, x, y]) => { l.x = Math.round(x + m.dx); l.y = Math.round(y + m.dy); const el = elOf(l.id); if (el) { el.style.left = l.x + 'px'; el.style.top = l.y + 'px'; } });
-      showGuides(m.gx, m.gy, m.marks); drawSel();
+      RT.treeLive(); showGuides(m.gx, m.gy, m.marks); drawSel();
     };
     const up = () => {
       removeEventListener('pointermove', mv); removeEventListener('pointerup', up); $('#guides').innerHTML = ''; commit(pre);
-      if (moved) { edPages(); edProps(); } else if (clickId && !(ids.length > 1 && ids.every((id) => byId(id).gid && byId(id).gid === byId(ids[0]).gid))) setSel([clickId]);
+      if (moved) { edPages(); edProps(); } else if (clickId && ids.includes(clickId) && !(ids.length > 1 && ids.every((id) => byId(id).gid && byId(id).gid === byId(ids[0]).gid))) setSel([clickId]);
     };
     addEventListener('pointermove', mv); addEventListener('pointerup', up);
   }
@@ -2996,7 +2997,7 @@ Object.assign(IC, {
           return setSel(has ? cur.filter((x) => !mem.includes(x)) : [...new Set([...cur, ...mem])]);
         }
         if (ids.includes(l.id)) { stop(); return startMoveMulti(e, ids, l.id); }
-        if (l.gid) { stop(); const mem = members(l.id); if (mem.length > 1) { setSel(mem); return startMoveMulti(e, mem, l.id); } }
+        { const mem = members(l.id); if (mem.length > 1 || mem[0] !== l.id) { stop(); setSel(mem); return startMoveMulti(e, mem, l.id); } } // a group's content: the group
         return; /* single layer: the default handler moves it */
       }
       stop();
@@ -3020,7 +3021,7 @@ Object.assign(IC, {
     if (!document.body.classList.contains('in-editor') || ED.editing || $('#cmdk') || $('.modal-bg')) return;
     const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
     const mod = e.ctrlKey || e.metaKey, k = String(e.key || '').toLowerCase(), ids = msIds(), stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
-    if (mod && k === 'a') { stop(); return setSel(L().filter((l) => !l.locked && !l.hidden).map((l) => l.id)); }
+    if (mod && k === 'a') { stop(); return setSel(L().filter((l) => !l.locked && !l.hidden && !l.pid).map((l) => l.id)); }
     if (mod && k === 'g') { stop(); return e.shiftKey ? ACT.msUngroup() : ACT.msGroup(); }
     if (mod && k === 'v' && ED.clipM && ED.clip === ED.clipM.src) { stop(); return pasteM(); }
     if (!ids.length) return;
@@ -8387,17 +8388,21 @@ function zoomToSelection() {
         defs.push(`<filter id="${id}" x="-50%" y="-50%" width="200%" height="200%">${parts.join('')}${merge}${l.bl ? `<feGaussianBlur in="m" stdDeviation="${l.bl}"/>` : ''}</filter>`);
         return id;
       };
-      const body = [];
+      const body = [], TT = treeOf(pg), clipIds = new Map();
+      /** A frame's clip (page coordinates, rounded corners kept), made once */
+      const frameClip = (f) => { if (!clipIds.has(f.id)) { const id = nid(); defs.push(`<clipPath id="${id}"><rect x="${f.x}" y="${f.y}" width="${f.w}" height="${f.h}"${f.r ? ` rx="${Math.min(f.r, f.w / 2, f.h / 2)}"` : ''}/></clipPath>`); clipIds.set(f.id, id); } return clipIds.get(f.id); };
       const bgF = await fills(String(pg.bg || '#ffffff'), W, H); bgF.forEach((f) => body.push(`<rect width="${W}" height="${H}" fill="${esc(f)}"/>`));
       for (const l of pg.layers) {
-        if (l.hidden) continue;
+        const anc = ancestorsT(TT, l); // containers: hidden ones hide their content, opacity multiplies, frames clip
+        if (l.hidden || l.type === 'group' || anc.some((a) => a.hidden)) continue;
+        const aop = anc.reduce((k, a) => k * (a.op ?? 1), 1), clips = anc.filter((a) => a.type === 'frame' && !a.noclip).reverse().map(frameClip);
         const w = l.w, h = l.h, [sx, sy] = flips(l), tf = [`translate(${l.x} ${l.y})`]; let inner = '', extra = '';
         if (l.rot) tf.push(`rotate(${l.rot} ${w / 2} ${h / 2})`);
         if (sx < 0 || sy < 0) tf.push(`translate(${w / 2} ${h / 2}) scale(${sx} ${sy}) translate(${-w / 2} ${-h / 2})`);
         const fid = fxFilter(l); if (fid) extra += ` filter="url(#${fid})"`;
         const cm = /^polygon\((.*)\)$/.exec(l.clip || '');
         if (cm) { const id = nid(), pts = cm[1].split(',').map((p) => p.trim().split(/\s+/).map((v, j) => (v.endsWith('%') ? (parseFloat(v) / 100) * (j ? h : w) : parseFloat(v) || 0)).join(',')).join(' '); defs.push(`<clipPath id="${id}"><polygon points="${pts}"/></clipPath>`); extra += ` clip-path="url(#${id})"`; }
-        if ((l.op ?? 1) < 1) extra += ` opacity="${l.op}"`;
+        if ((l.op ?? 1) * aop < 1) extra += ` opacity="${Math.round((l.op ?? 1) * aop * 1000) / 1000}"`;
         if (l.blend && l.blend !== 'normal') extra += ` style="mix-blend-mode:${l.blend}"`;
         if (l.type === 'text') inner = textSVG(l);
         else if (l.type === 'path') inner = await RT.inlineUrls(pathHTML(l, { shadow: false })); // same drawing as the canvas; shadows: the group's filter else if (l.icon && IC[l.icon]) inner = `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="none" stroke="${hex(l.fill)}" stroke-width="${l.isw || 2}" stroke-linecap="round" stroke-linejoin="round">${IC[l.icon]}</svg>`;
@@ -8411,7 +8416,7 @@ function zoomToSelection() {
             inner += shape('none', k.a === 'inside' ? k.w / 2 : k.a === 'outside' ? -k.w / 2 : 0, ` stroke="${esc(k.c)}" stroke-width="${k.w}"${dash}`);
           });
         }
-        if (inner) body.push(`<g id="${esc(String(l.name || l.type).replace(/[^\w-]+/g, '-'))}-${n}" transform="${tf.join(' ')}"${extra}>${inner}</g>`);
+        if (inner) body.push(clips.map((c) => `<g clip-path="url(#${c})">`).join('') + `<g id="${esc(String(l.name || l.type).replace(/[^\w-]+/g, '-'))}-${n}" transform="${tf.join(' ')}"${extra}>${inner}</g>` + '</g>'.repeat(clips.length));
       }
       const fonts = RT.fontCSS ? await RT.fontCSS(posterHTML(pg)) : '';
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${fonts ? `<style>${fonts}</style>` : ''}<defs>${defs.join('')}</defs>${body.join('')}</svg>`;
@@ -8540,6 +8545,349 @@ function zoomToSelection() {
     else if (kind === 'fx') fxSet(l, +si, k, k === 'o' ? clamp(v / 100, 0, 1) : k === 'b' ? Math.max(0, v) : v);
     refreshL(l); drawSel();
   });
+})();
+
+/* ============ v31 · frames and groups as layers (a layer tree, like Figma) ============ */
+/* pages[].layers stays one flat list in paint order, with page coordinates. A child names its container in `pid`:
+   a frame (a box with fill, stroke and effects that clips its content unless `noclip`) or a group (no drawing, its box is
+   always its content's bounds). A container's content comes right after it in the list. syncTree keeps all of that true,
+   and makes the content follow when a container itself is moved or resized (containers keep their last box in _x/_y/_w/_h). */
+function isContainer(l) { return !!l && (l.type === 'frame' || l.type === 'group'); }
+/** id → layer, and container id ('' for the page) → its children in paint order */
+function treeOf(pg) {
+  const byId = new Map(), kids = new Map();
+  (pg && pg.layers || []).forEach((l) => { byId.set(l.id, l); const k = l.pid || ''; if (!kids.has(k)) kids.set(k, []); kids.get(k).push(l); });
+  return { byId, kids };
+}
+function withTree(pg, fn) { const prev = RT.tree; RT.tree = treeOf(pg); try { return fn(); } finally { RT.tree = prev; } }
+/** Containers above a layer, nearest first */
+function ancestorsT(T, l) { const out = []; for (let p = l && l.pid && T.byId.get(l.pid), n = 0; p && n < 64; p = p.pid && T.byId.get(p.pid), n++) out.push(p); return out; }
+function descendantsT(T, id) { const out = []; const walk = (k) => (T.kids.get(k) || []).forEach((c) => { out.push(c); if (isContainer(c)) walk(c.id); }); walk(id); return out; }
+/** Old `gid` groups (and anything still writing them: text styles, pasted SVG) → group layers */
+function migrateGroups(pg) {
+  const L = pg.layers, by = new Map();
+  L.forEach((l) => { if (l.gid) { if (!by.has(l.gid)) by.set(l.gid, []); by.get(l.gid).push(l); } });
+  by.forEach((ms) => {
+    const pids = new Set(ms.map((m) => m.pid || '')), pid = pids.size === 1 ? [...pids][0] : '';
+    L.splice(L.indexOf(ms[0]), 0, { id: uid(), type: 'group', name: 'Group', x: 0, y: 0, w: 1, h: 1, rot: 0, op: 1, ...(pid ? { pid } : {}) });
+    const g = L[L.indexOf(ms[0]) - 1]; ms.forEach((m) => { m.pid = g.id; delete m.gid; });
+  });
+}
+/** Every container's content right after it, children in their paint order; broken parents (gone, not a container, a loop) dropped */
+function normalizeOrder(pg) {
+  const L = pg.layers, byId = new Map(L.map((l) => [l.id, l]));
+  L.forEach((l) => { if (l.pid && !isContainer(byId.get(l.pid))) delete l.pid; });
+  L.forEach((l) => { for (let p = l.pid, n = 0; p && n <= L.length; p = byId.get(p) && byId.get(p).pid, n++) if (p === l.id) { delete l.pid; break; } });
+  const T = treeOf(pg), out = [], walk = (k) => (T.kids.get(k) || []).forEach((l) => { out.push(l); if (isContainer(l)) walk(l.id); });
+  walk('');
+  if (out.length === L.length && out.every((l, i) => l === L[i])) return false;
+  L.splice(0, L.length, ...out); return true;
+}
+/**
+ * Keeps a page's tree true; returns the layers whose drawing changed (to refresh while dragging).
+ * 1) a container moved or resized directly (panel, arrows, the agent, a drag): its content follows (a group's is scaled);
+ * 2) groups take their content's bounds, empty groups go; 3) every container remembers its box.
+ */
+function syncTree(pg) {
+  if (!pg || !pg.layers) return [];
+  if (pg.layers.some((l) => l.gid)) migrateGroups(pg);
+  normalizeOrder(pg);
+  const T = treeOf(pg), changed = new Set();
+  const visit = (k) => (T.kids.get(k) || []).forEach((c) => {
+    if (isContainer(c) && c._w != null) {
+      const sx = c.type === 'group' && c._w ? c.w / c._w : 1, sy = c.type === 'group' && c._h ? c.h / c._h : 1, dx = c.x - c._x, dy = c.y - c._y;
+      const moved = Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6, scaled = Math.abs(sx - 1) > 1e-6 || Math.abs(sy - 1) > 1e-6;
+      if (moved || scaled || (c.type === 'frame' && (c.w !== c._w || c.h !== c._h))) descendantsT(T, c.id).forEach((d) => {
+        if (moved || scaled) {
+          const map = (x, y) => [c.x + (x - c._x) * sx, c.y + (y - c._y) * sy];
+          [d.x, d.y] = map(d.x, d.y); d.w *= sx; d.h *= sy;
+          if (isContainer(d) && d._w != null) { [d._x, d._y] = map(d._x, d._y); d._w *= sx; d._h *= sy; } // so it doesn't move its content twice
+        }
+        changed.add(d); // a frame's new box changes its content's clipping too
+      });
+    }
+    visit(c.id);
+  });
+  visit('');
+  for (const g of [...pg.layers].reverse()) { // children before their parents
+    if (g.type !== 'group') continue;
+    const ks = T.kids.get(g.id) || [], vis = ks.filter((x) => !x.hidden), use = vis.length ? vis : ks;
+    if (!ks.length) { pg.layers.splice(pg.layers.indexOf(g), 1); if (ED.sel === g.id) ED.sel = null; continue; }
+    const bs = use.map(aabb), x = Math.min(...bs.map((b) => b.x)), y = Math.min(...bs.map((b) => b.y)), w = Math.max(...bs.map((b) => b.x + b.w)) - x, h = Math.max(...bs.map((b) => b.y + b.h)) - y;
+    if (g.x !== x || g.y !== y || g.w !== w || g.h !== h) { Object.assign(g, { x, y, w, h, rot: 0 }); changed.add(g); }
+  }
+  pg.layers.forEach((c) => { if (isContainer(c)) { c._x = c.x; c._y = c.y; c._w = c.w; c._h = c.h; if (c.rot) c.rot = 0; } });
+  return [...changed];
+}
+/** Page point → a layer's own box pixels (rotation and flips undone) */
+function toBox(l, px, py) {
+  const t = (-(l.rot || 0) * Math.PI) / 180, vx = px - l.x - l.w / 2, vy = py - l.y - l.h / 2;
+  return [(vx * Math.cos(t) - vy * Math.sin(t)) * (l.fx === true ? -1 : 1) + l.w / 2, (vx * Math.sin(t) + vy * Math.cos(t)) * (l.fy === true ? -1 : 1) + l.h / 2];
+}
+/** Sutherland–Hodgman: polygon `subj` cut by the convex polygon `clip` */
+function clipPoly(subj, clip) {
+  const area = clip.reduce((a, p, i) => { const q = clip[(i + 1) % clip.length]; return a + p[0] * q[1] - q[0] * p[1]; }, 0), sgn = area < 0 ? -1 : 1;
+  let out = subj;
+  clip.forEach((a, i) => {
+    const b = clip[(i + 1) % clip.length], inside = (p) => sgn * ((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) >= 0;
+    const cut = (p, q) => { const d1 = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]), d2 = (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0]), t = d1 / (d1 - d2); return [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]; };
+    const src = out; out = [];
+    src.forEach((p, j) => { const q = src[(j + 1) % src.length]; if (inside(q)) { if (!inside(p)) out.push(cut(p, q)); out.push(q); } else if (inside(p)) out.push(cut(p, q)); });
+  });
+  return out;
+}
+/** CSS clip-path for a layer inside clipping frames (frames don't rotate: their boxes intersect into one rectangle) */
+function clipCss(l, frames) {
+  let x0 = -Infinity, y0 = -Infinity, x1 = Infinity, y1 = Infinity;
+  frames.forEach((f) => { x0 = Math.max(x0, f.x); y0 = Math.max(y0, f.y); x1 = Math.min(x1, f.x + f.w); y1 = Math.min(y1, f.y + f.h); });
+  if (x1 <= x0 || y1 <= y0) return 'clip-path:inset(50%);';
+  const r2 = (n) => Math.round(n * 100) / 100, own = /^polygon\((.*)\)$/.exec(l.clip || '');
+  if (!own && !l.rot && l.fx !== true && l.fy !== true) {
+    const f = frames[0], round = frames.length === 1 && f.r ? ` round ${Math.min(f.r, f.w / 2, f.h / 2)}px` : '';
+    return `clip-path:inset(${r2(y0 - l.y)}px ${r2(l.x + l.w - x1)}px ${r2(l.y + l.h - y1)}px ${r2(x0 - l.x)}px${round});`;
+  }
+  let poly = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([px, py]) => toBox(l, px, py));
+  if (own) poly = clipPoly(own[1].split(',').map((p) => p.trim().split(/\s+/).map((v, j) => (v.endsWith('%') ? (parseFloat(v) / 100) * (j ? l.h : l.w) : parseFloat(v) || 0))), poly);
+  return poly.length > 2 ? `clip-path:polygon(${poly.map(([a, b]) => `${r2(a)}px ${r2(b)}px`).join(',')});` : 'clip-path:inset(50%);';
+}
+
+(function () {
+  Object.assign(IC, { frame31: '<path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 7h18"/><path d="M3 17h18"/>' });
+  const P = () => curP(), T0 = () => treeOf(P());
+  /** The group a click on `l` selects: the highest group above it, below the nearest frame and below a group the user went into */
+  RT.topGroup = (pg, l) => { const T = treeOf(pg); let top = null; for (const a of ancestorsT(T, l)) { if (a.type === 'frame' || a.id === ED.inGroup) break; if (a.type === 'group') top = a; } return top; };
+  /** Selection units: a group's content becomes the group; a layer is dropped when its container is selected too */
+  RT.selUnits = (pg, ids) => {
+    const T = treeOf(pg), unit = ids.map((id) => { const l = T.byId.get(id), g = l && !isContainer(l) && RT.topGroup(pg, l); return g ? g.id : id; }), set = new Set(unit);
+    return [...set].filter((id) => { const l = T.byId.get(id); return l && !ancestorsT(T, l).some((a) => set.has(a.id)); });
+  };
+  let live = false;
+  /** While dragging or typing: keep the tree true and redraw what changed */
+  RT.treeLive = () => { if (live || !ED.d) return; live = true; try { syncTree(P()).forEach((l) => refreshL(l)); } finally { live = false; } };
+
+  /* ---------- drawing: hidden / locked / faded containers pass it down, frames clip ---------- */
+  const _ls31 = lstyle;
+  lstyle = function (l) {
+    let s = _ls31(l); if (!l || !l.pid) return s;
+    const T = RT.tree || (ED.d ? treeOf(P()) : null); if (!T) return s;
+    const anc = ancestorsT(T, l); if (!anc.length) return s;
+    if (anc.some((a) => a.hidden)) return s + 'display:none;';
+    const op = anc.reduce((k, a) => k * (a.op ?? 1), l.op ?? 1); if (op !== (l.op ?? 1)) s += `opacity:${Math.round(op * 1000) / 1000};`;
+    if (anc.some((a) => a.locked)) s += 'pointer-events:none;';
+    const fr = anc.filter((a) => a.type === 'frame' && !a.noclip); if (fr.length) s += clipCss(l, fr);
+    return s;
+  };
+  const _rl31 = refreshL; refreshL = function (l) { _rl31.apply(this, arguments); if (isContainer(l)) RT.treeLive(); };
+  const _st31 = edStage; edStage = function () { if (ED.d) syncTree(P()); return _st31.apply(this, arguments); };
+  const _ds31 = drawSel;
+  drawSel = function () {
+    // leaving a group the user went into: a selection outside it ends that
+    if (ED.inGroup) { const T = T0(), g = T.byId.get(ED.inGroup), ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; if (!g || !ids.length || !ids.every((id) => { const l = T.byId.get(id); return l && ancestorsT(T, l).includes(g); })) ED.inGroup = null; }
+    _ds31.apply(this, arguments);
+    const l = curL(), h = $('#sel [data-h=rot]'); if (h) h.hidden = isContainer(l); // containers don't rotate (yet)
+    if (l && l.type === 'group') { const f = $('#ftb'); f && (f.hidden = true); }
+  };
+
+  /* ---------- delete and duplicate take the content along ---------- */
+  const _del31 = delSel;
+  delSel = function () {
+    const l = curL(); if (!isContainer(l)) return _del31.apply(this, arguments);
+    const gone = new Set([l.id, ...descendantsT(T0(), l.id).map((d) => d.id)]);
+    mutate(() => { curP().layers = curP().layers.filter((x) => !gone.has(x.id)); ED.sel = null; });
+  };
+  const _dup31 = dupSel;
+  dupSel = function () {
+    const l = curL(); if (!isContainer(l)) return _dup31.apply(this, arguments);
+    const T = T0(), block = [l, ...descendantsT(T, l.id)], map = new Map(block.map((x) => [x.id, uid()]));
+    const copy = JSON.parse(JSON.stringify(block)).map((x) => { x.id = map.get(x.id); if (x.pid && map.has(x.pid)) x.pid = map.get(x.pid); x.x += 30; x.y += 30; if (x._x != null) { x._x += 30; x._y += 30; } x.locked = false; return x; });
+    copy[0].name = (l.name || 'Frame') + ' copy';
+    mutate(() => { const L = curP().layers, end = L.indexOf(block[block.length - 1]); L.splice(end + 1, 0, ...copy); ED.sel = copy[0].id; });
+  };
+  const _msDel31 = ACT.msDel;
+  ACT.msDel = () => { const T = T0(); if (ED.ms) ED.ms = [...new Set(ED.ms.flatMap((id) => [id, ...descendantsT(T, id).map((d) => d.id)]))]; _msDel31(); };
+
+  /* ---------- group, ungroup, frame the selection ---------- */
+  function wrapSel(kind) {
+    const pg = P(), T = treeOf(pg), ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : [];
+    if (!ids.length) return toast(kind === 'frame' ? 'Select layers to frame' : 'Select layers to group');
+    const set = new Set(ids), tops = ids.map((id) => T.byId.get(id)).filter((l) => l && !ancestorsT(T, l).some((a) => set.has(a.id)));
+    const pids = new Set(tops.map((l) => l.pid || '')), pid = pids.size === 1 ? [...pids][0] : '', bs = tops.map(aabb);
+    const x = Math.min(...bs.map((b) => b.x)), y = Math.min(...bs.map((b) => b.y)), w = Math.max(...bs.map((b) => b.x + b.w)) - x, h = Math.max(...bs.map((b) => b.y + b.h)) - y;
+    const n = pg.layers.filter((l) => l.type === kind).length + 1;
+    const c = { id: uid(), type: kind, name: (kind === 'frame' ? 'Frame ' : 'Group ') + n, x, y, w, h, rot: 0, op: 1, ...(pid ? { pid } : {}), ...(kind === 'frame' ? { fill: 'transparent', r: 0 } : {}) };
+    mutate(() => { const L = pg.layers; L.splice(Math.min(...tops.map((l) => L.indexOf(l))), 0, c); tops.forEach((l) => { l.pid = c.id; }); syncTree(pg); ED.ms = []; ED.sel = c.id; });
+    toast(kind === 'frame' ? 'Framed. The frame clips what’s inside it.' : 'Grouped. Double-click inside to select one layer.');
+  }
+  function unwrapSel() {
+    const pg = P(), T = treeOf(pg), ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : [];
+    const cs = [...new Set(ids.map((id) => { const l = T.byId.get(id); return isContainer(l) ? l : l && ancestorsT(T, l).find((a) => a.type === 'group'); }).filter(Boolean))];
+    if (!cs.length) return toast('Select a group or a frame');
+    const freed = [];
+    mutate(() => { cs.forEach((c) => { (T.kids.get(c.id) || []).forEach((k) => { if (c.pid) k.pid = c.pid; else delete k.pid; freed.push(k.id); }); pg.layers.splice(pg.layers.indexOf(c), 1); }); syncTree(pg); ED.sel = freed.length === 1 ? freed[0] : null; ED.ms = freed.length > 1 ? freed : []; });
+  }
+  Object.assign(ACT, {
+    msGroup: () => wrapSel('group'), msUngroup: unwrapSel, t31Frame: () => wrapSel('frame'), t31Unwrap: unwrapSel,
+    t31Clip: () => { const l = curL(); l && l.type === 'frame' && mutate(() => { if (l.noclip) delete l.noclip; else l.noclip = true; }); },
+    t31Fold: (a) => { ED.t31Closed = ED.t31Closed || new Set(); const id = a.dataset.id; if (ED.t31Closed.has(id)) ED.t31Closed.delete(id); else ED.t31Closed.add(id); edProps(); },
+    t31Tool: () => (FRM.on ? frameTool(false) : frameTool(true)),
+  });
+
+  /* ---------- dragging a layer onto a frame puts it inside; off its frame takes it out (one undo step with the move) ---------- */
+  const DRAG = { on: false, pt: null };
+  function reparent() {
+    const pg = P(), T = treeOf(pg), pt = DRAG.pt; if (!pt) return;
+    const ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; // what the drag moved: the selection by now
+    const tops = RT.selUnits(pg, ids).map((id) => T.byId.get(id)).filter(Boolean); let any = false;
+    tops.forEach((l) => {
+      const par = l.pid && T.byId.get(l.pid); if (par && par.type === 'group') return; // groups keep their content
+      const mine = new Set([l.id, ...descendantsT(T, l.id).map((d) => d.id)]);
+      const target = [...pg.layers].reverse().find((f) => f.type === 'frame' && !mine.has(f.id) && !f.hidden && !f.locked && pt[0] >= f.x && pt[0] <= f.x + f.w && pt[1] >= f.y && pt[1] <= f.y + f.h);
+      const to = target ? target.id : '';
+      if ((l.pid || '') === to) return;
+      if (to) l.pid = to; else delete l.pid;
+      const L = pg.layers, block = [l, ...descendantsT(T, l.id)]; L.splice(L.indexOf(l), block.length); L.push(...block); any = true; // on top of its new siblings
+    });
+    if (any) { syncTree(pg); edStage(); edPages(); }
+  }
+  const _commit31 = commit;
+  commit = function () { if (DRAG.on && ED.d) reparent(); return _commit31.apply(this, arguments); };
+
+  /* ---------- frame tool (F): drag a box, or click for a 600 × 600 frame ---------- */
+  const FRM = { on: false };
+  function frameTool(on) {
+    FRM.on = on; const s = $('#edScroll'); s && s.classList.toggle('frame-on', on); ED.tab === 'elements' && $('#edPanel') && edPanel();
+    if (on) toast('Frame: drag on the canvas to draw it, or click for a 600 × 600 frame. Esc to cancel.');
+  }
+  function frameDown(e) {
+    const sca = $('#scaler'), r = sca.getBoundingClientRect(), pt = (ev) => [(ev.clientX - r.left) / ED.zoom, (ev.clientY - r.top) / ED.zoom], p0 = pt(e);
+    const box = document.createElement('div'); box.className = 'frm31'; sca.append(box); let p1 = p0;
+    const mv = (ev) => { p1 = pt(ev); const x = Math.min(p0[0], p1[0]), y = Math.min(p0[1], p1[1]); box.style.cssText = `left:${x}px;top:${y}px;width:${Math.abs(p1[0] - p0[0])}px;height:${Math.abs(p1[1] - p0[1])}px`; };
+    const up = () => {
+      removeEventListener('pointermove', mv); removeEventListener('pointerup', up); box.remove(); frameTool(false);
+      let x = Math.min(p0[0], p1[0]), y = Math.min(p0[1], p1[1]), w = Math.abs(p1[0] - p0[0]), h = Math.abs(p1[1] - p0[1]);
+      if (w < 8 && h < 8) { w = h = 600; x = p0[0] - 300; y = p0[1] - 300; }
+      const pg = P(), n = pg.layers.filter((l) => l.type === 'frame').length + 1;
+      addLayer({ id: uid(), type: 'frame', name: 'Frame ' + n, x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), rot: 0, op: 1, fill: '#ffffff', r: 0 });
+    };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  }
+
+  /* ---------- properties: Frame and Group sections; containers don't rotate or take paint they don't have ---------- */
+  const _ep31 = edProps;
+  edProps = function () {
+    const r = _ep31.apply(this, arguments), l = curL(), b = $('#edProps .body');
+    if (ED.rtab === 'layers') { layersTree(); return r; }
+    if (!isContainer(l) || ED.rtab !== 'design' || !b) return r;
+    b.querySelectorAll('.rot9').forEach((x) => x.remove());
+    if (l.type === 'group') b.querySelectorAll('.ps9[data-sec=fill],.ps9[data-sec=stroke],.ps9[data-sec=fx],.ps9[data-sec=image],.ps9[data-sec=shape]').forEach((x) => x.remove());
+    const n = (T0().kids.get(l.id) || []).length, sec = document.createElement('section'); sec.className = 'ps9'; sec.dataset.sec = 'tree';
+    sec.innerHTML = `<div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="tree" aria-expanded="true">${l.type === 'frame' ? 'Frame' : 'Group'}${ic('chevD', 14)}</button><span class="ps9-a"></span></div><div class="ps9-b">`
+      + `<p class="xs-t muted">${n} layer${n === 1 ? '' : 's'} inside.${l.type === 'group' ? ' Double-click on the canvas to select one.' : ''}</p>`
+      + (l.type === 'frame' ? `<div class="row sp"><span class="sm-t">Clip content</span><button class="switch ${l.noclip ? '' : 'on'}" data-act="t31Clip" aria-label="Clip content"></button></div>` : '')
+      + `<button class="btn secondary sm" data-act="t31Unwrap">${l.type === 'frame' ? 'Remove frame, keep its layers' : 'Ungroup'}<span class="kbd" style="margin-left:6px">Ctrl Shift G</span></button></div>`;
+    const pos = b.querySelector('.ps9[data-sec=pos]'); pos ? pos.after(sec) : b.prepend(sec);
+    return r;
+  };
+
+  /* ---------- Layers panel: the tree (indent, fold, rename, drag above / below / into) ---------- */
+  const TI = (l) => (l.type === 'frame' ? 'frame31' : l.type === 'group' ? 'grp9' : l.type === 'text' ? 'type' : l.type === 'image' ? 'image' : l.type === 'path' ? 'pen' : 'shapes');
+  function layersTree() {
+    const b = $('#edProps .body'); if (!b) return;
+    const T = T0(), sel = new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []), closed = ED.t31Closed || new Set(), rows = [];
+    const walk = (k, depth) => [...(T.kids.get(k) || [])].reverse().forEach((l) => {
+      const c = isContainer(l), open = c && !closed.has(l.id), kids = c ? (T.kids.get(l.id) || []).length : 0;
+      rows.push(`<div class="lr31${sel.has(l.id) ? ' on' : ''}${l.hidden ? ' off' : ''}" draggable="true" data-act="edPick" data-id="${l.id}" style="--d:${depth}">`
+        + (c && kids ? `<button type="button" class="lr31-tw${open ? ' open' : ''}" data-act="t31Fold" data-id="${l.id}" aria-label="${open ? 'Collapse' : 'Expand'}">${ic('chevD', 12)}</button>` : '<i class="lr31-tw"></i>')
+        + `${ic(TI(l), 15, 'faint')}<span class="nm" data-id="${l.id}" title="Double-click to rename">${esc(l.name || l.type)}</span>`
+        + `<button class="tg" data-act="edVis" data-id="${l.id}" title="Show / hide">${ic(l.hidden ? 'eyeOff' : 'eye', 15)}</button><button class="tg" data-act="edLock" data-id="${l.id}" title="Lock">${ic(l.locked ? 'lock' : 'unlock', 15)}</button></div>`);
+      if (c && open) walk(l.id, depth + 1);
+    });
+    walk('', 0);
+    b.innerHTML = rows.join('') || '<p class="xs-t muted">No layers.</p>';
+    b.classList.add('lt31');
+  }
+  // picking a row inside a group selects that layer and lets the canvas keep it (the group counts as entered)
+  const _pick = ACT.edPick;
+  ACT.edPick = (a, e) => {
+    if (e && e.target.closest('.tg,.lr31-tw,input')) return;
+    const T = T0(), l = T.byId.get(a.dataset.id), par = l && l.pid && T.byId.get(l.pid);
+    ED.inGroup = par && par.type === 'group' ? par.id : null; // its siblings stay clickable one by one on the canvas
+    ED.ms = []; _pick(a, e);
+  };
+  // rename: double-click the name
+  document.addEventListener('dblclick', (e) => {
+    const nm = e.target.closest && e.target.closest('#edProps .lr31 .nm'); if (!nm) return;
+    const l = T0().byId.get(nm.dataset.id); if (!l) return;
+    const inp = document.createElement('input'); inp.className = 'field sm lr31-in'; inp.value = l.name || ''; nm.replaceWith(inp); inp.focus(); inp.select();
+    let done = false; const fin = (ok) => { if (done) return; done = true; const v = inp.value.trim(); if (ok && v && v !== l.name) mutate(() => { l.name = v.slice(0, 60); }); else edProps(); };
+    inp.addEventListener('keydown', (ev) => { ev.stopPropagation(); if (ev.key === 'Enter') fin(true); if (ev.key === 'Escape') fin(false); });
+    inp.addEventListener('blur', () => fin(true));
+  });
+  // drag rows: top third above, bottom third below, middle of a frame or group: into it
+  const where = (row, ev) => { const r = row.getBoundingClientRect(), y = (ev.clientY - r.top) / r.height, l = T0().byId.get(row.dataset.id); return isContainer(l) && y > 0.3 && y < 0.7 ? 'in' : y < 0.5 ? 'above' : 'below'; };
+  document.addEventListener('dragstart', (e) => { const r = e.target.closest && e.target.closest('#edProps .lr31'); if (!r) return; e.dataTransfer.setData('text/layer31', r.dataset.id); e.dataTransfer.effectAllowed = 'move'; r.classList.add('dragging'); }, true);
+  document.addEventListener('dragover', (e) => {
+    const r = e.target.closest && e.target.closest('#edProps .lr31'); if (!r || !e.dataTransfer || ![...e.dataTransfer.types].includes('text/layer31')) return;
+    e.preventDefault(); const w = where(r, e); $$('#edProps .lr31').forEach((x) => x.classList.remove('d-above', 'd-below', 'd-in')); r.classList.add('d-' + w);
+  });
+  document.addEventListener('drop', (e) => {
+    const r = e.target.closest && e.target.closest('#edProps .lr31'); if (!r || !e.dataTransfer || ![...e.dataTransfer.types].includes('text/layer31')) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    const pg = P(), T = treeOf(pg), id = e.dataTransfer.getData('text/layer31'), l = T.byId.get(id), t = T.byId.get(r.dataset.id), w = where(r, e);
+    if (!l || !t || l === t || descendantsT(T, l.id).includes(t)) return edProps();
+    mutate(() => {
+      const L = pg.layers, block = [l, ...descendantsT(T, l.id)]; L.splice(L.indexOf(l), block.length);
+      const tEnd = () => { const d = descendantsT(treeOf(pg), t.id); return L.indexOf(d.length ? d[d.length - 1] : t); };
+      // the panel lists the top of the stack first: "above" a row is later in paint order
+      if (w === 'in') { l.pid = t.id; L.splice(tEnd() + 1, 0, ...block); }
+      else { if (t.pid) l.pid = t.pid; else delete l.pid; L.splice(w === 'above' ? tEnd() + 1 : L.indexOf(t), 0, ...block); }
+      syncTree(pg);
+    });
+  }, true);
+  document.addEventListener('dragend', () => $$('#edProps .lr31').forEach((x) => x.classList.remove('dragging', 'd-above', 'd-below', 'd-in')));
+
+  /* ---------- wiring: canvas pointer, keys ---------- */
+  const _oe31 = openEditor;
+  openEditor = function () {
+    FRM.on = false; ED.inGroup = null;
+    _oe31.apply(this, arguments);
+    const sc = $('#edScroll'), sca = $('#scaler'); if (!sc || !sca) return;
+    sc.addEventListener('pointerdown', (e) => {
+      if (FRM.on && e.button === 0 && !ED.space) { e.preventDefault(); e.stopImmediatePropagation(); return frameDown(e); }
+      // a drag that starts on a layer may drop it into a frame (see commit)
+      const ly = e.target.closest && e.target.closest('.ly');
+      if (e.button === 0 && ly && !e.target.closest('[data-h]')) {
+        DRAG.on = true; DRAG.pt = null;
+        const r = sca.getBoundingClientRect(), mv = (ev) => { DRAG.pt = [(ev.clientX - r.left) / ED.zoom, (ev.clientY - r.top) / ED.zoom]; };
+        const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); setTimeout(() => { DRAG.on = false; }, 0); }; // after the move's own commit
+        addEventListener('pointermove', mv); addEventListener('pointerup', up);
+      }
+    }, true);
+    // double-click inside a selected group: go into it and select the layer under the pointer
+    sca.addEventListener('dblclick', (e) => {
+      const ly = e.target.closest && e.target.closest('.ly'); if (!ly) return;
+      const T = T0(), l = T.byId.get(ly.dataset.id), g = l && RT.topGroup(P(), l); if (!g) return;
+      ED.inGroup = g.id; const u = RT.selUnits(P(), [l.id]); ED.ms = []; ED.sel = u[0] || l.id; drawSel(); edProps();
+    });
+  };
+  addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('in-editor') || ED.editing || $('#cmdk')) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    const mod = e.ctrlKey || e.metaKey, stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
+    if (mod && e.altKey && e.code === 'KeyG') { stop(); return wrapSel('frame'); }
+    if (FRM.on && e.key === 'Escape') { stop(); return frameTool(false); }
+    if (!mod && !e.altKey && !e.shiftKey && e.code === 'KeyF') { stop(); return frameTool(!FRM.on); }
+    if (e.key === 'Escape' && ED.inGroup) { // Esc inside a group: select the group again
+      const g = T0().byId.get(ED.inGroup); if (g) { stop(); ED.inGroup = null; ED.ms = []; ED.sel = RT.selUnits(P(), [g.id])[0]; drawSel(); edProps(); }
+    }
+  }, true);
+  // the Elements panel: a Frame button next to the vectors
+  const _pn31 = edPanel;
+  edPanel = function () {
+    const r = _pn31.apply(this, arguments), p = $('#edPanel');
+    if (p && ED.tab === 'elements') { const g = p.querySelector('[data-act=vPen]'); g && g.insertAdjacentHTML('beforebegin', `<button class="el7${FRM.on ? ' on' : ''}" data-n="frame artboard container layout" data-act="t31Tool" title="Frame (F)" aria-pressed="${FRM.on}">${ic('frame31', 22)}</button>`); }
+    return r;
+  };
 })();
 
 /* ============ first paint, with every renderer installed ============ */
