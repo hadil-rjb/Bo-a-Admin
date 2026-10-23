@@ -7,8 +7,10 @@
  * Positions come from each node's absolute box, so children of groups (and groups imported on their own) land
  * exactly where they are in Figma, whatever coordinate space their transforms use.
  * Text, rectangles and ellipses become editable layers (fills, gradients, blend modes, strokes,
- * corner radius, strokes, rotation, opacity); anything the studio can't express (vectors, boolean
- * operations, masks, shadows on shapes, clipped content) is rendered by Figma and placed as an image.
+ * corner radius, strokes, rotation, opacity). Vectors, stars, polygons, lines and boolean operations (and groups drawn
+ * only with them: logos, icons) become path layers drawn from Figma's geometry when the studio can paint them the same.
+ * Anything the studio can't express (masks, image fills on vectors, shadows on shapes, clipped content) is rendered
+ * by Figma and placed as an image.
  * Frames that hold text are never flattened: their effects are drawn by the studio (simplified when needed)
  * and only the shapes that cross their clip are rendered by Figma, cut to the frame's box.
  *
@@ -164,11 +166,54 @@ const cut = (a: Clip | undefined, b: Clip): Clip => {
   const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y);
   return { x, y, w: Math.max(0, Math.min(a.x + a.w, b.x + b.w) - x), h: Math.max(0, Math.min(a.y + a.h, b.y + b.h) - y), r: Math.max(a.r, b.r) };
 };
-/** A group or instance drawn only with vectors (a logo, an icon): one image, like it looks in Figma */
+/** A group or instance drawn only with vectors (a logo, an icon): path layers when every vector converts, else one image */
 const vectorOnly = (n: any): boolean => {
   const kids = (n.children || []).filter((c: any) => c.visible !== false);
   return kids.length > 0 && kids.every((c: any) => RASTER_TYPES.has(c.type) || ((c.type === "GROUP" || c.type === "BOOLEAN_OPERATION" || CONTAINERS.has(c.type)) && !visiblePaints(c.fills).length && vectorOnly(c)));
 };
+
+/**
+ * Figma geometry (`fillGeometry` / `strokeGeometry` paths: absolute M, L, Q, C, Z in the node's own space) → segments,
+ * or null for path data that uses anything else.
+ */
+type Seg = { c: string; p: number[] };
+const ARGS: Record<string, number> = { M: 2, L: 2, Q: 4, C: 6, Z: 0 };
+function figPath(d: string): Seg[] | null {
+  const toks = String(d || "").match(/-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?|[a-z]/gi) || [], out: Seg[] = [];
+  for (let i = 0; i < toks.length;) {
+    let c = toks[i++];
+    const n = ARGS[c];
+    if (n == null) return null;
+    do { // repeated arguments repeat the command (after M: lines)
+      const p = toks.slice(i, i + n).map(Number);
+      if (p.length < n || p.some((x) => !Number.isFinite(x))) return null;
+      out.push({ c, p }); i += n;
+      if (c === "M") c = "L";
+    } while (n && i < toks.length && !/^[a-z]$/i.test(toks[i]));
+  }
+  return out;
+}
+const fmt = (n: number) => { const r = Math.round(n * 1000) / 1000; return Object.is(r, -0) ? "0" : String(r); };
+const toD = (segs: Seg[], dx = 0, dy = 0) => segs.map((s) => s.c + s.p.map((v, i) => fmt(v + (i % 2 ? dy : dx))).join(" ")).join("");
+/** Box of the points (control points included: a little loose on curves, only used for flat nodes) */
+function hull(segs: Seg[]) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  segs.forEach((s) => { for (let i = 0; i < s.p.length; i += 2) { x0 = Math.min(x0, s.p[i]); x1 = Math.max(x1, s.p[i]); y0 = Math.min(y0, s.p[i + 1]); y1 = Math.max(y1, s.p[i + 1]); } });
+  return x0 === Infinity ? null : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+/** A geometry list → one path and its fill rule, or null when it is empty, unreadable or mixes fill rules */
+function geometry(list: any[] | undefined): { segs: Seg[]; fr: string } | null {
+  if (!list?.length) return null;
+  const rules = new Set(list.map((g) => g.windingRule || "NONZERO"));
+  if (rules.size > 1) return null;
+  const segs: Seg[] = [];
+  for (const g of list) { const s = figPath(g.path); if (!s) return null; segs.push(...s); }
+  return segs.length ? { segs, fr: rules.has("EVENODD") ? "evenodd" : "nonzero" } : null;
+}
+const CAPS: Record<string, string> = { NONE: "butt", ROUND: "round", SQUARE: "square" };
+const JOINS: Record<string, string> = { MITER: "miter", BEVEL: "bevel", ROUND: "round" };
+/** Shapes whose outline is always closed: their fill geometry is the line a centered stroke follows */
+const CLOSED = new Set(["STAR", "REGULAR_POLYGON", "POLYGON", "BOOLEAN_OPERATION"]);
 
 export function convertFrame(frame: any, uid: () => string, fontFor: (family: string, size: number) => string = defaultFont): ConvertOut {
   // groups have no box of their own: their size is the bounding box of their content
@@ -260,6 +305,7 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     const flip = mirrored(m), rot = ((flip ? Math.atan2(-m[1][0], -m[0][0]) : Math.atan2(m[1][0], m[0][0])) * 180) / Math.PI;
     return { x: r1(cx * k + offX - (w * k) / 2), y: r1(cy * k + offY - (h * k) / 2), w: r1(w * k), h: r1(h * k), rot: r1(Math.abs(rot) < 0.05 ? 0 : rot), ...(flip ? { fx: true } : {}) };
   };
+  const relOf = (n: any): M => (n.relativeTransform as M) || [[1, 0, n.absoluteBoundingBox ? n.absoluteBoundingBox.x - fbb.x : 0], [0, 1, n.absoluteBoundingBox ? n.absoluteBoundingBox.y - fbb.y : 0]];
   const mirrored = (m: M) => m[0][0] * m[1][1] - m[0][1] * m[1][0] < 0;
 
   const overflows = (n: any) => {
@@ -288,6 +334,97 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
       fill: fill || "transparent", r: r1(r ? r + grow : 0), ...(F.adj ? { adj: F.adj } : {}), ...(F.ovs ? { ovs: F.ovs } : {}),
       ...(stroke ? { stroke: rgba(stroke.color, stroke.opacity ?? 1), sw: r1(sw) } : {}), ...fx,
     });
+  };
+
+  /**
+   * A vector, star, polygon, line or boolean shape → path layers drawn from Figma's geometry, or null when the studio can't
+   * draw it the same way (image or angular fills, several fills, per-region fills, effects other than one shadow and one blur).
+   * The layer box is the node's own box (rotated and flipped like it), so the geometry keeps Figma's coordinates.
+   * Strokes must be centered. Solid ones on closed shapes and lines stay real strokes; the others (open vectors, dashed,
+   * gradient, arrow caps) use Figma's stroke outline, filled, as a second layer above the fill.
+   */
+  const vectorLayers = (n: any, m: M, op: number): any[] | null => {
+    const E = effectsOf(n, false);
+    if (!E.ok || E.props.bbl != null) return null;
+    const fills = visiblePaints(n.fills), strokes = (n.strokeWeight ?? 1) > 0 ? visiblePaints(n.strokes) : [];
+    if (fills.length > 1 || strokes.length > 1) return null;
+    const b = n.absoluteBoundingBox, w0 = n.size?.x ?? b?.width ?? 0, h0 = n.size?.y ?? b?.height ?? 0;
+    const css = (p: any) => (p.type === "SOLID" || p.type === "GRADIENT_LINEAR" || p.type === "GRADIENT_RADIAL" ? paintCss(p, w0 * k, h0 * k) : null);
+    const fill = fills[0] && n.type !== "LINE" ? css(fills[0]) : null, stroke = strokes[0] ? css(strokes[0]) : null;
+    if ((fills[0] && n.type !== "LINE" && !fill) || (strokes[0] && !stroke)) return null;
+    if (!fill && !stroke) return [];
+    // regions of one vector painted differently
+    if (fill && (n.fillGeometry || []).some((g: any) => g.overrideID != null && n.fillOverrideTable?.[g.overrideID]?.fills)) return null;
+
+    // inside / outside strokes: Figma's stroke outline is twice as wide, meant to be clipped by the fill
+    const sp = strokes[0], cap = CAPS[n.strokeCap || "NONE"], join = JOINS[n.strokeJoin || "MITER"];
+    if (sp && (n.strokeAlign || "CENTER") !== "CENTER") return null;
+    const plain = !!sp && sp.type === "SOLID" && !n.strokeDashes?.length && !n.individualStrokeWeights && !!cap && !!join;
+    const realStroke = plain && (n.type === "LINE" || CLOSED.has(n.type)) ? { stroke, sw: r1((n.strokeWeight ?? 1) * k), cap, join } : null;
+    type Part = { segs: Seg[]; fr: string; fill: string; extra?: Record<string, any>; name: string };
+    const parts: Part[] = [], name = String(n.name || "Vector").slice(0, 40);
+    if (n.type === "LINE") {
+      if (!realStroke) { const g = geometry(n.strokeGeometry); if (!g) return null; parts.push({ ...g, fill: stroke!, name }); }
+      else {
+        // Figma doesn't always center a line's stroke on it, and keeps round / square caps inside its length:
+        // the line the stroke follows is the middle of the stroke's outline, shortened by the caps
+        const o = geometry(n.strokeGeometry), hb = o && hull(o.segs), sw = n.strokeWeight ?? 1, inset = cap === "butt" ? 0 : sw / 2;
+        const [x0, x1, y] = hb && Math.abs(hb.h - sw) < 0.5 ? [hb.x + inset, hb.x + hb.w - inset, hb.y + hb.h / 2] : [0, w0, 0];
+        parts.push({ segs: [{ c: "M", p: [x0, y] }, { c: "L", p: [x1, y] }], fr: "nonzero", fill: "none", extra: realStroke, name });
+      }
+    } else {
+      const fg = fill || realStroke ? geometry(n.fillGeometry) : null;
+      if (fill && !fg) return null;
+      if (fg && (fill || realStroke)) parts.push({ ...fg, fill: fill || "none", ...(realStroke ? { extra: realStroke } : {}), name });
+      if (stroke && !(realStroke && fg)) {
+        const g = geometry(n.strokeGeometry); if (!g) return null;
+        parts.push({ ...g, fill: stroke, name: parts.length ? `${name} stroke`.slice(0, 40) : name });
+      }
+    }
+    // fill and stroke as two layers only look the same when nothing is shared between them
+    if (parts.length > 1 && (o1(op) || Object.keys(E.props).length || Object.keys(blendOf(n)).length)) return null;
+
+    // the box: the node's own, except along a flat side (a line, a flat vector): there it spans the drawing
+    let bx = 0, by = 0, bw = w0, bh = h0;
+    if (w0 < 1 || h0 < 1) {
+      const all = hull(parts.flatMap((p) => p.segs)), pad = realStroke ? (n.strokeWeight ?? 1) / 2 : 0;
+      if (!all) return null;
+      if (w0 < 1) { bx = all.x - pad; bw = Math.max(1, all.w + pad * 2); }
+      if (h0 < 1) { by = all.y - pad; bh = Math.max(1, all.h + pad * 2); }
+    }
+    // the layer turns around its own center: move it by how far that center sits from the node's, along the node's axes
+    const g = placed(n, m), dx = bx + bw / 2 - w0 / 2, dy = by + bh / 2 - h0 / 2;
+    const cx = g.x + g.w / 2 + (m[0][0] * dx + m[0][1] * dy) * k, cy = g.y + g.h / 2 + (m[1][0] * dx + m[1][1] * dy) * k;
+    const { x: _x, y: _y, w: _w, h: _h, ...turn } = g;
+    return parts.map((p) => ({
+      id: uid(), type: "path", name: p.name, ...turn, x: r1(cx - (bw * k) / 2), y: r1(cy - (bh * k) / 2), w: r1(bw * k), h: r1(bh * k),
+      op: r3(op), ...blendOf(n), d: toD(p.segs, -bx, -by), vw: r3(bw), vh: r3(bh), fill: p.fill, ...(p.fr === "evenodd" ? { fr: "evenodd" } : {}),
+      ...(p.extra || {}), ...E.props,
+    }));
+  };
+  const o1 = (op: number) => op < 0.999;
+
+  /**
+   * Layers of a group or frame drawn only with vectors (a logo, an icon), or null when one of them can't be a path layer
+   * (or the group itself has effects, a blend mode, a mask or clipped overflow): the whole group is then rendered by Figma.
+   */
+  const vectorGroup = (n: any, m: M, op: number): any[] | null => {
+    if (n.visible === false) return [];
+    if (n.isMask || hasEffects(n)) return null;
+    const o = op * (n.opacity ?? 1), mm = mul(m, relOf(n));
+    if (o <= 0.001) return [];
+    if (RASTER_TYPES.has(n.type)) return vectorLayers(n, mm, o);
+    if (BLEND[n.blendMode] || visiblePaints(n.fills).length || visiblePaints(n.strokes).length) return null;
+    // a see-through group fades as a whole in Figma: its parts can't fade one by one where they overlap
+    if ((n.opacity ?? 1) < 0.999 && (n.children || []).filter((c: any) => c.visible !== false).length > 1) return null;
+    if (CONTAINERS.has(n.type) && n.clipsContent !== false && overflows(n)) return null;
+    const out: any[] = [];
+    for (const c of n.children || []) {
+      const ls = vectorGroup(c, n.type === "GROUP" ? m : mm, o); // group children are positioned in the group's parent space
+      if (!ls) return null;
+      out.push(...ls);
+    }
+    return out;
   };
 
   const text = (n: any, m: M, op: number) => {
@@ -365,8 +502,7 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
   const walk = (n: any, m: M, op: number, gid?: string, clip?: Clip) => {
     if (!n || n.visible === false) return;
     if (n.isMask) { warn.add("Masks are approximated"); return; }
-    const rel: M = (n.relativeTransform as M) || [[1, 0, n.absoluteBoundingBox ? n.absoluteBoundingBox.x - fbb.x : 0], [0, 1, n.absoluteBoundingBox ? n.absoluteBoundingBox.y - fbb.y : 0]];
-    const mm = mul(m, rel), o = op * (n.opacity ?? 1);
+    const mm = mul(m, relOf(n)), o = op * (n.opacity ?? 1);
     if (o <= 0.001) return;
     const kids: any[] = n.children || [];
     const where = against(n, clip);
@@ -374,7 +510,15 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     const R = () => raster(n, op, clip);
 
     if (BLEND[n.blendMode] && (n.type === "GROUP" || CONTAINERS.has(n.type)) && kids.length) return R(); // blended as a whole
-    if ((n.type === "GROUP" || CONTAINERS.has(n.type)) && vectorOnly(n) && !visiblePaints(n.fills).length) return R(); // logo / icon
+    if ((n.type === "GROUP" || CONTAINERS.has(n.type)) && vectorOnly(n) && !visiblePaints(n.fills).length) { // logo / icon
+      const ls = where === "in" && !kids.some((c) => c.isMask) ? vectorGroup(n, m, op) : null;
+      if (!ls) return R();
+      const g = gid || uid(), from = layers.length;
+      if (!gid) gnames.set(g, String(n.name || "Group").slice(0, 40));
+      layers.push(...ls);
+      tag(from, g);
+      return;
+    }
     if (n.type === "GROUP") {
       if (kids.some((c) => c.isMask)) return R(); // masked group: let Figma render it
       const g = gid || uid(), from = layers.length;
@@ -386,7 +530,15 @@ export function convertFrame(frame: any, uid: () => string, fontFor: (family: st
     if (n.type === "TEXT") return text(n, mm, o); // text stays editable, even when a frame cuts part of it
     if (where === "part" && !CONTAINERS.has(n.type)) return R(); // a shape crossing its frame's edge: cut like in Figma
     if (clip?.r && !CONTAINERS.has(n.type) && hasImageInside(n)) return R(); // a picture in a rounded frame: rounded like the frame
-    if (RASTER_TYPES.has(n.type) || (mirrored(mm) && !["RECTANGLE", "ELLIPSE"].includes(n.type))) return R();
+    if (RASTER_TYPES.has(n.type)) {
+      const ls = vectorLayers(n, mm, o);
+      if (!ls) return R();
+      const from = layers.length;
+      layers.push(...ls);
+      if (ls.length > 1 && !gid) { const g = uid(); gnames.set(g, String(n.name || "Vector").slice(0, 40)); tag(from, g); } // fill + stroke outline
+      return;
+    }
+    if (mirrored(mm) && !["RECTANGLE", "ELLIPSE"].includes(n.type)) return R();
     if (n.type === "ELLIPSE") {
       if (n.arcData && (n.arcData.endingAngle - n.arcData.startingAngle < 6.28 || n.arcData.innerRadius > 0)) return R();
       const E = effectsOf(n, false); return E.ok ? shape(n, mm, o, "ellipse", E.props) : R();
