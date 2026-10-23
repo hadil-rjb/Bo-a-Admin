@@ -16,6 +16,7 @@ import { IC, ic } from './icons';
 import { RATIOS, PLATFORMS, FONTS, uid, Tx, Rc, El, Im, BG, EVENTS, EVENTS_DEFAULT, CUR_COLOR, tplCalendar, tplCalendarWeek, tplPrice, tplNews, tplQuote, tplArticle, tplStat, tplLaunch, tplFeatures, tplTestimonial, tplEvent, TPL, FIGMA_FRAMES } from './templates';
 import { BOGA_LOGO } from './assets/bogaLogo';
 import { createRuntime } from './runtime';
+import * as PATH from './paths';
 
 let mounted = null; // destroy() of the running instance
 
@@ -366,13 +367,42 @@ function lstyle(l) {
   let s = `left:${l.x}px;top:${l.y}px;width:${l.w}px;height:${l.h}px;opacity:${l.op ?? 1};transform:rotate(${l.rot || 0}deg);`;
   if (l.hidden) s += 'display:none;';
   if (l.type === 'text') s += `color:${l.color};font:${l.weight} ${l.size}px/${l.lh} '${l.font}',sans-serif;text-align:${l.align};letter-spacing:${l.ls || 0}px;direction:${l.dir || 'ltr'};`;
-  else {
+  else if (l.type !== 'path') {
     s += `background:${l.fill};border-radius:${l.type === 'ellipse' ? '50%' : (l.r || 0) + 'px'};`;
     if (l.stroke) s += `border:${l.sw || 3}px solid ${l.stroke};box-sizing:border-box;`;
   }
   return s;
 }
-const layerHTML = (l) => `<div class="ly ${l.type}${l.locked ? ' locked' : ''}" data-id="${l.id}" style="${lstyle(l)}">${l.type === 'text' ? textHTML(l) : ''}</div>`;
+let pathSeq = 0;
+/** A gradient parsed by RT.gParse → an SVG gradient in the layer's own pixels (same geometry as the CSS one) */
+function svgGrad(g, id, w, h) {
+  const stops = [...g.s].sort((a, b) => a.p - b.p).map((x) => `<stop offset="${x.p}%" stop-color="${x.c}"${x.o < 1 ? ` stop-opacity="${x.o}"` : ''}/>`).join('');
+  if (g.kind === 'linear') {
+    const t = (g.a * Math.PI) / 180, L = Math.abs(w * Math.sin(t)) + Math.abs(h * Math.cos(t)), dx = (Math.sin(t) * L) / 2, dy = (-Math.cos(t) * L) / 2;
+    return `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${w / 2 - dx}" y1="${h / 2 - dy}" x2="${w / 2 + dx}" y2="${h / 2 + dy}">${stops}</linearGradient>`;
+  }
+  if (g.kind === 'radial') { // ellipse (or circle) reaching the farthest corner, centered "at x% y%" (default 50% 50%)
+    const at = /at\s+(-?[\d.]+)%\s+(-?[\d.]+)%/.exec(g.head || ''), cx = at ? (w * at[1]) / 100 : w / 2, cy = at ? (h * at[2]) / 100 : h / 2;
+    const fx = Math.max(cx, w - cx), fy = Math.max(cy, h - cy), circle = /circle/.test(g.head || ''), rx = circle ? Math.hypot(fx, fy) : fx * Math.SQRT2, ry = circle ? rx : fy * Math.SQRT2;
+    return `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${rx}" gradientTransform="translate(${cx} ${cy}) scale(1 ${ry / rx}) translate(${-cx} ${-cy})">${stops}</radialGradient>`;
+  }
+  return '';
+}
+/** Path data of a path layer at its current size: parametric shapes are redrawn, free paths are scaled */
+const pathSegs = (l) => { const w = Math.max(1, l.w), h = Math.max(1, l.h); return (l.shape && PATH.shapePath(l.shape, w, h)) || PATH.scale(PATH.parse(l.d), w / (l.vw || w), h / (l.vh || h)); };
+/** A path layer's drawing: inline SVG at the layer's size. Fill: color, gradient or image; stroke centered; shadow as drop-shadow */
+function pathHTML(l) {
+  const w = Math.max(1, l.w), h = Math.max(1, l.h), id = 'pv' + l.id + '-' + ++pathSeq, f = String(l.fill || 'none').trim();
+  let defs = '', fill = 'none';
+  if (/gradient\(/i.test(f)) { const g = RT.gParse && RT.gParse(f), def = g && svgGrad(g, id, w, h); if (def) { defs = def; fill = `url(#${id})`; } else { const c = /#[0-9a-f]{3,8}|rgba?\([^)]*\)/i.exec(f); fill = c ? c[0] : 'none'; } }
+  else if (/url\(/i.test(f)) { const u = /url\((['"]?)(.*?)\1\)/i.exec(f); if (u) { defs = `<pattern id="${id}" patternUnits="userSpaceOnUse" width="${w}" height="${h}"><image href="${esc(u[2])}" width="${w}" height="${h}" preserveAspectRatio="${/contain/.test(f) ? 'xMidYMid meet' : 'xMidYMid slice'}"/></pattern>`; fill = `url(#${id})`; } }
+  else if (f && f !== 'transparent') fill = f;
+  const sh = l.shb || l.shy || l.shx ? `filter:drop-shadow(${l.shx || 0}px ${l.shy || 0}px ${(l.shb || 0) / 2}px color-mix(in srgb,${l.shc || '#000000'} ${Math.round((l.sha ?? 0.45) * 100)}%,transparent))` : '';
+  const stroke = l.stroke ? ` stroke="${esc(l.stroke)}" stroke-width="${l.sw ?? 3}" stroke-linecap="${l.cap || 'round'}" stroke-linejoin="${l.join || 'round'}"` : '';
+  // xmlns: exports and publishing parse the slide as XML (SVG foreignObject), where an <svg> needs its namespace to draw
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="pv" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"${sh ? ` style="${sh}"` : ''} aria-hidden="true">${defs ? `<defs>${defs}</defs>` : ''}<path d="${PATH.toD(pathSegs(l))}" fill="${esc(fill)}"${l.fr === 'evenodd' ? ' fill-rule="evenodd"' : ''}${stroke}/></svg>`;
+}
+const layerHTML = (l) => `<div class="ly ${l.type}${l.locked ? ' locked' : ''}" data-id="${l.id}" style="${lstyle(l)}">${l.type === 'text' ? textHTML(l) : l.type === 'path' ? pathHTML(l) : ''}</div>`;
 const posterHTML = (pg) => pg.layers.map(layerHTML).join('');
 /** Scaled, static preview of a page (used on cards, planner, template pickers) */
 function thumb(pg, ratio, boxW, boxH) {
@@ -1881,14 +1911,14 @@ function edProps() {
       <div class="seg">${[['left', 'alL'], ['center', 'alC'], ['right', 'alR']].map(([a, i]) => `<button class="${l.align === a ? 'on' : ''}" data-act="edAl" data-a="${a}" title="${a}">${ic(i, 16)}</button>`).join('')}<button class="${l.dir === 'rtl' ? 'on' : ''}" data-act="edRtl" title="Right-to-left">RTL</button></div>
       <div><span class="label">Color</span><input type="color" data-p="color" value="${hex(l.color)}"></div>` : ''}
     ${canFill ? `<div><span class="label">Fill</span><input type="color" data-p="fill" value="${hex(l.fill)}">${/gradient|url/.test(l.fill) ? '<p class="xs-t muted" style="margin-top:4px">Gradient or image. Picking a color replaces it.</p>' : ''}<div class="chips" style="margin-top:8px">${edKit().colors.map((c) => `<button class="chip" style="padding:0;width:26px;height:26px;background:${c}" data-act="edColor" data-c="${c}"></button>`).join('')}</div></div>
-      ${l.type !== 'ellipse' ? `<label class="lab">Corner radius<input type="range" min="0" max="200" data-p="r" value="${l.r || 0}"></label>` : ''}` : ''}
+      ${l.type !== 'ellipse' && l.type !== 'path' ? `<label class="lab">Corner radius<input type="range" min="0" max="200" data-p="r" value="${l.r || 0}"></label>` : ''}` : ''}
     <label class="lab">Opacity<input type="range" min="0" max="1" step="0.01" data-p="op" value="${l.op ?? 1}"></label>
     <div class="row" style="gap:4px"><button class="btn secondary icon sm" data-act="edFwd" title="Bring forward">${ic('front', 16)}</button><button class="btn secondary icon sm" data-act="edBwd" title="Send backward">${ic('back', 16)}</button><button class="btn secondary icon sm" data-act="edDup" title="Duplicate (Ctrl+D)">${ic('copy', 16)}</button><button class="btn secondary icon sm" data-act="edLock" data-id="${l.id}" title="Lock">${ic(l.locked ? 'lock' : 'unlock', 16)}</button><span class="grow"></span><button class="btn secondary icon sm" data-act="edDel" title="Delete (Del)" style="color:var(--neg)">${ic('trash', 16)}</button></div></div>`;
 }
 
 /* ---------- layer helpers ---------- */
 function fitText(l) { const el = elOf(l.id); if (!el) return; el.style.height = 'auto'; l.h = Math.ceil(el.offsetHeight); el.style.height = l.h + 'px'; }
-function refreshL(l) { const el = elOf(l.id); if (!el) return; el.style.cssText = lstyle(l); if (l.type === 'text' && ED.editing !== l.id) { const h = textHTML(l); if (el.innerHTML !== h) el.innerHTML = h; } }
+function refreshL(l) { const el = elOf(l.id); if (!el) return; el.style.cssText = lstyle(l); if (l.type === 'text' && ED.editing !== l.id) { const h = textHTML(l); if (el.innerHTML !== h) el.innerHTML = h; } if (l.type === 'path') el.innerHTML = pathHTML(l); }
 function addLayer(l) { mutate(() => { curP().layers.push(l); ED.sel = l.id; }); }
 function shapeLayer(k) {
   const [W, H] = dim(), c = bgLum() > 0.6 ? '#0f172a' : '#fd0e35', cx = (w) => Math.round(W / 2 - w / 2), cy = (h) => Math.round(H / 2 - h / 2);
@@ -2325,7 +2355,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     if (isT(l)) { if (l.it) s += 'font-style:italic;'; if (l.ul) s += 'text-decoration:underline;'; if (l.up) s += 'text-transform:uppercase;'; }
     const fH = l.fx === true, fV = l.fy === true;
     if (fH || fV) s += `transform:rotate(${l.rot || 0}deg) scale(${fH ? -1 : 1},${fV ? -1 : 1});`;
-    if (l.shb || l.shy || l.shx) { const c = `color-mix(in srgb,${l.shc || '#000000'} ${Math.round((l.sha ?? 0.45) * 100)}%,transparent)`, v = `${l.shx || 0}px ${l.shy || 0}px ${l.shb || 0}px ${c}`; s += isT(l) ? `text-shadow:${v};` : `box-shadow:${v};`; }
+    if (l.shb || l.shy || l.shx) { const c = `color-mix(in srgb,${l.shc || '#000000'} ${Math.round((l.sha ?? 0.45) * 100)}%,transparent)`, v = `${l.shx || 0}px ${l.shy || 0}px ${l.shb || 0}px ${c}`; if (l.type !== 'path') s += isT(l) ? `text-shadow:${v};` : `box-shadow:${v};`; }
     if (l.bl) s += `filter:blur(${l.bl}px);`;
     return s;
   };
@@ -2479,12 +2509,17 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     return fetchCache.get(url);
   };
   /** url(…) pointing outside the document (http, relative, blob) → data URL */
+  const HREF = /\shref="(?!data:|#)([^"]+)"/g;
+  /** url(#id) (an SVG gradient or pattern of a path layer) stays: it points inside the document */
   async function inlineUrls(html) {
-    const found = new Set(); html.replace(/url\((&quot;|["']?)(?!data:)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => { found.add(u.trim()); return m; });
+    const found = new Set(); html.replace(/url\((&quot;|["']?)(?!data:|#)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => { found.add(u.trim()); return m; });
+    html.replace(HREF, (m, u) => { found.add(u.replace(/&amp;/g, '&')); return m; }); // images inside path layers' SVG
     if (!found.size) return html;
     const map = new Map(await Promise.all([...found].map(async (u) => { try { return [u, await asDataUrl(new URL(u, location.href).href)]; } catch (e) { return [u, u]; } })));
-    return html.replace(/url\((&quot;|["']?)(?!data:)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => `url(${q}${map.get(u.trim()) || u}${q})`);
+    return html.replace(/url\((&quot;|["']?)(?!data:|#)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => `url(${q}${map.get(u.trim()) || u}${q})`)
+      .replace(HREF, (m, u) => ` href="${map.get(u.replace(/&amp;/g, '&')) || u}"`);
   }
+  RT.asDataUrl = asDataUrl;
   /** Parsed @font-face rules of the Google Fonts stylesheets on the page (base set + fonts loaded by the editor) */
   const faceCache = new Map();
   const parseRange = (v) => (v ? v.split(',').map((x) => { const [a, b] = x.trim().replace(/^U\+/i, '').split('-'); const lo = parseInt(a.replace(/\?/g, '0'), 16); return [lo, b ? parseInt(b, 16) : parseInt(a.replace(/\?/g, 'F'), 16)]; }) : null);
@@ -2512,6 +2547,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     const blocks = await Promise.all(faces.map(async (f) => { try { return f.block.replace(f.url, await asDataUrl(f.url)); } catch (e) { return f.block; } }));
     return blocks.join('');
   }
+  RT.fontCSS = fontCSS;
   /** Largest scale the browser can rasterize for this canvas (canvas area / side limits) */
   const maxScale = (w, h) => Math.max(0.1, Math.min(16384 / w, 16384 / h, Math.sqrt(64e6 / (w * h))));
   /** Renders slide i of design d to a canvas at scale s */
@@ -2586,18 +2622,18 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
   const bytes = async (b) => new Uint8Array(await b.arrayBuffer());
   /** Renders and downloads; `onStep(i, n)` reports progress. Several images are zipped into one file. */
   async function runExport(d, pgs, s, fmt, onStep) {
-    const [w, h] = RATIOS[d.ratio], base = fileBase(d), multi = pgs.length > 1, ext = fmt === 'png' ? 'png' : 'jpg';
+    const [w, h] = RATIOS[d.ratio], base = fileBase(d), multi = pgs.length > 1, ext = fmt === 'png' ? 'png' : fmt === 'svg' ? 'svg' : 'jpg';
     const out = [];
     for (const [k, i] of pgs.entries()) {
       onStep(k, pgs.length);
       if (fmt === 'pdf') { const c = await renderCanvas(d, i, s, true); out.push({ data: await bytes(await toBlob(c, 'image/jpeg', 0.95)), w, h, pxW: c.width, pxH: c.height }); }
-      else out.push({ name: `${base}${multi || d.pages.length > 1 ? '-' + String(i + 1).padStart(2, '0') : ''}.${ext}`, blob: await renderBlob(d, i, s, fmt) });
+      else out.push({ name: `${base}${multi || d.pages.length > 1 ? '-' + String(i + 1).padStart(2, '0') : ''}.${ext}`, blob: fmt === 'svg' ? new Blob([await RT.slideSVG(d, i)], { type: 'image/svg+xml' }) : await renderBlob(d, i, s, fmt) });
     }
     if (fmt === 'pdf') return download(pdfFromJpegs(out), base + '.pdf');
     if (!multi) return download(out[0].blob, out[0].name);
     download(zipStore(await Promise.all(out.map(async (f) => ({ name: f.name, data: await bytes(f.blob) })))), base + '.zip');
   }
-  const FMT_KEY = { PNG: 'png', JPG: 'jpeg', PDF: 'pdf' }, FMT_SET = { png: 'PNG', jpeg: 'JPG', pdf: 'PDF' };
+  const FMT_KEY = { PNG: 'png', JPG: 'jpeg', PDF: 'pdf', SVG: 'svg' }, FMT_SET = { png: 'PNG', jpeg: 'JPG', pdf: 'PDF', svg: 'SVG' };
   openExport = function (d, pi) {
     const n = d.pages.length, [w, h] = RATIOS[d.ratio], top = Math.floor(maxScale(w, h) * 10) / 10;
     const scales = [1, 2, 3].filter((x) => x <= top).concat(top < 1 ? [top] : []);
@@ -2605,13 +2641,13 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     const fmtOpt = (v, l) => `<option value="${v}" ${v === defF ? 'selected' : ''}>${l}</option>`;
     modal(`<div class="mh"><h2>Export</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
     <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[pi], d.ratio, 96, 120)}<div class="grow" style="display:flex;flex-direction:column;gap:12px">
-      <div class="g2f"><label class="lab">Format<select class="field" id="exF">${fmtOpt('png', 'PNG · lossless')}${fmtOpt('jpeg', 'JPG · smaller file')}${fmtOpt('pdf', 'PDF · document')}</select></label>
+      <div class="g2f"><label class="lab">Format<select class="field" id="exF">${fmtOpt('png', 'PNG · lossless')}${fmtOpt('jpeg', 'JPG · smaller file')}${fmtOpt('pdf', 'PDF · document')}${fmtOpt('svg', 'SVG · vector')}</select></label>
       <label class="lab">Size<select class="field" id="exS">${scales.map((x) => `<option value="${x}" ${x === defS ? 'selected' : ''}>${x}× · ${Math.round(w * x)} × ${Math.round(h * x)} px</option>`).join('')}</select></label></div>
       <label class="lab">Slides<select class="field" id="exP"><option value="cur">Current slide (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} slides</option>` : ''}</select></label></div></div>
       <p class="xs-t muted" id="exM">Same layout, fonts and images as the canvas.</p></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="exGo">${ic('download', 18)}Download</button></div>`, {
       onMount: (bg, close) => {
-        const hint = () => { const f = $('#exF', bg).value, all = $('#exP', bg).value === 'all' && n > 1; $('#exM', bg).textContent = f === 'pdf' ? `One PDF${all ? ` with ${n} pages` : ''}, ready for LinkedIn documents and print.` : all ? `${n} ${f === 'png' ? 'PNG' : 'JPG'} files in one ZIP, numbered in slide order.` : 'Same layout, fonts and images as the canvas.'; };
+        const hint = () => { const f = $('#exF', bg).value, all = $('#exP', bg).value === 'all' && n > 1; $('#exM', bg).textContent = f === 'svg' ? `${all ? `${n} SVG files in a ZIP` : 'One SVG file'}: shapes, paths and text stay editable in design tools. Size doesn’t apply.` : f === 'pdf' ? `One PDF${all ? ` with ${n} pages` : ''}, ready for LinkedIn documents and print.` : all ? `${n} ${f === 'png' ? 'PNG' : 'JPG'} files in one ZIP, numbered in slide order.` : 'Same layout, fonts and images as the canvas.'; };
         bg.addEventListener('change', hint); hint();
         bg.addEventListener('click', async (e) => {
           const go = e.target.closest('#exGo'); if (!go || go.disabled) return;
@@ -4123,6 +4159,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     s.forEach((x, i) => { if (x.p == null) x.p = (i / (s.length - 1)) * 100; });
     return { kind, a: ((Math.round(a) % 360) + 360) % 360, head, s };
   }
+  RT.gParse = gParse; // path layers draw CSS gradients as SVG ones
   const gCss = (g, k = 1) => {
     const st = [...g.s].sort((x, y) => x.p - y.p).map((x) => `${cssCol(x.c, x.o * k)} ${r1(x.p)}%`).join(', ');
     return g.kind === 'linear' ? `linear-gradient(${Math.round(g.a)}deg, ${st})` : `${g.kind}-gradient(${g.head ? g.head + ', ' : ''}${st})`;
@@ -4237,7 +4274,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   lstyle = function (l) {
     migrateLayer(l);
     let s = _ls16(l);
-    if (l.type === 'text' || l.icon || typeof l.fill !== 'string') return s;
+    if (l.type === 'text' || l.type === 'path' || l.icon || typeof l.fill !== 'string') return s;
     let bg = l.fill;
     if (fxOn(l) && /url\(/.test(bg)) {
       const u = fxUse(l);
@@ -4819,9 +4856,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 (function () {
   /* Items that can be dragged: the same buttons that add on click. Dropping places the new layer at the pointer;
      colors, fonts and suggestions dropped on a layer change that layer. */
-  const SRC = 'button[data-act="edShape"],button[data-act="edText"],button[data-act="edSugg"],button[data-act="edImg"],button[data-act="edLogo"],button[data-act="edAsset"],button[data-act="edFont"],button[data-act="edColor"],button[data-act="edTpl"],button[data-act="edClip"],button[data-act="edIcon"],button[data-act="edCombo"],[data-act="edBTpl"],[data-act="edTpl"]';
+  const SRC = 'button[data-act="edShape"],button[data-act="edText"],button[data-act="edSugg"],button[data-act="edImg"],button[data-act="edLogo"],button[data-act="edAsset"],button[data-act="edFont"],button[data-act="edColor"],button[data-act="edTpl"],button[data-act="edClip"],button[data-act="edIcon"],button[data-act="vShape"],button[data-act="edCombo"],[data-act="edBTpl"],[data-act="edTpl"]';
   const ONTO = new Set(['edColor', 'edFont', 'edSugg']); // act on the layer under the pointer when there is one
-  const PLACE = new Set(['edShape', 'edText', 'edSugg', 'edLogo', 'edAsset', 'edClip', 'edIcon']);
+  const PLACE = new Set(['edShape', 'edText', 'edSugg', 'edLogo', 'edAsset', 'edClip', 'edIcon', 'vShape']);
   const clamp9 = (n, a, b) => Math.max(a, Math.min(b, n));
   let drag = null, hold = null, ghost = null, hl = null, suppress = 0;
 
@@ -6032,7 +6069,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     svg.querySelectorAll('script,foreignObject').forEach((n) => n.remove());
     [...svg.querySelectorAll('*')].forEach((n) => [...n.attributes].forEach((a) => /^on/i.test(a.name) && n.removeAttribute(a.name)));
     const vb = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number), iw = vb.length === 4 ? vb[2] : parseFloat(svg.getAttribute('width')) || W0, ih = vb.length === 4 ? vb[3] : parseFloat(svg.getAttribute('height')) || H0;
-    const host = document.createElement('div'); host.style.cssText = `position:fixed;left:-99999px;top:0;width:${iw}px;height:${ih}px;visibility:hidden`;
+    // off screen and transparent, not visibility:hidden (inherited, it would hide every shape from the checks below)
+    const host = document.createElement('div'); host.style.cssText = `position:fixed;left:-99999px;top:0;width:${iw}px;height:${ih}px;opacity:0;pointer-events:none`;
     svg.setAttribute('width', iw); svg.setAttribute('height', ih); host.innerHTML = new XMLSerializer().serializeToString(svg); document.body.append(host);
     try {
       const live = host.querySelector('svg'), base = live.getBoundingClientRect(), texts = [];
@@ -6042,10 +6080,63 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         texts.push({ kind: 'text', name: txt.slice(0, 20), x: r.left - base.left, y: r.top - base.top, w: r.width + 4, h: r.height, text: txt, size: parseFloat(cs.fontSize) || 16, weight: parseInt(cs.fontWeight, 10) || 400, color: cs.fill && cs.fill !== 'none' ? cs.fill : cs.color, align: anchor === 'middle' ? 'center' : anchor === 'end' ? 'right' : 'left', font: STUDIO_FONTS.find((f) => cs.fontFamily.includes(f)) || 'Inter', letterSpacing: parseFloat(cs.letterSpacing) || 0 });
         t.remove();
       });
+      // simple shapes become editable vectors: plain-color fill and stroke, and no clip, mask, filter, dashes or markers on them
+      const vectors = [], NONE = (v) => !v || v === 'none';
+      const paint = (v, o) => {
+        v = String(v || 'none'); if (v === 'none' || !(o > 0)) return 'none';
+        const m = /^rgba?\(([^)]*)\)$/.exec(v); if (!m) return null; // gradients and patterns stay in the artwork
+        const p = m[1].split(/[\s,/]+/).filter(Boolean).map(parseFloat), a = (p.length > 3 ? p[3] : 1) * o;
+        return a >= 0.999 ? '#' + p.slice(0, 3).map((n) => Math.round(n).toString(16).padStart(2, '0')).join('') : `rgba(${p.slice(0, 3).map(Math.round).join(',')},${Math.round(a * 1000) / 1000})`;
+      };
+      const geom = (el) => {
+        const t = el.tagName.toLowerCase(), v = (k) => (el[k] && el[k].baseVal ? el[k].baseVal.value || 0 : 0);
+        if (t === 'path') return el.getAttribute('d');
+        if (t === 'rect') {
+          const x = v('x'), y = v('y'), w = v('width'), h = v('height'); if (w <= 0 || h <= 0) return null;
+          let rx = el.hasAttribute('rx') ? v('rx') : v('ry'), ry = el.hasAttribute('ry') ? v('ry') : rx; rx = Math.min(rx, w / 2); ry = Math.min(ry, h / 2);
+          return rx > 0 && ry > 0 ? `M${x + rx} ${y}H${x + w - rx}A${rx} ${ry} 0 0 1 ${x + w} ${y + ry}V${y + h - ry}A${rx} ${ry} 0 0 1 ${x + w - rx} ${y + h}H${x + rx}A${rx} ${ry} 0 0 1 ${x} ${y + h - ry}V${y + ry}A${rx} ${ry} 0 0 1 ${x + rx} ${y}Z` : `M${x} ${y}H${x + w}V${y + h}H${x}Z`;
+        }
+        if (t === 'circle' || t === 'ellipse') {
+          const cx = v('cx'), cy = v('cy'), rx = v(t === 'circle' ? 'r' : 'rx'), ry = v(t === 'circle' ? 'r' : 'ry'); if (rx <= 0 || ry <= 0) return null;
+          return `M${cx - rx} ${cy}A${rx} ${ry} 0 1 0 ${cx + rx} ${cy}A${rx} ${ry} 0 1 0 ${cx - rx} ${cy}Z`;
+        }
+        if (t === 'line') return `M${v('x1')} ${v('y1')}L${v('x2')} ${v('y2')}`;
+        const pts = (el.getAttribute('points') || '').trim(); return pts ? 'M' + pts + (t === 'polygon' ? 'Z' : '') : null;
+      };
+      const NAMES = { path: 'Vector', rect: 'Rectangle', circle: 'Circle', ellipse: 'Ellipse', line: 'Line', polyline: 'Polyline', polygon: 'Polygon' };
+      live.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon').forEach((el) => {
+        if (el.closest('defs,clipPath,mask,pattern,symbol,marker')) return;
+        let op = 1;
+        for (let n = el; n && n !== live; n = n.parentElement) {
+          const c = getComputedStyle(n);
+          if (c.display === 'none' || c.visibility === 'hidden' || !NONE(c.clipPath) || !NONE(c.maskImage) || !NONE(c.filter) || n.hasAttribute('mask') || n.hasAttribute('clip-path')) return;
+          op *= parseFloat(c.opacity); if (!(op > 0)) return;
+        }
+        const cs = getComputedStyle(el), fill = paint(cs.fill, parseFloat(cs.fillOpacity)), stroke = paint(cs.stroke, parseFloat(cs.strokeOpacity));
+        if (fill === null || stroke === null) return;
+        if (stroke !== 'none' && (!NONE(cs.strokeDasharray) || !NONE(cs.markerStart) || !NONE(cs.markerMid) || !NONE(cs.markerEnd))) return;
+        const d = geom(el), m = el.getCTM(); if (!d || !m) return;
+        const segs = PATH.transform(PATH.parse(d), m); if (!PATH.bounds(segs)) return;
+        const sw = stroke !== 'none' ? (parseFloat(cs.strokeWidth) || 1) * Math.sqrt(Math.abs(m.a * m.d - m.b * m.c)) : 0;
+        if (fill !== 'none' || sw) vectors.push({ segs, fill, stroke: sw ? stroke : null, sw, fr: cs.fillRule === 'evenodd', cap: cs.strokeLinecap, join: cs.strokeLinejoin, op, name: el.id || NAMES[el.tagName.toLowerCase()] });
+        el.remove();
+      });
+      // anything left (gradients, images, masks…) is drawn by the browser as one picture behind the vectors
+      const artwork = [...live.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon,image,use,text')].some((n) => !n.closest('defs,clipPath,mask,pattern,symbol,marker'));
       const rest = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(live)).replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29');
-      return { iw, ih, texts, rest };
+      return { iw, ih, texts, rest, vectors, artwork };
     } finally { host.remove(); }
   }
+  /** A vector read by svgLayers → a path layer, scaled by k and moved by (ox, oy) */
+  function vecLayer(v, k, ox, oy) {
+    const segs = PATH.mapPts(v.segs, (x, y) => [ox + x * k, oy + y * k]), b = PATH.bounds(segs), w = Math.max(1, b.w), h = Math.max(1, b.h);
+    return {
+      id: uid(), type: 'path', name: String(v.name).slice(0, 40), x: b.x, y: b.y, w, h, rot: 0, op: Math.round(v.op * 1000) / 1000,
+      d: PATH.toD(PATH.mapPts(segs, (x, y) => [x - b.x, y - b.y])), vw: w, vh: h, fill: v.fill,
+      ...(v.stroke ? { stroke: v.stroke, sw: Math.round(v.sw * k * 100) / 100, cap: v.cap, join: v.join } : {}), ...(v.fr ? { fr: 'evenodd' } : {}),
+    };
+  }
+  RT.svgLayers = svgLayers; RT.vecLayer = vecLayer; // pasting SVG (v29)
   /* HTML: laid out in a sandboxed frame (no scripts), then every box and text is read back */
   async function htmlLayers(src, W, H) {
     const f = document.createElement('iframe'); f.setAttribute('sandbox', 'allow-same-origin'); f.style.cssText = `position:fixed;left:-99999px;top:0;width:${W}px;height:${H}px;border:0;visibility:hidden`;
@@ -6106,7 +6197,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       } else if (kind === 'svg') {
         wait('Reading the SVG…'); const s = await svgLayers(await readAs(file, 'readAsText'), 1080, 1080);
         size = targetSize(d, s.iw, s.ih); const k = Math.min(size.W / s.iw, size.H / s.ih), ox = (size.W - s.iw * k) / 2, oy = (size.H - s.ih * k) / 2;
-        layers = [BG(size.W, size.H, '#ffffff'), Im(ox, oy, s.iw * k, s.ih * k, `url('${s.rest}') center/100% 100% no-repeat`, { name: 'Artwork' })];
+        layers = [BG(size.W, size.H, '#ffffff'), ...(s.artwork ? [Im(ox, oy, s.iw * k, s.ih * k, `url('${s.rest}') center/100% 100% no-repeat`, { name: 'Artwork' })] : []), ...s.vectors.map((v) => vecLayer(v, k, ox, oy))];
         s.texts.forEach((t) => { const sz = Math.round(t.size * k), room = Math.max(6, sz * 0.25), x0 = t.x * k + ox - (t.align === 'center' ? room / 2 : t.align === 'right' ? room : 0); const l = Tx(x0, t.y * k + oy, t.w * k + room, t.text, { name: t.name, size: sz, weight: t.weight, color: t.color, align: t.align, font: t.font, ls: t.letterSpacing * k }); l.h = t.h * k; layers.push(l); });
       } else {
         const src = await readAs(file, 'readAsDataURL'), img = await loadImg(src);
@@ -7855,6 +7946,391 @@ function zoomToSelection() {
   const altOff = () => { if (MEAS.alt) { MEAS.alt = false; measure(); } };
   addEventListener('keyup', (e) => { if (e.key === 'Alt') altOff(); }, true);
   addEventListener('blur', altOff);
+})();
+
+/* ============ v29 · vectors: shapes, pen tool (P), point editing, SVG paste and export ============ */
+/* Path layers ({ type: 'path', d, vw, vh, shape?, fill, stroke, sw, cap, join, fr }) are drawn by pathHTML. Points are
+   edited in the layer's own axes (rotation and flips undone), so editing a rotated vector feels like editing it upright. */
+(function () {
+  Object.assign(IC, { pen: '<path d="M15.7 21.3a1 1 0 0 1-1.4 0l-1.6-1.6a1 1 0 0 1 0-1.4l5.6-5.6a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4z"/><path d="m18 13-1.4-6.9a1 1 0 0 0-.7-.8L3.2 2a1 1 0 0 0-1.2 1.2l3.3 12.7a1 1 0 0 0 .8.7L13 18"/><path d="m2.3 2.3 7.3 7.3"/><circle cx="11" cy="11" r="2"/>' });
+  const PEN = { on: false, pts: [], hover: null, closed: false };
+  const VE = { id: null, subs: null, sel: null }; // point editing: layer id, nodes in the layer's own pixels, selected node { s, i }
+  const isPath = (l) => l && l.type === 'path';
+  const veLayer = () => (VE.id && ED.d ? curP().layers.find((x) => x.id === VE.id) : null);
+  const pagePt = (e) => { const r = $('#scaler').getBoundingClientRect(); return [(e.clientX - r.left) / ED.zoom, (e.clientY - r.top) / ED.zoom]; };
+  const flips = (l) => [l.fx === true ? -1 : 1, l.fy === true ? -1 : 1];
+  /** Layer pixels → page pixels (the layer is drawn rotate(rot) · scale(flip) around its center) */
+  function fromLocal(l, lx, ly) {
+    const [sx, sy] = flips(l), t = ((l.rot || 0) * Math.PI) / 180, vx = (lx - l.w / 2) * sx, vy = (ly - l.h / 2) * sy;
+    return [l.x + l.w / 2 + vx * Math.cos(t) - vy * Math.sin(t), l.y + l.h / 2 + vx * Math.sin(t) + vy * Math.cos(t)];
+  }
+  function toLocal(l, px, py) {
+    const [sx, sy] = flips(l), t = (-(l.rot || 0) * Math.PI) / 180, vx = px - l.x - l.w / 2, vy = py - l.y - l.h / 2;
+    return [(vx * Math.cos(t) - vy * Math.sin(t)) * sx + l.w / 2, (vx * Math.sin(t) + vy * Math.cos(t)) * sy + l.h / 2];
+  }
+  const nodesOf = (l) => PATH.toNodes(PATH.scale(PATH.parse(l.d), l.w / (l.vw || l.w), l.h / (l.vh || l.h)));
+  /** A path layer whose box is the bounds of `segs` (page pixels) */
+  function pathLayer(segs, o = {}) {
+    const b = PATH.bounds(segs) || { x: 0, y: 0, w: 1, h: 1 }, w = Math.max(1, b.w), h = Math.max(1, b.h);
+    return { id: uid(), type: 'path', name: 'Vector', x: b.x, y: b.y, w, h, rot: 0, op: 1, d: PATH.toD(PATH.mapPts(segs, (x, y) => [x - b.x, y - b.y])), vw: w, vh: h, fill: 'none', ...o };
+  }
+  const writeNodes = (l) => { l.d = PATH.toD(PATH.fromNodes(VE.subs)); l.vw = l.w; l.vh = l.h; refreshL(l); };
+  /** After an edit: the box becomes the path's bounds again, without moving the drawing (rotation and flips included) */
+  function refit(l) {
+    const b = PATH.bounds(PATH.fromNodes(VE.subs)); if (!b) return;
+    const w = Math.max(1, b.w), h = Math.max(1, b.h);
+    if (Math.abs(b.x) < 0.01 && Math.abs(b.y) < 0.01 && Math.abs(w - l.w) < 0.01 && Math.abs(h - l.h) < 0.01) return;
+    const c = fromLocal(l, b.x + b.w / 2, b.y + b.h / 2);
+    VE.subs.forEach((sp) => sp.pts.forEach((n) => PATH.moveNode(n, -b.x, -b.y)));
+    Object.assign(l, { w, h, x: c[0] - w / 2, y: c[1] - h / 2 }); writeNodes(l);
+  }
+
+  /* ---------- overlay: the pen's path so far, or the points of the path being edited ---------- */
+  function drawVec() {
+    const v = $('#vec'); if (!v) return;
+    const z = 1 / ED.zoom, A = 'var(--accent)', sq = (x, y, on, attrs = '') => `<rect x="${x - 4 * z}" y="${y - 4 * z}" width="${8 * z}" height="${8 * z}" fill="${on ? A : '#fff'}" stroke="${A}" stroke-width="${1.5 * z}"${attrs}/>`;
+    const hd = (x, y, hx, hy, attrs) => `<line x1="${x}" y1="${y}" x2="${hx}" y2="${hy}" stroke="${A}" stroke-width="${z}"/><circle cx="${hx}" cy="${hy}" r="${3.5 * z}" fill="#fff" stroke="${A}" stroke-width="${1.5 * z}"${attrs}/>`;
+    if (PEN.on) {
+      const P = PEN.pts, last = P[P.length - 1], hv = PEN.hover; let h = '';
+      if (P.length) h += `<path d="${PATH.toD(PATH.fromNodes([{ closed: false, pts: P }]))}" fill="none" stroke="${A}" stroke-width="${1.5 * z}"/>`;
+      if (last && hv) h += `<path d="M${last.x} ${last.y}${last.out ? `C${last.out[0]} ${last.out[1]} ${hv[0]} ${hv[1]} ${hv[0]} ${hv[1]}` : `L${hv[0]} ${hv[1]}`}" fill="none" stroke="${A}" stroke-width="${z}" stroke-dasharray="${4 * z} ${3 * z}"/>`;
+      if (last && last.out) h += hd(last.x, last.y, last.out[0], last.out[1], '') + (last.in ? hd(last.x, last.y, last.in[0], last.in[1], '') : '');
+      const closing = P.length > 1 && hv && Math.hypot(hv[0] - P[0].x, hv[1] - P[0].y) < 8 * z;
+      P.forEach((n, i) => { h += sq(n.x, n.y, i === 0 && closing); });
+      v.innerHTML = `<svg style="left:0;top:0;width:1px;height:1px">${h}</svg>`; return;
+    }
+    const l = veLayer();
+    if (!l || !VE.subs) { v.innerHTML = ''; return; }
+    const [sx, sy] = flips(l), dd = PATH.toD(PATH.fromNodes(VE.subs)); // the outline, and a wider invisible copy to click on (adds a point)
+    let h = `<path d="${dd}" fill="none" stroke="${A}" stroke-width="${1.5 * z}"/><path d="${dd}" fill="none" data-ve="edge"/>`;
+    VE.subs.forEach((sp, s) => sp.pts.forEach((n, i) => {
+      const on = VE.sel && VE.sel.s === s && VE.sel.i === i;
+      if (n.in) h += hd(n.x, n.y, n.in[0], n.in[1], ` data-ve="in" data-s="${s}" data-i="${i}"`);
+      if (n.out) h += hd(n.x, n.y, n.out[0], n.out[1], ` data-ve="out" data-s="${s}" data-i="${i}"`);
+      h += sq(n.x, n.y, on, ` data-ve="pt" data-s="${s}" data-i="${i}"`);
+    }));
+    v.innerHTML = `<div class="ve-box" style="left:${l.x}px;top:${l.y}px;width:${l.w}px;height:${l.h}px;transform:rotate(${l.rot || 0}deg) scale(${sx},${sy})"><svg style="left:0;top:0;width:${l.w}px;height:${l.h}px">${h}</svg></div>`;
+  }
+
+  /* ---------- pen tool ---------- */
+  function startPen() {
+    if (persist.readOnly) return; veEnd(true);
+    Object.assign(PEN, { on: true, pts: [], hover: null, closed: false }); ED.sel = null; ED.ms = [];
+    const s = $('#edScroll'); s && s.classList.add('pen-on'); drawSel(); edProps(); drawVec(); ED.tab === 'elements' && edPanel();
+    toast('Pen: click to add points, drag to curve. Click the first point to close; Enter or Esc to finish.');
+  }
+  function stopPen() {
+    Object.assign(PEN, { on: false, pts: [], hover: null, closed: false });
+    const s = $('#edScroll'); s && s.classList.remove('pen-on'); drawVec(); ED.tab === 'elements' && $('#edPanel') && edPanel();
+  }
+  function penFinish() {
+    const pts = PEN.pts, closed = PEN.closed && pts.length > 2; stopPen();
+    if (pts.length < 2) return;
+    addLayer(pathLayer(PATH.fromNodes([{ closed, pts }]), { name: closed ? 'Shape' : 'Vector', stroke: autoColor(), sw: 4, cap: 'round', join: 'round' }));
+  }
+  /** Shift: lines at 45° steps from the previous point */
+  const snap45 = (a, x, y) => { const d = Math.hypot(x - a.x, y - a.y), t = Math.round(Math.atan2(y - a.y, x - a.x) / (Math.PI / 4)) * (Math.PI / 4); return [a.x + d * Math.cos(t), a.y + d * Math.sin(t)]; };
+  function penDown(e) {
+    const P = PEN.pts, p = pagePt(e);
+    if (P.length > 1 && Math.hypot(p[0] - P[0].x, p[1] - P[0].y) < 8 / ED.zoom) { PEN.closed = true; return penFinish(); }
+    const [x, y] = e.shiftKey && P.length ? snap45(P[P.length - 1], p[0], p[1]) : p, n = { x, y, in: null, out: null }, sx = e.clientX, sy = e.clientY;
+    P.push(n); drawVec();
+    const mv = (ev) => { if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return; const q = pagePt(ev); n.out = q; n.in = [2 * n.x - q[0], 2 * n.y - q[1]]; PEN.hover = null; drawVec(); };
+    const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  }
+
+  /* ---------- point editing (double-click a vector, or Enter) ---------- */
+  function veStart(l) {
+    if (!isPath(l) || l.locked || persist.readOnly) return; stopPen();
+    if (l.shape) mutate(() => { l.d = PATH.toD(pathSegs(l)); l.vw = l.w; l.vh = l.h; delete l.shape; }, () => { refreshL(l); edPages(); }); // a polygon or star becomes free points
+    Object.assign(VE, { id: l.id, subs: nodesOf(l), sel: null }); ED.sel = l.id; ED.ms = [];
+    drawSel(); drawVec(); edProps();
+    toast('Editing points: drag points and handles, click the outline to add a point, Delete removes one. Enter or Esc when done.');
+  }
+  function veEnd(quiet) { if (!VE.id) return; Object.assign(VE, { id: null, subs: null, sel: null }); drawVec(); if (!quiet) { drawSel(); edProps(); } }
+  /** Two handles on one line through the point: dragging one keeps the other on that line */
+  const smooth = (n) => n.in && n.out && Math.abs(Math.abs(Math.atan2(n.in[1] - n.y, n.in[0] - n.x) - Math.atan2(n.out[1] - n.y, n.out[0] - n.x)) - Math.PI) < 0.035;
+  function veDown(e) {
+    const l = veLayer(); if (!l) return veEnd(true);
+    if (e.button !== 0 || ED.space) return;
+    const pre = snap(), hit = e.target.closest && e.target.closest('[data-ve]'), start = toLocal(l, ...pagePt(e));
+    let tg = hit && hit.dataset.ve !== 'edge' ? { s: +hit.dataset.s, i: +hit.dataset.i, part: hit.dataset.ve } : null, added = false;
+    if (!tg) { // on the outline: a new point there (the curve keeps its shape)
+      const nr = PATH.nearest(VE.subs, start[0], start[1]);
+      if (nr && nr.d < 8 / ED.zoom) { tg = { s: nr.s, i: PATH.splitSeg(VE.subs[nr.s], nr.i, nr.t), part: 'pt' }; added = true; }
+    }
+    if (!tg) { veEnd(); return; } // elsewhere: done editing, and the click selects as usual
+    e.preventDefault(); e.stopImmediatePropagation();
+    VE.sel = { s: tg.s, i: tg.i }; if (added) writeNodes(l); drawVec();
+    const node = VE.subs[tg.s].pts[tg.i], orig = JSON.parse(JSON.stringify(node)), wasSmooth = smooth(orig), sx = e.clientX, sy = e.clientY; let moved = added;
+    const mv = (ev) => {
+      if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 2) return; moved = true;
+      const q = toLocal(l, ...pagePt(ev)), dx = q[0] - start[0], dy = q[1] - start[1];
+      if (tg.part === 'pt') { Object.assign(node, JSON.parse(JSON.stringify(orig))); PATH.moveNode(node, dx, dy); }
+      else {
+        const h = tg.part, o = h === 'in' ? 'out' : 'in', p = [orig[h][0] + dx, orig[h][1] + dy]; node[h] = p;
+        if (wasSmooth && !ev.altKey) { const len = Math.hypot(orig[o][0] - orig.x, orig[o][1] - orig.y), a = Math.atan2(p[1] - node.y, p[0] - node.x) + Math.PI; node[o] = [node.x + Math.cos(a) * len, node.y + Math.sin(a) * len]; }
+      }
+      writeNodes(l); drawVec();
+    };
+    const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); if (moved) { refit(l); commit(pre); edPages(); } drawVec(); drawSel(); };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  }
+  /** Double-click a point: corner ↔ smooth (handles along the neighbours' direction, a third of the way) */
+  function veToggle(s, i) {
+    const l = veLayer(), sp = VE.subs && VE.subs[s], n = sp && sp.pts[i]; if (!n) return;
+    const pre = snap();
+    if (n.in || n.out) { n.in = n.out = null; }
+    else {
+      const P = sp.pts, a = P[i - 1] || (sp.closed ? P[P.length - 1] : null), b = P[i + 1] || (sp.closed ? P[0] : null); if (!a && !b) return;
+      const ax = a ? a.x : n.x, ay = a ? a.y : n.y, bx = b ? b.x : n.x, by = b ? b.y : n.y, dl = Math.hypot(bx - ax, by - ay) || 1, ux = (bx - ax) / dl, uy = (by - ay) / dl;
+      const la = a ? Math.hypot(n.x - a.x, n.y - a.y) / 3 : 0, lb = b ? Math.hypot(b.x - n.x, b.y - n.y) / 3 : 0;
+      n.in = a ? [n.x - ux * la, n.y - uy * la] : null; n.out = b ? [n.x + ux * lb, n.y + uy * lb] : null;
+    }
+    writeNodes(l); refit(l); commit(pre); drawVec(); drawSel(); edPages();
+  }
+  function veDelete() {
+    const l = veLayer(); if (!l || !VE.sel) return;
+    const pre = snap(), sp = VE.subs[VE.sel.s]; sp.pts.splice(VE.sel.i, 1);
+    VE.subs = VE.subs.filter((x) => x.pts.length > 1); VE.sel = null;
+    if (!VE.subs.length) { veEnd(true); mutate(() => { curP().layers = curP().layers.filter((x) => x.id !== l.id); ED.sel = null; }); return; }
+    writeNodes(l); refit(l); commit(pre); drawVec(); drawSel(); edPages();
+  }
+  function veNudge(dx, dy) {
+    const l = veLayer(), n = l && VE.sel && VE.subs[VE.sel.s].pts[VE.sel.i]; if (!n) return;
+    const [sx, sy] = flips(l), t = (-(l.rot || 0) * Math.PI) / 180, pre = snap(); // page direction → layer axes
+    PATH.moveNode(n, (dx * Math.cos(t) - dy * Math.sin(t)) * sx, (dx * Math.sin(t) + dy * Math.cos(t)) * sy);
+    writeNodes(l); refit(l); commit(pre); drawVec(); drawSel();
+  }
+
+  /* ---------- shapes in the Elements panel ---------- */
+  const VSH = {
+    poly: ['Polygon', { k: 'poly', n: 6 }, 300, 300], tri: ['Triangle', { k: 'poly', n: 3 }, 320, 280], star: ['Star', { k: 'star', n: 5, r: 0.45 }, 300, 300],
+    arrow: ['Arrow', { k: 'arrow', t: 0.36, hd: 0.4 }, 380, 180], line: ['Line', { k: 'line' }, 420, 24],
+  };
+  const vPrev = (k) => { const [, sh, w, h] = VSH[k], s = 26 / Math.max(w, h), line = sh.k === 'line'; return `<svg width="26" height="26" viewBox="-1 -1 28 28" aria-hidden="true"><path transform="translate(${(26 - w * s) / 2} ${(26 - h * s) / 2})" d="${PATH.toD(PATH.shapePath(sh, w * s, h * s))}" fill="${line ? 'none' : 'currentColor'}" stroke="currentColor" stroke-width="${line ? 2.5 : 0}" stroke-linecap="round"/></svg>`; };
+  Object.assign(ACT, {
+    vPen: () => (PEN.on ? stopPen() : startPen()),
+    vShape: (a) => {
+      const [nm, sh, w, h] = VSH[a.dataset.k], [W, H] = dim(), line = sh.k === 'line', c = bgLum() > 0.6 ? '#0f172a' : edKit().colors[0] || '#fd0e35';
+      addLayer({ id: uid(), type: 'path', name: nm, x: Math.round(W / 2 - w / 2), y: Math.round(H / 2 - h / 2), w, h, rot: 0, op: 1, shape: { ...sh }, d: PATH.toD(PATH.shapePath(sh, w, h)), vw: w, vh: h, fill: line ? 'none' : c, ...(line ? { stroke: autoColor(), sw: 6, cap: 'round' } : {}) });
+    },
+    vEdit: () => veStart(curL()),
+    vNoFill: () => { const l = curL(); isPath(l) && mutate(() => { l.fill = 'none'; }); },
+    vCap: (a) => { const l = curL(); isPath(l) && mutate(() => { l.cap = a.dataset.v; }); },
+    vRule: () => { const l = curL(); isPath(l) && mutate(() => { if (l.fr === 'evenodd') delete l.fr; else l.fr = 'evenodd'; }); },
+    /** A CSS-clipped shape (triangle, star… from "More shapes") → a vector with the same outline */
+    vConvert: () => {
+      const l = curL(), m = l && /^polygon\((.*)\)$/.exec(l.clip || ''); if (!m) return;
+      const pts = m[1].split(',').map((p) => p.trim().split(/\s+/).map((v, j) => (v.endsWith('%') ? (parseFloat(v) / 100) * (j ? l.h : l.w) : parseFloat(v) || 0)));
+      mutate(() => { Object.assign(l, { type: 'path', d: PATH.toD([{ c: 'M', p: pts[0] }, ...pts.slice(1).map((p) => ({ c: 'L', p })), { c: 'Z', p: [] }]), vw: l.w, vh: l.h }); delete l.clip; delete l.r; });
+      toast('Converted to a vector. Double-click it to edit its points.');
+    },
+  });
+  const _pn29 = edPanel;
+  edPanel = function () {
+    const r = _pn29.apply(this, arguments), p = $('#edPanel');
+    if (p && ED.tab === 'elements') {
+      const at = p.querySelector('.es7') || p.querySelector('h3');
+      at && at.insertAdjacentHTML('afterend', `<span class="label" style="margin-top:6px">Vectors</span><div class="el7grid"><button class="el7${PEN.on ? ' on' : ''}" data-n="pen vector path draw" data-act="vPen" title="Pen (P)" aria-pressed="${PEN.on}">${ic('pen', 22)}</button>${Object.keys(VSH).map((k) => `<button class="el7" data-n="${VSH[k][0].toLowerCase()} vector" data-act="vShape" data-k="${k}" title="${VSH[k][0]}">${vPrev(k)}</button>`).join('')}</div>`);
+    }
+    return r;
+  };
+
+  /* ---------- properties: a Shape section for vectors ---------- */
+  const _ep29 = edProps;
+  edProps = function () {
+    const r = _ep29.apply(this, arguments), l = curL(), b = $('#edProps .body');
+    if (!l || ED.rtab !== 'design' || !b) return r;
+    let h = '';
+    if (isPath(l)) {
+      const s = l.shape, rng = (k, lbl, min, max, step, v) => `<label class="lab">${lbl}<input type="range" min="${min}" max="${max}" step="${step}" data-v29="${k}" value="${v}"></label>`;
+      if (s && (s.k === 'poly' || s.k === 'star')) h += rng('n', s.k === 'star' ? 'Points' : 'Sides', 3, s.k === 'star' ? 24 : 12, 1, s.n);
+      if (s && s.k === 'star') h += rng('r', 'Inner radius', 0.1, 0.95, 0.01, s.r ?? 0.45);
+      if (s && s.k === 'arrow') h += rng('t', 'Shaft', 0.1, 1, 0.01, s.t ?? 0.36) + rng('hd', 'Head length', 0.1, 0.9, 0.01, s.hd ?? 0.4);
+      h += `<div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn secondary sm" data-act="vEdit" title="Double-click the vector, or press Enter">${ic('pen', 16)}${VE.id === l.id ? 'Editing points' : 'Edit points'}</button>${l.fill && l.fill !== 'none' ? '<button class="btn secondary sm" data-act="vNoFill">No fill</button>' : ''}</div>`;
+      if (l.stroke) h += `<div><span class="label">Line ends</span><div class="seg">${[['round', 'Round'], ['square', 'Square'], ['butt', 'Flat']].map(([v, t]) => `<button class="${(l.cap || 'round') === v ? 'on' : ''}" data-act="vCap" data-v="${v}">${t}</button>`).join('')}</div></div>`;
+      h += `<div class="row sp"><span class="sm-t">Even-odd fill<br><span class="xs-t muted">Overlapping parts become holes</span></span><button class="switch ${l.fr === 'evenodd' ? 'on' : ''}" data-act="vRule" aria-label="Even-odd fill"></button></div>`;
+    } else if (/^polygon\(/.test(l.clip || '') && l.type !== 'text' && !l.icon) {
+      h = '<button class="btn secondary sm" data-act="vConvert">Convert to vector</button><p class="xs-t muted">Then edit its points, or give it a stroke that follows the outline.</p>';
+    }
+    if (!h) return r;
+    const sec = document.createElement('section'); sec.className = 'ps9'; sec.dataset.sec = 'shape';
+    sec.innerHTML = `<div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="shape" aria-expanded="true">Shape${ic('chevD', 14)}</button><span class="ps9-a"></span></div><div class="ps9-b">${h}</div>`;
+    const pos = b.querySelector('.ps9[data-sec=pos]'); pos ? pos.after(sec) : b.prepend(sec);
+    return r;
+  };
+  document.addEventListener('input', (e) => {
+    const t = e.target; if (!t.dataset || !t.dataset.v29 || !t.closest('#edProps')) return;
+    const l = curL(); if (!isPath(l) || !l.shape) return; if (!ED.pre) ED.pre = snap();
+    l.shape[t.dataset.v29] = +t.value; l.d = PATH.toD(pathSegs(l)); l.vw = l.w; l.vh = l.h; refreshL(l); // the change event commits (property inputs)
+  });
+
+  /* ---------- pasting: SVG markup (e.g. "Copy as SVG"), images, or the studio's own layers ---------- */
+  const MARK = 'boga-studio-layers';
+  const PASTE = { internal: false };
+  async function pasteSVG(src) {
+    let s; try { s = await RT.svgLayers(src, 1080, 1080); } catch (e) { return toast('This SVG could not be read'); }
+    const [W, H] = dim(), m = Math.max(s.iw, s.ih), k = m > Math.min(W, H) * 0.8 ? (Math.min(W, H) * 0.8) / m : m < 120 ? (W * 0.3) / m : 1, ox = (W - s.iw * k) / 2, oy = (H - s.ih * k) / 2;
+    const ls = [...(s.artwork ? [Im(ox, oy, s.iw * k, s.ih * k, `url('${s.rest}') center/100% 100% no-repeat`, { name: 'Artwork' })] : []), ...s.vectors.map((v) => RT.vecLayer(v, k, ox, oy))];
+    s.texts.forEach((t) => { const sz = Math.round(t.size * k), room = Math.max(6, sz * 0.25), x0 = t.x * k + ox - (t.align === 'center' ? room / 2 : t.align === 'right' ? room : 0), tl = Tx(x0, t.y * k + oy, t.w * k + room, t.text, { name: t.name, size: sz, weight: t.weight, color: t.color, align: t.align, font: t.font, ls: t.letterSpacing * k }); tl.h = t.h * k; ls.push(tl); });
+    if (!ls.length) return toast('Nothing to paste in this SVG');
+    if (ls.length > 1) { const g = uid(); ls.forEach((l) => { l.gid = g; }); }
+    mutate(() => { curP().layers.push(...ls); ED.sel = ls.length === 1 ? ls[0].id : null; ED.ms = ls.length > 1 ? ls.map((l) => l.id) : []; });
+    const nv = s.vectors.length; toast(nv ? `Pasted ${nv} editable vector${nv > 1 ? 's' : ''}${s.artwork ? ', and the rest as a picture' : ''}` : 'Pasted as a picture: this SVG has no simple shapes');
+  }
+  function pasteImage(f) {
+    const r = new FileReader();
+    r.onload = () => { const im = new Image(); im.onload = () => { const [W, H] = dim(), w = Math.min(W * 0.7, im.width), h = Math.min(w * (im.height / im.width), H * 0.8), ww = h * (im.width / im.height); addLayer(Im(Math.round((W - ww) / 2), Math.round((H - h) / 2), Math.round(ww), Math.round(h), `url(${r.result}) center/cover`, { name: 'Pasted image' })); }; im.src = r.result; };
+    r.readAsDataURL(f);
+  }
+  document.addEventListener('paste', (e) => {
+    if (!document.body.classList.contains('in-editor') || ED.editing || persist.readOnly) return;
+    const t = e.target, tag = (t.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || t.isContentEditable) return;
+    const dt = e.clipboardData; if (!dt) return;
+    const txt = dt.getData('text/plain') || '', svg = dt.getData('image/svg+xml') || (/^\s*(<\?xml[\s\S]*?\?>\s*)?(<!--[\s\S]*?-->\s*)*(<!DOCTYPE[^>]*>\s*)?<svg[\s>]/i.test(txt) ? txt : '');
+    const img = [...(dt.files || [])].find((f) => /^image\/(png|jpe?g|webp|gif)$/i.test(f.type));
+    e.preventDefault();
+    if (txt !== MARK && svg) return void pasteSVG(svg);
+    if (txt !== MARK && img) return pasteImage(img);
+    // the studio's own copied layers: replay the paste shortcut for the handlers that own the layer clipboard
+    PASTE.internal = true; try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, bubbles: true })); } finally { PASTE.internal = false; }
+  });
+
+  /* ---------- keyboard (capture: before the single-key shortcuts) ---------- */
+  addEventListener('keydown', (e) => {
+    if (PASTE.internal || !document.body.classList.contains('in-editor') || ED.editing || $('#cmdk')) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    const mod = e.ctrlKey || e.metaKey, k = String(e.key || ''), lk = k.toLowerCase(), stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
+    if (mod && !e.shiftKey && lk === 'v') { e.stopImmediatePropagation(); return; } // no preventDefault: the browser fires 'paste' with the clipboard
+    if (mod && !e.shiftKey && (lk === 'c' || lk === 'x') && (curL() || (ED.ms && ED.ms.length))) { try { navigator.clipboard && navigator.clipboard.writeText(MARK).catch(() => {}); } catch (x) {} return; }
+    if (PEN.on) {
+      if (k === 'Enter' || k === 'Escape') { stop(); penFinish(); }
+      else if (k === 'Backspace' || k === 'Delete') { stop(); PEN.pts.pop(); drawVec(); }
+      else if (!mod && lk === 'p') { stop(); stopPen(); }
+      return;
+    }
+    if (VE.id) {
+      if (k === 'Enter' || k === 'Escape') { stop(); veEnd(); }
+      else if ((k === 'Backspace' || k === 'Delete') && VE.sel) { stop(); veDelete(); }
+      else if (k.startsWith('Arrow') && VE.sel) { stop(); const n = e.shiftKey ? 10 : 1; veNudge(k === 'ArrowLeft' ? -n : k === 'ArrowRight' ? n : 0, k === 'ArrowUp' ? -n : k === 'ArrowDown' ? n : 0); }
+      return;
+    }
+    if (!mod && !e.altKey && !e.shiftKey && lk === 'p') { stop(); startPen(); return; }
+    if (!mod && k === 'Enter' && isPath(curL())) { stop(); veStart(curL()); }
+  }, true);
+
+  /* ---------- wiring ---------- */
+  const _ds29 = drawSel;
+  drawSel = function () {
+    _ds29.apply(this, arguments);
+    if (VE.id || PEN.on) { const s = $('#sel'), f = $('#ftb'); s && (s.hidden = true); f && (f.hidden = true); }
+  };
+  const _st29 = edStage;
+  edStage = function () { // after undo, redo or a slide change: the edited vector may have changed or gone
+    _st29.apply(this, arguments);
+    if (VE.id) { const l = veLayer(); if (!isPath(l)) Object.assign(VE, { id: null, subs: null, sel: null }); else { VE.subs = nodesOf(l); if (VE.sel && !(VE.subs[VE.sel.s] && VE.subs[VE.sel.s].pts[VE.sel.i])) VE.sel = null; } }
+    drawVec();
+  };
+  const _az29 = applyZoom; applyZoom = function () { _az29.apply(this, arguments); drawVec(); };
+  const _oe29 = openEditor;
+  openEditor = function () {
+    Object.assign(PEN, { on: false, pts: [], hover: null, closed: false }); Object.assign(VE, { id: null, subs: null, sel: null });
+    _oe29.apply(this, arguments);
+    const sc = $('#edScroll'), sca = $('#scaler'); if (!sc || !sca) return;
+    sca.insertAdjacentHTML('beforeend', '<div id="vec" aria-hidden="true"></div>');
+    sc.addEventListener('pointerdown', (e) => {
+      if (PEN.on) { if (e.button !== 0 || ED.space) return; e.preventDefault(); e.stopImmediatePropagation(); return penDown(e); }
+      if (VE.id) veDown(e);
+    }, true);
+    sc.addEventListener('pointermove', (e) => { if (!PEN.on || e.buttons) return; const P = PEN.pts, p = pagePt(e); PEN.hover = e.shiftKey && P.length ? snap45(P[P.length - 1], p[0], p[1]) : p; drawVec(); });
+    sca.addEventListener('dblclick', (e) => {
+      const pt = e.target.closest && e.target.closest('[data-ve="pt"]'); if (VE.id && pt) return veToggle(+pt.dataset.s, +pt.dataset.i);
+      const ly = e.target.closest && e.target.closest('.ly.path'); if (ly && !VE.id) veStart(curP().layers.find((x) => x.id === ly.dataset.id));
+    });
+  };
+
+  /* ---------- SVG export: real vector shapes and text, images embedded ---------- */
+  /** Top-level comma split (commas inside parentheses stay) */
+  const splitTop = (v) => { const out = []; let d = 0, cur = ''; for (const ch of String(v)) { if (ch === '(') d++; else if (ch === ')') d--; if (ch === ',' && !d) { out.push(cur.trim()); cur = ''; } else cur += ch; } if (cur.trim()) out.push(cur.trim()); return out; };
+  async function slideSVG(d, i) {
+    const pg = d.pages[i], [W, H] = RATIOS[d.ratio], defs = []; let n = 0; const nid = () => 'e' + ++n;
+    const host = document.createElement('div'); host.setAttribute('aria-hidden', 'true');
+    host.style.cssText = `position:fixed;left:-100000px;top:0;width:${W}px;height:${H}px;visibility:hidden;pointer-events:none`;
+    host.innerHTML = `<div class="poster" style="width:${W}px;height:${H}px">${posterHTML(pg)}</div>`; document.body.append(host);
+    try {
+      if (document.fonts && document.fonts.ready) await document.fonts.ready;
+      const data = async (u) => { try { return await RT.asDataUrl(new URL(u, location.href).href); } catch (e) { return u; } };
+      /** A CSS background (layers, top first) → SVG fills, bottom first, in a w × h box */
+      const fills = async (bg, w, h) => {
+        const out = [];
+        for (const part of splitTop(bg).reverse()) {
+          if (/^(none|transparent)$/i.test(part)) continue;
+          if (/gradient\(/i.test(part)) { const g = RT.gParse && RT.gParse(part), id = nid(), def = g && svgGrad(g, id, w, h); if (def) { defs.push(def); out.push(`url(#${id})`); } continue; }
+          const u = /url\((['"]?)(.*?)\1\)/i.exec(part);
+          if (u) { const id = nid(), fit = /contain/.test(part) ? 'xMidYMid meet' : /100%\s+100%/.test(part) ? 'none' : 'xMidYMid slice'; defs.push(`<pattern id="${id}" patternUnits="userSpaceOnUse" width="${w}" height="${h}"><image href="${esc(await data(u[2]))}" width="${w}" height="${h}" preserveAspectRatio="${fit}"/></pattern>`); out.push(`url(#${id})`); continue; }
+          out.push(part);
+        }
+        return out;
+      };
+      const ctx = document.createElement('canvas').getContext('2d');
+      const textSVG = (l) => {
+        const el = host.querySelector(`.ly[data-id="${CSS.escape(l.id)}"]`); if (!el) return '';
+        el.style.transform = 'none'; const er = el.getBoundingClientRect(), runs = [];
+        const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let tn, cur = null;
+        while ((tn = walk.nextNode())) {
+          const s = tn.data, par = tn.parentElement;
+          for (let j = 0; j < s.length; ) {
+            const cp = s.codePointAt(j), len = cp > 0xffff ? 2 : 1, rg = document.createRange(); rg.setStart(tn, j); rg.setEnd(tn, j + len);
+            const r = rg.getClientRects()[0], ch = s.slice(j, j + len); j += len;
+            if (!r || ch === '\n') { cur = null; continue; }
+            if (cur && cur.par === par && Math.abs(cur.top - r.top) < 1) { cur.t += ch; cur.l = Math.min(cur.l, r.left); cur.r = Math.max(cur.r, r.right); }
+            else { cur = { par, top: r.top, l: r.left, r: r.right, t: ch }; runs.push(cur); }
+          }
+        }
+        return runs.filter((u) => u.t.trim()).map((u) => {
+          const cs = getComputedStyle(u.par), rtl = cs.direction === 'rtl';
+          ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`; const m = ctx.measureText(u.t), asc = m.fontBoundingBoxAscent || parseFloat(cs.fontSize) * 0.8;
+          const txt = cs.textTransform === 'uppercase' ? u.t.toUpperCase() : cs.textTransform === 'lowercase' ? u.t.toLowerCase() : u.t;
+          const ls = parseFloat(cs.letterSpacing), deco = /underline/.test(cs.textDecorationLine) ? ' text-decoration="underline"' : '';
+          return `<text x="${Math.round(((rtl ? u.r : u.l) - er.left) * 100) / 100}" y="${Math.round((u.top - er.top + asc) * 100) / 100}" font-family="${esc(cs.fontFamily)}" font-size="${cs.fontSize}" font-weight="${cs.fontWeight}"${cs.fontStyle !== 'normal' ? ` font-style="${cs.fontStyle}"` : ''} fill="${cs.color}"${ls ? ` letter-spacing="${ls}"` : ''}${deco}${rtl ? ' direction="rtl"' : ''} xml:space="preserve">${esc(txt)}</text>`;
+        }).join('');
+      };
+      const body = [];
+      const bgF = await fills(String(pg.bg || '#ffffff'), W, H); bgF.forEach((f) => body.push(`<rect width="${W}" height="${H}" fill="${esc(f)}"/>`));
+      for (const l of pg.layers) {
+        if (l.hidden) continue;
+        const w = l.w, h = l.h, [sx, sy] = flips(l), tf = [`translate(${l.x} ${l.y})`]; let inner = '', extra = '';
+        if (l.rot) tf.push(`rotate(${l.rot} ${w / 2} ${h / 2})`);
+        if (sx < 0 || sy < 0) tf.push(`translate(${w / 2} ${h / 2}) scale(${sx} ${sy}) translate(${-w / 2} ${-h / 2})`);
+        const fx = [];
+        if (l.bl) fx.push(`<feGaussianBlur stdDeviation="${l.bl / 2}"/>`);
+        if (l.shb || l.shy || l.shx) fx.push(`<feDropShadow dx="${l.shx || 0}" dy="${l.shy || 0}" stdDeviation="${(l.shb || 0) / 2}" flood-color="${esc(l.shc || '#000000')}" flood-opacity="${l.sha ?? 0.45}"/>`);
+        if (fx.length) { const id = nid(); defs.push(`<filter id="${id}" x="-50%" y="-50%" width="200%" height="200%">${fx.join('')}</filter>`); extra += ` filter="url(#${id})"`; }
+        const cm = /^polygon\((.*)\)$/.exec(l.clip || '');
+        if (cm) { const id = nid(), pts = cm[1].split(',').map((p) => p.trim().split(/\s+/).map((v, j) => (v.endsWith('%') ? (parseFloat(v) / 100) * (j ? h : w) : parseFloat(v) || 0)).join(',')).join(' '); defs.push(`<clipPath id="${id}"><polygon points="${pts}"/></clipPath>`); extra += ` clip-path="url(#${id})"`; }
+        if ((l.op ?? 1) < 1) extra += ` opacity="${l.op}"`;
+        if (l.blend && l.blend !== 'normal') extra += ` style="mix-blend-mode:${l.blend}"`;
+        if (l.type === 'text') inner = textSVG(l);
+        else if (l.type === 'path') {
+          const dd = PATH.toD(pathSegs(l)), fr = l.fr === 'evenodd' ? ' fill-rule="evenodd"' : '';
+          (await fills(String(l.fill || 'none'), w, h)).forEach((f) => { inner += `<path d="${dd}" fill="${esc(f)}"${fr}/>`; });
+          if (l.stroke) inner += `<path d="${dd}" fill="none" stroke="${esc(l.stroke)}" stroke-width="${l.sw ?? 3}" stroke-linecap="${l.cap || 'round'}" stroke-linejoin="${l.join || 'round'}"/>`;
+        } else if (l.icon && IC[l.icon]) inner = `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="none" stroke="${hex(l.fill)}" stroke-width="${l.isw || 2}" stroke-linecap="round" stroke-linejoin="round">${IC[l.icon]}</svg>`;
+        else {
+          const ell = l.type === 'ellipse', rr = Math.min(l.r || 0, w / 2, h / 2), sw = l.stroke ? l.sw || 3 : 0;
+          const shape = (f, inset, more = '') => (ell ? `<ellipse cx="${w / 2}" cy="${h / 2}" rx="${w / 2 - inset}" ry="${h / 2 - inset}" fill="${esc(f)}"${more}/>` : `<rect x="${inset}" y="${inset}" width="${w - 2 * inset}" height="${h - 2 * inset}"${rr ? ` rx="${Math.max(0, rr - inset)}"` : ''} fill="${esc(f)}"${more}/>`);
+          (await fills(String(l.fill || 'none'), w, h)).forEach((f) => { inner += shape(f, 0); });
+          if (sw) inner += shape('none', sw / 2, ` stroke="${esc(l.stroke)}" stroke-width="${sw}"`); // CSS borders sit inside the box
+        }
+        if (inner) body.push(`<g id="${esc(String(l.name || l.type).replace(/[^\w-]+/g, '-'))}-${n}" transform="${tf.join(' ')}"${extra}>${inner}</g>`);
+      }
+      const fonts = RT.fontCSS ? await RT.fontCSS(posterHTML(pg)) : '';
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${fonts ? `<style>${fonts}</style>` : ''}<defs>${defs.join('')}</defs>${body.join('')}</svg>`;
+    } finally { host.remove(); }
+  }
+  RT.slideSVG = slideSVG;
 })();
 
 /* ============ first paint, with every renderer installed ============ */
