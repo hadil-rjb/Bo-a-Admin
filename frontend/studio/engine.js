@@ -1730,6 +1730,12 @@ const hex = (v) => {
 };
 const edKit = () => kitOf(brand());
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+/** A layer's box as drawn on the page (rotation included): what snapping, alignment, rulers and measuring use */
+function aabb(l) {
+  const t = ((l.rot || 0) % 360) * Math.PI / 180; if (!t) return { x: l.x, y: l.y, w: l.w, h: l.h };
+  const c = Math.abs(Math.cos(t)), s = Math.abs(Math.sin(t)), w = l.w * c + l.h * s, h = l.w * s + l.h * c;
+  return { x: l.x + l.w / 2 - w / 2, y: l.y + l.h / 2 - h / 2, w, h };
+}
 
 /* ---------- history ---------- */
 function touch() { ED.d.upd = 'Just now'; const s = $('#savetxt'); if (s) s.innerHTML = '<i></i>Saved'; }
@@ -1941,7 +1947,7 @@ Object.assign(ACT, {
   edPick: (a, e) => { if (e.target.closest('.tg')) return; ED.sel = a.dataset.id; drawSel(); edProps(); },
   edVis: (a) => { const l = curP().layers.find((x) => x.id === a.dataset.id); mutate(() => { l.hidden = !l.hidden; }); },
   edLock: (a) => { const l = curP().layers.find((x) => x.id === a.dataset.id); mutate(() => { l.locked = !l.locked; }); },
-  edAlign: (a) => { const l = curL(), [W, H] = dim(), o = a.dataset.o; mutate(() => { if (o === 'Left') l.x = 0; if (o === 'Center') l.x = Math.round((W - l.w) / 2); if (o === 'Right') l.x = W - l.w; if (o === 'Top') l.y = 0; if (o === 'Middle') l.y = Math.round((H - l.h) / 2); if (o === 'Bottom') l.y = H - l.h; }); },
+  edAlign: (a) => { const l = curL(), [W, H] = dim(), o = a.dataset.o, b = aabb(l), ox = l.x - b.x, oy = l.y - b.y; mutate(() => { if (o === 'Left') l.x = Math.round(ox); if (o === 'Center') l.x = Math.round((W - l.w) / 2); if (o === 'Right') l.x = Math.round(W - b.w + ox); if (o === 'Top') l.y = Math.round(oy); if (o === 'Middle') l.y = Math.round((H - l.h) / 2); if (o === 'Bottom') l.y = Math.round(H - b.h + oy); }); },
   edAl: (a) => { const l = curL(); mutate(() => { l.align = a.dataset.a; }); },
   edRtl: () => { const l = curL(); mutate(() => { l.dir = l.dir === 'rtl' ? 'ltr' : 'rtl'; if (l.dir === 'rtl') { l.align = 'right'; l.font = 'Cairo'; } }); },
   edFwd: () => { const L = curP().layers, i = L.findIndex((l) => l.id === ED.sel); if (i < L.length - 1) mutate(() => L.splice(i + 1, 0, L.splice(i, 1)[0])); },
@@ -1986,17 +1992,28 @@ function bindCanvas() {
 }
 const _openEditor = openEditor;
 openEditor = function (id) { _openEditor(id); bindCanvas(); bindWheel(); };
-function bindWheel() { const s = $('#edScroll'); s && s.addEventListener('wheel', (e) => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); ED.fit = false; ED.zoom = clamp(ED.zoom * (e.deltaY < 0 ? 1.08 : 0.92), 0.1, 2); applyZoom(); drawSel(); }, { passive: false }); }
-function showGuides(gx, gy) { const [W, H] = dim(); $('#guides').innerHTML = (gx != null ? `<div class="guide" style="left:${gx}px;top:0;width:${2 / ED.zoom}px;height:${H}px"></div>` : '') + (gy != null ? `<div class="guide" style="top:${gy}px;left:0;height:${2 / ED.zoom}px;width:${W}px"></div>` : ''); }
+/** Ctrl / Cmd + wheel zooms around the pointer: the canvas point under it stays under it */
+function bindWheel() {
+  const s = $('#edScroll'); s && s.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return; e.preventDefault();
+    const r0 = $('#scaler').getBoundingClientRect(), z0 = ED.zoom, px = (e.clientX - r0.left) / z0, py = (e.clientY - r0.top) / z0;
+    ED.fit = false; ED.zoom = clamp(ED.zoom * (e.deltaY < 0 ? 1.08 : 0.92), 0.1, 3); applyZoom();
+    const r1 = $('#scaler').getBoundingClientRect(); s.scrollLeft += r1.left + px * ED.zoom - e.clientX; s.scrollTop += r1.top + py * ED.zoom - e.clientY; drawSel();
+  }, { passive: false });
+}
+/** Snap guides (full-length lines) and measurements (`marks`: red spans with their length in px) */
+function showGuides(gx, gy, marks = []) {
+  const [W, H] = dim();
+  $('#guides').innerHTML = (gx != null ? `<div class="guide" style="left:${gx}px;top:0;width:${2 / ED.zoom}px;height:${H}px"></div>` : '') + (gy != null ? `<div class="guide" style="top:${gy}px;left:0;height:${2 / ED.zoom}px;width:${W}px"></div>` : '') + marksHTML(marks);
+}
 function startMove(e, l) {
-  const el = elOf(l.id), sx = e.clientX, sy = e.clientY, ox = l.x, oy = l.y, [W, H] = dim(), others = curP().layers.filter((o) => o.id !== l.id && !o.hidden && !(o.locked && o.name === 'Background'));
-  const tx = [0, W / 2, W], ty = [0, H / 2, H]; others.forEach((o) => { tx.push(o.x, o.x + o.w / 2, o.x + o.w); ty.push(o.y, o.y + o.h / 2, o.y + o.h); });
+  const el = elOf(l.id), sx = e.clientX, sy = e.clientY, ox = l.x, oy = l.y, others = curP().layers.filter((o) => o.id !== l.id && !o.hidden && !(o.locked && o.name === 'Background'));
+  const T = snapTargets(others), b = aabb(l);
   ED.pre = snap(); let moved = false;
   const mv = (ev) => {
     if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return; moved = true;
-    let nx = ox + (ev.clientX - sx) / ED.zoom, ny = oy + (ev.clientY - sy) / ED.zoom, gx = null, gy = null; const th = 8 / ED.zoom;
-    if (!ev.altKey) { for (const a of [0, l.w / 2, l.w]) for (const t of tx) if (Math.abs(nx + a - t) < th && gx === null) { nx = t - a; gx = t; } for (const a of [0, l.h / 2, l.h]) for (const t of ty) if (Math.abs(ny + a - t) < th && gy === null) { ny = t - a; gy = t; } }
-    l.x = Math.round(nx); l.y = Math.round(ny); el.style.left = l.x + 'px'; el.style.top = l.y + 'px'; showGuides(gx, gy); drawSel();
+    const m = snapBox(b, (ev.clientX - sx) / ED.zoom, (ev.clientY - sy) / ED.zoom, T, !ev.altKey);
+    l.x = Math.round(ox + m.dx); l.y = Math.round(oy + m.dy); el.style.left = l.x + 'px'; el.style.top = l.y + 'px'; showGuides(m.gx, m.gy, m.marks); drawSel();
     $$('#edProps input[data-p=x]').forEach((i) => (i.value = l.x)); $$('#edProps input[data-p=y]').forEach((i) => (i.value = l.y));
   };
   const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); $('#guides').innerHTML = ''; commit(ED.pre); ED.pre = null; if (moved) { edPages(); edProps(); } };
@@ -2005,17 +2022,28 @@ function startMove(e, l) {
 function startHandle(e, hd) {
   const l = curL(); if (!l || l.locked) return; const el = elOf(l.id), sx = e.clientX, sy = e.clientY, o = { x: l.x, y: l.y, w: l.w, h: l.h, size: l.size }; ED.pre = snap();
   const r = $('#scaler').getBoundingClientRect(), cx = r.left + (o.x + o.w / 2) * ED.zoom, cy = r.top + (o.y + o.h / 2) * ED.zoom;
+  const t = (l.rot || 0) * Math.PI / 180, cos = Math.cos(t), sin = Math.sin(t);
+  /** Sets the layer from a box in its own (unrotated) axes, given relative to its original center */
+  const place = (L, T, R, B) => {
+    const w = R - L, h = B - T, mx = (L + R) / 2, my = (T + B) / 2;
+    l.w = Math.round(w); l.h = Math.round(h);
+    l.x = Math.round(o.x + o.w / 2 + mx * cos - my * sin - w / 2); l.y = Math.round(o.y + o.h / 2 + mx * sin + my * cos - h / 2);
+  };
   const mv = (ev) => {
     if (hd === 'rot') { let a = Math.atan2(ev.clientY - cy, ev.clientX - cx) * 180 / Math.PI + 90; if (ev.shiftKey) a = Math.round(a / 15) * 15; l.rot = Math.round(((a % 360) + 360) % 360); refreshL(l); drawSel(); return; }
-    const dx = (ev.clientX - sx) / ED.zoom, dy = (ev.clientY - sy) / ED.zoom; let { x, y, w, h } = o;
-    if (hd.includes('e')) w = o.w + dx; if (hd.includes('w')) { w = o.w - dx; x = o.x + dx; } if (hd.includes('s')) h = o.h + dy; if (hd.includes('n')) { h = o.h - dy; y = o.y + dy; }
-    if (w < 24) { if (hd.includes('w')) x -= 24 - w; w = 24; } if (h < 24) { if (hd.includes('n')) y -= 24 - h; h = 24; }
+    // pointer movement in the layer's own axes
+    const px = (ev.clientX - sx) / ED.zoom, py = (ev.clientY - sy) / ED.zoom, dx = px * cos + py * sin, dy = -px * sin + py * cos;
+    let L = -o.w / 2, T = -o.h / 2, R = o.w / 2, B = o.h / 2;
+    if (hd.includes('e')) R += dx; if (hd.includes('w')) L += dx; if (hd.includes('s')) B += dy; if (hd.includes('n')) T += dy;
+    if (R - L < 24) { if (hd.includes('w')) L = R - 24; else R = L + 24; } if (B - T < 24) { if (hd.includes('n')) T = B - 24; else B = T + 24; }
     if (l.type === 'text') {
-      if (hd.length === 2) { const k = w / o.w; l.size = Math.max(8, Math.round(o.size * k)); }
-      if (hd === 'n' || hd === 's') return; l.x = Math.round(x); l.w = Math.round(w); refreshL(l); fitText(l); if (hd.includes('n')) l.y = Math.round(o.y + o.h - l.h); refreshL(l);
+      if (hd.length === 2) { const k = (R - L) / o.w; l.size = Math.max(8, Math.round(o.size * k)); }
+      if (hd === 'n' || hd === 's') return;
+      place(L, T, R, T + o.h); refreshL(l); fitText(l); // the width is set, the height follows the text
+      const h = l.h; if (hd.includes('n')) place(L, B - h, R, B); else place(L, T, R, T + h); refreshL(l);
     } else {
-      if (ev.shiftKey && hd.length === 2) { const ar = o.w / o.h; h = w / ar; if (hd.includes('n')) y = o.y + o.h - h; }
-      Object.assign(l, { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) }); refreshL(l);
+      if (ev.shiftKey && hd.length === 2) { const h = (R - L) * o.h / o.w; if (hd.includes('n')) T = B - h; else B = T + h; }
+      place(L, T, R, B); refreshL(l);
     }
     drawSel(); $$('#edProps input[type=number]').forEach((i) => { if (l[i.dataset.p] !== undefined) i.value = Math.round(l[i.dataset.p]); });
   };
@@ -2382,7 +2410,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     a('Slides', 'Add slide', () => ACT.edAddPage()); a('Slides', 'Duplicate slide', () => ACT.edDupPage());
     RAIL.forEach(([x, n]) => a('Panel', 'Open ' + n, () => ACT.edTab({ dataset: { k: x } })));
     k.colors.forEach((c) => a('Brand color', 'Apply ' + c + ' to selection', () => ACT.edColor({ dataset: { c } }), '', c));
-    [['Undo', doUndo, 'Ctrl Z'], ['Redo', doRedo, 'Ctrl Shift Z'], ['Duplicate layer', dupSel, 'Ctrl D'], ['Delete layer', delSel, 'Del'], ['Fit to screen', () => ACT.edFit(), 'Ctrl 0'], ['Toggle safe zones', () => ACT.edSafe()], ['Export', () => openExport(ED.d, ED.pi), 'Ctrl E'], ['Schedule post', () => openSchedule(ED.d)], ['Switch light / dark theme', () => setTheme(S.theme === 'dark' ? 'light' : 'dark')], ['Keyboard shortcuts', kbd, '?']].forEach(([t, fn, s]) => a('Action', t, fn, s));
+    [['Undo', doUndo, 'Ctrl Z'], ['Redo', doRedo, 'Ctrl Shift Z'], ['Duplicate layer', dupSel, 'Ctrl D'], ['Delete layer', delSel, 'Del'], ['Fit to screen', () => ACT.edFit(), 'Ctrl 0'], ['Zoom to selection', () => zoomToSelection(), 'Shift 2'], ['Show or hide rulers', () => toggleRulers(), 'Shift R'], ['Toggle safe zones', () => ACT.edSafe()], ['Export', () => openExport(ED.d, ED.pi), 'Ctrl E'], ['Schedule post', () => openSchedule(ED.d)], ['Switch light / dark theme', () => setTheme(S.theme === 'dark' ? 'light' : 'dark')], ['Keyboard shortcuts', kbd, '?']].forEach(([t, fn, s]) => a('Action', t, fn, s));
     return C;
   }
   function cmdk() {
@@ -2403,7 +2431,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
   }
   function kbd() {
     if ($('#cmdk')) return;
-    const R = [['Ctrl K', 'Search every action'], ['T · R · C · L', 'Add text, rectangle, circle, line'], ['Enter', 'Edit the selected text'], ['Tab', 'Select the next layer'], ['Ctrl C · X · V', 'Copy, cut, paste'], ['Ctrl D', 'Duplicate'], ['[ · ]', 'Send backward, bring forward'], ['Ctrl [ · ]', 'Send to back, bring to front'], ['Arrows', 'Nudge (Shift for 10 px)'], ['Alt while dragging', 'Turn snapping off'], ['Space + drag', 'Pan the canvas'], ['Ctrl scroll · + · −', 'Zoom'], ['Ctrl 0 · 1', 'Fit, 100%'], ['Ctrl B · I', 'Bold, italic'], ['Ctrl S · E', 'Save, export'], ['Right-click', 'Context menu']];
+    const R = [['Ctrl K', 'Search every action'], ['T · R · C · L', 'Add text, rectangle, circle, line'], ['Enter', 'Edit the selected text'], ['Tab', 'Select the next layer'], ['Ctrl C · X · V', 'Copy, cut, paste'], ['Ctrl D', 'Duplicate'], ['[ · ]', 'Send backward, bring forward'], ['Ctrl [ · ]', 'Send to back, bring to front'], ['Arrows', 'Nudge (Shift for 10 px)'], ['Alt while dragging', 'Turn snapping off'], ['Alt (hold) + point', 'Measure the distance to a layer or the page'], ['Space + drag', 'Pan the canvas'], ['Ctrl scroll · + · −', 'Zoom'], ['Ctrl 0 · 1', 'Fit, 100%'], ['Shift 1 · 2', 'Zoom to fit, zoom to selection'], ['Shift R', 'Show or hide rulers'], ['Ctrl B · I', 'Bold, italic'], ['Ctrl S · E', 'Save, export'], ['Right-click', 'Context menu']];
     const bg = document.createElement('div'); bg.className = 'cmdk-bg'; bg.id = 'cmdk';
     bg.innerHTML = `<div class="cmdk" role="dialog" aria-label="Keyboard shortcuts"><h3 style="padding:16px 18px 6px">Keyboard shortcuts</h3><div class="res">${R.map((r) => `<div class="kr"><span>${r[1]}</span><span class="kbd">${r[0]}</span></div>`).join('')}</div></div>`; document.body.append(bg);
     const x = () => { bg.remove(); removeEventListener('keydown', h, true); }, h = (e) => { if (e.key === 'Escape') { e.stopPropagation(); x(); } };
@@ -2719,7 +2747,7 @@ Object.assign(IC, {
   const L = () => curP().layers, byId = (id) => L().find((l) => l.id === id);
   const msIds = () => (ED.ms && ED.ms.length > 1 ? ED.ms.filter((id) => byId(id)) : []);
   const msL = () => msIds().map(byId);
-  const bbox = (ls) => { const x = Math.min(...ls.map((l) => l.x)), y = Math.min(...ls.map((l) => l.y)), x1 = Math.max(...ls.map((l) => l.x + l.w)), y1 = Math.max(...ls.map((l) => l.y + l.h)); return { x, y, w: x1 - x, h: y1 - y, x1, y1 }; };
+  const bbox = (ls) => { ls = ls.map(aabb); const x = Math.min(...ls.map((l) => l.x)), y = Math.min(...ls.map((l) => l.y)), x1 = Math.max(...ls.map((l) => l.x + l.w)), y1 = Math.max(...ls.map((l) => l.y + l.h)); return { x, y, w: x1 - x, h: y1 - y, x1, y1 }; };
   const members = (id) => { const l = byId(id); return l && l.gid ? L().filter((x) => x.gid === l.gid).map((x) => x.id) : [id]; };
   const expand = (ids) => [...new Set(ids.flatMap(members))];
   function setSel(ids) {
@@ -2787,15 +2815,17 @@ Object.assign(IC, {
     msAlign: (a) => {
       const ls = msL().filter((l) => !l.locked); if (ls.length < 2) return; const o = a.dataset.o, [W, H] = dim(), B = ED.alignPage && ED.rtab === 'design' && a.closest('#edProps') ? { x: 0, y: 0, w: W, h: H } : bbox(ls), ids = ls.map((l) => l.id);
       mutate(() => ls.forEach((l) => {
-        if (o === 'Left') l.x = B.x; if (o === 'Center') l.x = Math.round(B.x + (B.w - l.w) / 2); if (o === 'Right') l.x = Math.round(B.x + B.w - l.w);
-        if (o === 'Top') l.y = B.y; if (o === 'Middle') l.y = Math.round(B.y + (B.h - l.h) / 2); if (o === 'Bottom') l.y = Math.round(B.y + B.h - l.h);
+        const b = aabb(l), ox = l.x - b.x, oy = l.y - b.y;
+        if (o === 'Left') l.x = Math.round(B.x + ox); if (o === 'Center') l.x = Math.round(B.x + (B.w - b.w) / 2 + ox); if (o === 'Right') l.x = Math.round(B.x + B.w - b.w + ox);
+        if (o === 'Top') l.y = Math.round(B.y + oy); if (o === 'Middle') l.y = Math.round(B.y + (B.h - b.h) / 2 + oy); if (o === 'Bottom') l.y = Math.round(B.y + B.h - b.h + oy);
       }), () => { edAll(); setSel(ids); edPages(); });
     },
     msDist: (a) => {
       const ls = msL().filter((l) => !l.locked), ax = a.dataset.a; if (ls.length < 3) return toast('Select 3 or more layers to space them evenly');
-      const P_ = ax === 'x' ? 'x' : 'y', S_ = ax === 'x' ? 'w' : 'h', s = [...ls].sort((p, q) => p[P_] + p[S_] / 2 - (q[P_] + q[S_] / 2)), ids = ls.map((l) => l.id);
-      const first = s[0][P_], last = s[s.length - 1][P_] + s[s.length - 1][S_], total = s.reduce((n, l) => n + l[S_], 0), gap = (last - first - total) / (s.length - 1);
-      mutate(() => { let c = first; s.forEach((l) => { l[P_] = Math.round(c); c += l[S_] + gap; }); }, () => { edAll(); setSel(ids); edPages(); });
+      const P_ = ax === 'x' ? 'x' : 'y', S_ = ax === 'x' ? 'w' : 'h', ids = ls.map((l) => l.id);
+      const s = ls.map((l) => [l, aabb(l)]).sort(([, p], [, q]) => p[P_] + p[S_] / 2 - (q[P_] + q[S_] / 2)), lastB = s[s.length - 1][1];
+      const first = s[0][1][P_], last = lastB[P_] + lastB[S_], total = s.reduce((n, [, b]) => n + b[S_], 0), gap = (last - first - total) / (s.length - 1);
+      mutate(() => { let c = first; s.forEach(([l, b]) => { l[P_] = Math.round(c + l[P_] - b[P_]); c += b[S_] + gap; }); }, () => { edAll(); setSel(ids); edPages(); });
     },
     msMatch: (a) => {
       const ls = msL().filter((l) => !l.locked), k = a.dataset.a, ids = ls.map((l) => l.id), v = Math.max(...ls.map((l) => l[k]));
@@ -2825,17 +2855,12 @@ Object.assign(IC, {
   function startMoveMulti(e, ids, clickId) {
     const ls = ids.map(byId).filter((l) => l && !l.locked); if (!ls.length) return;
     const o = ls.map((l) => [l, l.x, l.y]), b = bbox(ls), [W, H] = dim(), others = L().filter((x) => !ids.includes(x.id) && !x.hidden && !(x.locked && x.name === 'Background'));
-    const tx = [0, W / 2, W], ty = [0, H / 2, H]; others.forEach((q) => { tx.push(q.x, q.x + q.w / 2, q.x + q.w); ty.push(q.y, q.y + q.h / 2, q.y + q.h); });
-    const sx = e.clientX, sy = e.clientY, pre = snap(); let moved = false;
+    const T = snapTargets(others), sx = e.clientX, sy = e.clientY, pre = snap(); let moved = false;
     const mv = (ev) => {
       if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return; moved = true;
-      let dx = (ev.clientX - sx) / ED.zoom, dy = (ev.clientY - sy) / ED.zoom, gx = null, gy = null; const th = 8 / ED.zoom;
-      if (!ev.altKey) {
-        for (const a of [0, b.w / 2, b.w]) for (const t of tx) if (gx === null && Math.abs(b.x + dx + a - t) < th) { dx = t - a - b.x; gx = t; }
-        for (const a of [0, b.h / 2, b.h]) for (const t of ty) if (gy === null && Math.abs(b.y + dy + a - t) < th) { dy = t - a - b.y; gy = t; }
-      }
-      o.forEach(([l, x, y]) => { l.x = Math.round(x + dx); l.y = Math.round(y + dy); const el = elOf(l.id); if (el) { el.style.left = l.x + 'px'; el.style.top = l.y + 'px'; } });
-      showGuides(gx, gy); drawSel();
+      const m = snapBox(b, (ev.clientX - sx) / ED.zoom, (ev.clientY - sy) / ED.zoom, T, !ev.altKey);
+      o.forEach(([l, x, y]) => { l.x = Math.round(x + m.dx); l.y = Math.round(y + m.dy); const el = elOf(l.id); if (el) { el.style.left = l.x + 'px'; el.style.top = l.y + 'px'; } });
+      showGuides(m.gx, m.gy, m.marks); drawSel();
     };
     const up = () => {
       removeEventListener('pointermove', mv); removeEventListener('pointerup', up); $('#guides').innerHTML = ''; commit(pre);
@@ -7637,6 +7662,200 @@ if (headless) {
   new MutationObserver((ms) => { for (const m of ms) m.addedNodes.forEach((n) => { if (n.nodeType === 1) { if (n.matches && n.matches('input[type="date"], input[type="time"]')) enhance(n); else scan(n); } }); if (open && !open.el.isConnected) close(); })
     .observe(document.body, { childList: true, subtree: true });
 }
+
+/* ============ v28 · canvas precision: rulers, measuring (Alt), spacing snaps, zoom to selection ============ */
+/* Everything here works on the boxes layers are drawn in (aabb: rotation included). */
+function overlap(a0, al, b0, bl) { return a0 < b0 + bl && b0 < a0 + al; }
+/** What a moving box snaps to: page and layer edges and centers, and the gaps already between neighbouring layers */
+function snapTargets(others) {
+  const [W, H] = dim(), bs = others.map(aabb), tx = [0, W / 2, W], ty = [0, H / 2, H], gx = [], gy = [];
+  bs.forEach((b) => { tx.push(b.x, b.x + b.w / 2, b.x + b.w); ty.push(b.y, b.y + b.h / 2, b.y + b.h); });
+  bs.forEach((a) => {
+    let r = null, d = null; // nearest box to the right of / below `a` that faces it
+    bs.forEach((b) => {
+      if (b === a) return;
+      if (b.x >= a.x + a.w && overlap(a.y, a.h, b.y, b.h) && (!r || b.x < r.x)) r = b;
+      if (b.y >= a.y + a.h && overlap(a.x, a.w, b.x, b.w) && (!d || b.y < d.y)) d = b;
+    });
+    if (r && r.x - (a.x + a.w) >= 1) gx.push({ g: r.x - (a.x + a.w), a, b: r });
+    if (d && d.y - (a.y + a.h) >= 1) gy.push({ g: d.y - (a.y + a.h), a, b: d });
+  });
+  return { tx, ty, bs, gx, gy };
+}
+/**
+ * Snaps a box `b` moved by (dx, dy): to edges and centers (a guide line), centered between its two neighbours,
+ * or at a gap that already exists between other layers (red spans show the matching gaps). `on` false: no snapping.
+ */
+function snapBox(b, dx, dy, T, on) {
+  const marks = []; let gx = null, gy = null;
+  if (!on) return { dx, dy, gx, gy, marks };
+  const th = 8 / ED.zoom;
+  const axis = (p, d, ts, gaps, cross) => {
+    const s = p === 'x' ? 'w' : 'h', q = p === 'x' ? 'y' : 'x', qs = p === 'x' ? 'h' : 'w', pos = b[p] + d, len = b[s], cp = b[q] + cross;
+    let best = null;
+    const take = (nd, kind, info) => { if (Math.abs(nd - d) < th && (!best || Math.abs(nd - d) < Math.abs(best.d - d))) best = { d: nd, kind, info }; };
+    for (const a of [0, len / 2, len]) for (const t of ts) take(t - a - b[p], 'edge', t);
+    let lo = null, hi = null; // nearest boxes before and after, among those facing the moving box
+    T.bs.forEach((o) => {
+      if (!overlap(cp, b[qs], o[q], o[qs])) return;
+      if (o[p] + o[s] <= pos + 1 && (!lo || o[p] + o[s] > lo[p] + lo[s])) lo = o;
+      if (o[p] >= pos + len - 1 && (!hi || o[p] < hi[p])) hi = o;
+    });
+    if (lo && hi) take((lo[p] + lo[s] + hi[p] - len) / 2 - b[p], 'mid', { lo, hi });
+    gaps.forEach((G) => {
+      if (lo && G.b !== lo) take(lo[p] + lo[s] + G.g - b[p], 'gap', { lo, G });
+      if (hi && G.a !== hi) take(hi[p] - G.g - len - b[p], 'gap', { hi, G });
+    });
+    return best;
+  };
+  const X = axis('x', dx, T.tx, T.gx, dy); if (X) { dx = X.d; if (X.kind === 'edge') gx = X.info; }
+  const Y = axis('y', dy, T.ty, T.gy, dx); if (Y) { dy = Y.d; if (Y.kind === 'edge') gy = Y.info; }
+  const M = { x: b.x + dx, y: b.y + dy, w: b.w, h: b.h };
+  [[X, 'x'], [Y, 'y']].forEach(([R, p]) => {
+    if (!R || R.kind === 'edge') return; const { lo, hi, G } = R.info;
+    if (lo) marks.push(gapMark(p, lo, M)); if (hi) marks.push(gapMark(p, M, hi)); if (G) marks.push(gapMark(p, G.a, G.b));
+  });
+  return { dx, dy, gx, gy, marks };
+}
+/** The span between box A and box B after it on axis p, drawn across the middle of the range they share */
+function gapMark(p, A, B) {
+  const h = p === 'x', q = h ? 'y' : 'x', s = h ? 'w' : 'h', qs = h ? 'h' : 'w';
+  const lo = Math.max(A[q], B[q]), hi = Math.min(A[q] + A[qs], B[q] + B[qs]);
+  return { o: h ? 'h' : 'v', a: A[p] + A[s], b: B[p], c: hi > lo ? (lo + hi) / 2 : B[q] + B[qs] / 2 };
+}
+/** Measurement spans: { o: 'h' | 'v', a, b (from, to), c (the other coordinate) }, labeled with their length */
+function marksHTML(marks) {
+  const t = 1.5 / ED.zoom;
+  return marks.map((m) => {
+    const len = Math.round(m.b - m.a); if (len <= 0) return '';
+    const h = m.o === 'h', line = h ? `left:${m.a}px;top:${m.c - t / 2}px;width:${m.b - m.a}px;height:${t}px` : `top:${m.a}px;left:${m.c - t / 2}px;height:${m.b - m.a}px;width:${t}px`;
+    const at = h ? `left:${(m.a + m.b) / 2}px;top:${m.c}px` : `left:${m.c}px;top:${(m.a + m.b) / 2}px`;
+    return `<div class="mguide" style="${line}"></div><span class="mlabel" style="${at}">${len}</span>`;
+  }).join('');
+}
+/** The drawn box around the selection (one layer or several), or null */
+function selBox() {
+  if (!ED.d) return null;
+  const P = curP(), ms = (ED.ms || []).map((id) => P.layers.find((l) => l.id === id)).filter((l) => l && !l.hidden);
+  const ls = ms.length > 1 ? ms : curL() && !curL().hidden ? [curL()] : []; if (!ls.length) return null;
+  const bs = ls.map(aabb), x = Math.min(...bs.map((b) => b.x)), y = Math.min(...bs.map((b) => b.y));
+  return { x, y, w: Math.max(...bs.map((b) => b.x + b.w)) - x, h: Math.max(...bs.map((b) => b.y + b.h)) - y, ids: ls.map((l) => l.id) };
+}
+
+/* ---------- measuring: hold Alt (Option) with a selection and point at another layer, or at the page ---------- */
+const MEAS = { alt: false, over: null };
+function measure() {
+  const m = $('#measure'); if (!m) return;
+  const S0 = MEAS.alt && !ED.editing ? selBox() : null; if (!S0) { m.innerHTML = ''; return; }
+  const [W, H] = dim(), ov = MEAS.over && curP().layers.find((l) => l.id === MEAS.over);
+  // the Background layer stands for the page
+  const T = ov && !S0.ids.includes(ov.id) && !(ov.locked && ov.name === 'Background') ? aabb(ov) : { x: 0, y: 0, w: W, h: H };
+  const S = S0, marks = [];
+  [['x', 'w', 'y', 'h', 'h'], ['y', 'h', 'x', 'w', 'v']].forEach(([p, s, q, qs, o]) => {
+    const shared = Math.max(S[q], T[q]) < Math.min(S[q] + S[qs], T[q] + T[qs]), c = shared ? (Math.max(S[q], T[q]) + Math.min(S[q] + S[qs], T[q] + T[qs])) / 2 : S[q] + S[qs] / 2;
+    if (S[p] >= T[p] + T[s]) marks.push({ o, a: T[p] + T[s], b: S[p], c });
+    else if (S[p] + S[s] <= T[p]) marks.push({ o, a: S[p] + S[s], b: T[p], c });
+    else { // overlapping on this axis: the distances between matching sides
+      const mid = S[q] + S[qs] / 2;
+      marks.push({ o, a: Math.min(S[p], T[p]), b: Math.max(S[p], T[p]), c: mid });
+      marks.push({ o, a: Math.min(S[p] + S[s], T[p] + T[s]), b: Math.max(S[p] + S[s], T[p] + T[s]), c: mid });
+    }
+  });
+  m.innerHTML = `<div class="mbox" style="left:${T.x}px;top:${T.y}px;width:${T.w}px;height:${T.h}px"></div>` + marksHTML(marks);
+}
+
+/* ---------- rulers (Shift R): page pixels along the top and left of the canvas, the selection highlighted ---------- */
+const RS = 20; // ruler thickness, px
+const RUL = { on: (() => { try { return localStorage.getItem('boga.rulers') === '1'; } catch (e) { return false; } })(), raf: 0, ro: null };
+function rulersSoon() { if (!RUL.on || RUL.raf) return; RUL.raf = requestAnimationFrame(() => { RUL.raf = 0; drawRulers(); }); }
+function toggleRulers() {
+  RUL.on = !RUL.on; try { localStorage.setItem('boga.rulers', RUL.on ? '1' : '0'); } catch (e) {}
+  mountRulers(); toast(RUL.on ? 'Rulers on' : 'Rulers off');
+}
+function mountRulers() {
+  const st = $('.ed-stage'); if (!st) return;
+  $$('.rul', st).forEach((x) => x.remove()); const b = $('#edRulers'); b && b.classList.toggle('on', RUL.on);
+  if (!RUL.on) return;
+  st.insertAdjacentHTML('beforeend', '<canvas class="rul rul-x" aria-hidden="true"></canvas><canvas class="rul rul-y" aria-hidden="true"></canvas><i class="rul rul-c" aria-hidden="true"></i>');
+  drawRulers();
+}
+function drawRulers() {
+  const st = $('.ed-stage'), sc = $('#edScroll'), sca = $('#scaler'), rx = st && $('.rul-x', st), ry = st && $('.rul-y', st), rc = st && $('.rul-c', st);
+  if (!rx || !ry || !sc || !sca || !ED.d) return;
+  const dpr = devicePixelRatio || 1, z = ED.zoom, vr = sc.getBoundingClientRect(), sr = sca.getBoundingClientRect(), L0 = sc.offsetLeft, T0 = sc.offsetTop;
+  const cs = getComputedStyle(st), v = (k, f) => cs.getPropertyValue(k).trim() || f;
+  const ink = v('--text-3', '#94a3b8'), bg = v('--surface', '#ffffff'), line = v('--border', '#e2e8f0'), acc = v('--accent', '#fd0e35'), font = '10px ' + v('--sans', 'sans-serif');
+  const step = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000].find((s) => s * z >= 60) || 5000, k = String(step)[0] === '2' ? 4 : 5, minor = step / k;
+  const sel = selBox();
+  rc.style.cssText = `left:${L0}px;top:${T0}px;width:${RS}px;height:${RS}px`;
+  const draw = (cv, horiz) => {
+    const W = horiz ? sc.clientWidth - RS : RS, H = horiz ? RS : sc.clientHeight - RS; if (W <= 0 || H <= 0) return;
+    cv.style.cssText = horiz ? `left:${L0 + RS}px;top:${T0}px;width:${W}px;height:${H}px` : `left:${L0}px;top:${T0 + RS}px;width:${W}px;height:${H}px`;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.fillStyle = bg; g.fillRect(0, 0, W, H);
+    const o = (horiz ? sr.left - vr.left : sr.top - vr.top) - RS, n = horiz ? W : H; // where page 0 is along this ruler
+    if (sel) {
+      const a = o + (horiz ? sel.x : sel.y) * z, b = a + (horiz ? sel.w : sel.h) * z;
+      g.globalAlpha = 0.16; g.fillStyle = acc; horiz ? g.fillRect(a, 0, b - a, H) : g.fillRect(0, a, W, b - a); g.globalAlpha = 1;
+    }
+    g.strokeStyle = ink; g.fillStyle = ink; g.lineWidth = 1; g.font = font; g.textBaseline = 'top'; g.beginPath();
+    for (let i = Math.floor(-o / z / minor), end = Math.ceil((n - o) / z / minor); i <= end; i++) {
+      const u = i * minor, px = Math.round(o + u * z) + 0.5, major = i % k === 0, t = major ? RS * 0.55 : RS * 0.25;
+      if (horiz) { g.moveTo(px, RS); g.lineTo(px, RS - t); } else { g.moveTo(RS, px); g.lineTo(RS - t, px); }
+      if (major) { const s = String(Math.round(u)); if (horiz) g.fillText(s, px + 3, 2); else { g.save(); g.translate(2, px - 3); g.rotate(-Math.PI / 2); g.fillText(s, 0, 0); g.restore(); } }
+    }
+    g.stroke();
+    if (sel) { // the selection's start and end, in page pixels
+      g.fillStyle = acc; g.font = '600 ' + font;
+      [horiz ? sel.x : sel.y, horiz ? sel.x + sel.w : sel.y + sel.h].forEach((u, j) => {
+        const px = o + u * z, s = String(Math.round(u)), tw = g.measureText(s).width;
+        if (horiz) { const x = j ? px + 3 : px - tw - 3; g.fillStyle = bg; g.fillRect(x - 1, 1, tw + 2, 11); g.fillStyle = acc; g.fillText(s, x, 2); }
+        else { g.save(); g.translate(2, j ? px - 3 : px + tw + 3); g.rotate(-Math.PI / 2); g.fillStyle = bg; g.fillRect(-1, -1, tw + 2, 11); g.fillStyle = acc; g.fillText(s, 0, 0); g.restore(); }
+      });
+    }
+    g.strokeStyle = line; g.beginPath(); if (horiz) { g.moveTo(0, RS - 0.5); g.lineTo(W, RS - 0.5); } else { g.moveTo(RS - 0.5, 0); g.lineTo(RS - 0.5, H); } g.stroke();
+  };
+  draw(rx, true); draw(ry, false);
+}
+
+/* ---------- zoom to the selection (Shift 2) and to fit (Shift 1) ---------- */
+function zoomToSelection() {
+  const b = selBox(), s = $('#edScroll'); if (!s) return; if (!b) return ACT.edFit();
+  ED.fit = false; ED.zoom = clamp(Math.min((s.clientWidth - 160) / Math.max(b.w, 1), (s.clientHeight - 160) / Math.max(b.h, 1)), 0.1, 3); applyZoom();
+  const r = $('#scaler').getBoundingClientRect(), v = s.getBoundingClientRect();
+  s.scrollLeft += r.left + (b.x + b.w / 2) * ED.zoom - (v.left + s.clientWidth / 2); s.scrollTop += r.top + (b.y + b.h / 2) * ED.zoom - (v.top + s.clientHeight / 2); drawSel();
+}
+
+(function () {
+  Object.assign(IC, { ruler: '<path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0Z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/>' });
+  Object.assign(ACT, { edRulers: toggleRulers, edZoomSel: zoomToSelection });
+  const _az28 = applyZoom; applyZoom = function () { _az28.apply(this, arguments); rulersSoon(); };
+  const _ds28 = drawSel; drawSel = function () { _ds28.apply(this, arguments); rulersSoon(); measure(); };
+  const _oe28 = openEditor;
+  openEditor = function () {
+    _oe28.apply(this, arguments);
+    const sc = $('#edScroll'), sca = $('#scaler'); if (!sc || !sca) return;
+    sca.insertAdjacentHTML('beforeend', '<div id="measure" aria-hidden="true"></div>');
+    const g = $('#edGrid'); g && g.insertAdjacentHTML('afterend', `<button class="btn ghost icon sm" id="edRulers" data-act="edRulers" title="Rulers (Shift R)">${ic('ruler', 18)}</button>`);
+    sc.addEventListener('scroll', rulersSoon, { passive: true });
+    RUL.ro && RUL.ro.disconnect(); RUL.ro = ResizeObserver ? new ResizeObserver(rulersSoon) : null; RUL.ro && RUL.ro.observe(sc);
+    sca.addEventListener('pointermove', (e) => { const o = e.buttons ? null : (e.target.closest && e.target.closest('.ly')); MEAS.over = o ? o.dataset.id : null; if (MEAS.alt) measure(); });
+    sca.addEventListener('pointerleave', () => { MEAS.over = null; if (MEAS.alt) measure(); });
+    MEAS.over = null; mountRulers();
+  };
+  // capture phase: Shift R / 1 / 2 must not reach the single-key shortcuts (R adds a rectangle)
+  addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('in-editor') || ED.editing || $('#cmdk')) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    if (e.key === 'Alt') { if (!MEAS.alt) { MEAS.alt = true; measure(); } return; }
+    if (!e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    const f = { KeyR: toggleRulers, Digit1: () => ACT.edFit(), Digit2: zoomToSelection }[e.code];
+    if (f) { e.preventDefault(); e.stopImmediatePropagation(); f(); }
+  }, true);
+  const altOff = () => { if (MEAS.alt) { MEAS.alt = false; measure(); } };
+  addEventListener('keyup', (e) => { if (e.key === 'Alt') altOff(); }, true);
+  addEventListener('blur', altOff);
+})();
 
 /* ============ first paint, with every renderer installed ============ */
 /* The page was first drawn halfway through boot, before the later sections replaced textHTML / lstyle
