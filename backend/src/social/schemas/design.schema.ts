@@ -11,6 +11,8 @@ export class SocialDesign {
   @Prop({ required: true }) order!: number;
   /** Content hash, lets a full replace skip unchanged designs */
   @Prop() hash?: string;
+  /** Revision, +1 on every change: a save based on an older revision is refused (see WorkspaceService.applyDesigns) */
+  @Prop() rev?: number;
 
   @Prop() name?: string;
   @Prop() tpl?: string;

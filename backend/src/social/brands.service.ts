@@ -12,7 +12,7 @@ import { ConnectionsService } from "./publishing/connections.service";
 import { PublisherService } from "./publishing/publisher.service";
 
 /** Fields a client may not overwrite through PATCH */
-const LOCKED = ["_id", "id", "brandId", "order", "hash", "createdAt", "updatedAt", "publish", "media"];
+const LOCKED = ["_id", "id", "brandId", "order", "hash", "rev", "createdAt", "updatedAt", "publish", "media"];
 /** Darken/lighten a hex color, same as the studio's shade() */
 const shade = (h: string, k: number) => {
   const n = parseInt(h.slice(1), 16);
@@ -144,12 +144,12 @@ export class BrandsService implements OnModuleInit {
     const item = { status: "Draft", source: "Template", upd: "Just now", ratio: "4:5", tpl: "blank", ...dto, id: dto.id || "d" + newId() };
     // New designs go first in the library, like in the studio
     await this.designs.updateMany({ brandId }, { $inc: { order: 1 } });
-    const doc = await this.designs.create({ ...item, brandId, order: 0, hash: hashOf(item) });
+    const doc = await this.designs.create({ ...item, brandId, order: 0, hash: hashOf(item), rev: 1 });
     return strip(doc.toObject());
   }
 
   async updateDesign(brandId: string, id: string, body: Record<string, unknown>) {
-    const d = await this.designs.findOneAndUpdate({ brandId, id }, { $set: { ...editable(body), hash: "" } }, { new: true }).lean();
+    const d = await this.designs.findOneAndUpdate({ brandId, id }, { $set: { ...editable(body), hash: "" }, $inc: { rev: 1 } }, { new: true }).lean();
     if (!d) throw new NotFoundException(`Design "${id}" not found`);
     return strip(d);
   }

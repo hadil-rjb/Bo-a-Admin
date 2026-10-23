@@ -1,4 +1,5 @@
 import { getToken } from "@/lib/api";
+import { findDataImages, replaceDataImages, uploadDataImages } from "./assets";
 
 /**
  * Persistence adapter between the Social Media studio engine and the NestJS API (/api/social).
@@ -16,6 +17,10 @@ import { getToken } from "@/lib/api";
  * nothing is lost if the tab closes mid-request or the API is briefly unreachable. A small
  * fingerprint of the last synced state is stored too, so pending edits are diffed against
  * what this browser actually synced (and never delete items it has not seen).
+ *
+ * Designs are versioned: each one sent carries the revision it is based on, and the API refuses it when
+ * another tab or user saved that design meanwhile. The engine then keeps both (see onConflict).
+ * Images in the designs sent are uploaded as hosted assets first (see assets.ts).
  *
  * Requests use the admin session (Bearer token from the login page). Local copies are kept
  * per user, and viewers (read-only role) never write.
@@ -37,6 +42,7 @@ export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:400
 let CACHE = "boga.studio.v2";
 let PENDING = "boga.studio.pending";
 let BASE = "boga.studio.synced";
+let REVS = "boga.studio.revs";
 const DEBOUNCE_MS = 600;
 const WATCH_MS = 2000;
 const KEEPALIVE_MAX = 60_000; // browsers cap keepalive bodies at 64 KB
@@ -72,8 +78,8 @@ export const toLogin = () => {
   location.replace("/login?next=" + encodeURIComponent(location.pathname + location.hash));
 };
 
-const authFetch = async (path: string, init: RequestInit = {}) => {
-  const res = await fetch(`${API_URL}/social${path}`, {
+const apiFetch = async (path: string, init: RequestInit = {}) => {
+  const res = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + getToken(), ...(init.headers || {}) },
   });
@@ -82,6 +88,14 @@ const authFetch = async (path: string, init: RequestInit = {}) => {
     throw new Error("Session expired");
   }
   return res;
+};
+const authFetch = (path: string, init: RequestInit = {}) => apiFetch("/social" + path, init);
+
+/** Hosts one studio image; resolves to its URL */
+const uploadAsset = async (dataUrl: string) => {
+  const res = await apiFetch("/media/assets", { method: "POST", body: JSON.stringify({ dataUrl }) });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return String((await res.json()).url);
 };
 
 const isWorkspace = (v: any): v is Workspace => !!v && Array.isArray(v.brands) && v.brands.length > 0 && !!v.data;
@@ -108,6 +122,24 @@ const hash = (str: string) => {
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 };
+
+/* ---------- design revisions ---------- */
+/** "<brandId>|<designId>" → revision on the API */
+type Revs = Map<string, number>;
+type Conflict = { brandId: string; item: any; rev: number };
+
+/** Takes the revisions the API adds to its designs out of a workspace (the engine never sees them) */
+function takeRevs(w: Workspace): Revs {
+  const revs: Revs = new Map();
+  Object.entries(w.data || {}).forEach(([brandId, d]) =>
+    (d?.designs || []).forEach((x: any) => {
+      if (!x || !x.id) return;
+      revs.set(`${brandId}|${x.id}`, typeof x.rev === "number" ? x.rev : 0);
+      delete x.rev;
+    }),
+  );
+  return revs;
+}
 
 /* ---------- workspace -> comparable model ---------- */
 type Model = {
@@ -141,6 +173,15 @@ function toModel(w: Workspace): Model {
 const saveBase = (m: Model) =>
   ls.set(BASE, JSON.stringify({ items: [...m.items], brandOrder: m.brandOrder, designOrder: m.designOrder, postOrder: m.postOrder, ws: m.ws }));
 
+const saveRevs = (r: Revs) => ls.set(REVS, JSON.stringify([...r]));
+const loadRevs = (): Revs => {
+  try {
+    return new Map(JSON.parse(ls.get(REVS) || "[]"));
+  } catch {
+    return new Map();
+  }
+};
+
 const loadBase = (): Model | null => {
   try {
     const v = JSON.parse(ls.get(BASE) || "null");
@@ -155,7 +196,7 @@ type Delta = {
   set?: Record<string, unknown>;
   brandOrder?: string[];
   brands?: { id: string; kit: any; content: any }[];
-  designs?: { brandId: string; item: any }[];
+  designs?: { brandId: string; item: any; rev?: number }[];
   posts?: { brandId: string; item: any }[];
   designOrder?: Record<string, string[]>;
   postOrder?: Record<string, string[]>;
@@ -218,9 +259,41 @@ function createPersist() {
   let userId = "";
   let getState: (() => Workspace) | null = null;
   let exit: (() => void) | null = null;
+  let revs: Revs = new Map(); // revisions of the designs this browser last synced
+  let onConflict: ((list: Conflict[]) => void) | undefined;
   const onHidden = () => document.hidden && exit?.();
 
-  const send = (delta: Delta, keepalive = false) => authFetch("/workspace", { method: "PATCH", body: JSON.stringify(delta), keepalive });
+  /** Each design carries the revision it is based on (none for a design the API hasn't confirmed yet) */
+  const send = (delta: Delta, keepalive = false) => {
+    if (delta.designs) delta = { ...delta, designs: delta.designs.map((u) => ({ ...u, rev: revs.get(`${u.brandId}|${u.item.id}`) })) };
+    return authFetch("/workspace", { method: "PATCH", body: JSON.stringify(delta), keepalive });
+  };
+
+  /**
+   * Images in the designs about to be sent become hosted assets: replaced in the outgoing copy and in the
+   * studio's live designs (so the next snapshot matches what was synced). True when something changed.
+   */
+  async function hostImages(designs: NonNullable<Delta["designs"]>) {
+    const items = designs.map((u) => u.item);
+    const found = findDataImages(items);
+    if (!found.size) return false;
+    const hosted = await uploadDataImages(found, uploadAsset);
+    if (!replaceDataImages(items, hosted)) return false;
+    const live = getState?.();
+    if (live) replaceDataImages(designs.map((u) => (live.data[u.brandId]?.designs || []).find((d: any) => d && d.id === u.item.id)).filter(Boolean), hosted);
+    return true;
+  }
+
+  /** Revisions the API confirmed; designs it refused take the API's version as the synced state */
+  function settle(out: { revs?: Record<string, number>; conflicts?: Conflict[] }, cur: Model) {
+    Object.entries(out.revs || {}).forEach(([k, r]) => revs.set(k, r));
+    const conflicts = (out.conflicts || []).filter((c) => c && c.item && c.item.id);
+    conflicts.forEach((c) => {
+      revs.set(`${c.brandId}|${c.item.id}`, c.rev);
+      cur.items.set(`d|${c.brandId}|${c.item.id}`, hash(stable(c.item)));
+    });
+    if (conflicts.length) onConflict?.(conflicts);
+  }
 
   async function push(): Promise<void> {
     if (readOnly || resetting || !latest || latest === lastSynced) return;
@@ -242,15 +315,21 @@ function createPersist() {
   async function sync(snapshot: string) {
     try {
       const ws = JSON.parse(snapshot) as Workspace;
-      const cur = toModel(ws);
-      const delta = diff(base, cur, ws);
+      let cur = toModel(ws);
+      let delta = diff(base, cur, ws);
+      if (delta?.designs?.length && (await hostImages(delta.designs))) {
+        cur = toModel(ws);
+        delta = diff(base, cur, ws);
+      }
       if (delta) {
         const res = await send(delta);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        settle(await res.json().catch(() => ({})), cur);
       }
       base = cur;
       lastSynced = snapshot;
       saveBase(cur);
+      saveRevs(revs);
       if (snapshot === latest) ls.del(PENDING);
     } catch (e) {
       console.warn("[persist] could not save to the API", e);
@@ -288,10 +367,12 @@ function createPersist() {
         base = null;
         latest = lastSynced = "";
         resetting = false;
+        revs = new Map();
       }
       CACHE = `boga.studio.v2:${id}`;
       PENDING = `boga.studio.pending:${id}`;
       BASE = `boga.studio.synced:${id}`;
+      REVS = `boga.studio.revs:${id}`;
       readOnly = !["admin", "editor"].includes(String(user.role));
     },
 
@@ -313,15 +394,20 @@ function createPersist() {
         const res = await authFetch("/workspace", { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const { workspace } = await res.json();
+        const serverRevs = isWorkspace(workspace) ? takeRevs(workspace) : new Map<string, number>();
         if (pending) {
           // Unsaved local edits win; watch() pushes what changed since this browser's last sync.
-          // Without a fingerprint nothing is deleted, only upserted.
+          // Without a fingerprint nothing is deleted, only upserted. The edits are based on the
+          // revisions this browser synced, so a design saved elsewhere meanwhile comes back as a conflict.
           base = isWorkspace(workspace) ? loadBase() : null; // empty server: send everything
+          revs = base ? loadRevs() : new Map();
           return local;
         }
         if (isWorkspace(workspace)) {
           base = toModel(workspace);
+          revs = serverRevs;
           saveBase(base);
+          saveRevs(revs);
           ls.set(CACHE, JSON.stringify(workspace));
           return workspace;
         }
@@ -330,8 +416,17 @@ function createPersist() {
       } catch (e) {
         console.warn("[persist] API unreachable, using the local copy", e);
         base = loadBase();
+        revs = loadRevs();
         return local;
       }
+    },
+
+    /**
+     * Called when the API refused designs because they were saved elsewhere after this copy was loaded.
+     * Each conflict holds the API's version (`item`): the engine keeps it and the local version as a copy.
+     */
+    onConflict(fn: ((list: Conflict[]) => void) | undefined) {
+      onConflict = fn;
     },
 
     save(snapshot: Workspace, fail?: () => void) {
@@ -394,6 +489,8 @@ function createPersist() {
       ls.del(CACHE);
       ls.del(PENDING);
       ls.del(BASE);
+      ls.del(REVS);
+      revs = new Map();
       return true;
     },
 

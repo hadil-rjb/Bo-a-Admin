@@ -3618,6 +3618,32 @@ Object.assign(IC, {
 renderSide(); route();
 if (!initialState) save(); /* first run: store the seeded demo workspace */
 persist.watch(() => ({ brands: S.brands, data: S.data, active: S.active, set: S.set }));
+/* Save conflicts: another tab or user saved a design after this copy was loaded. Nothing is lost: the design
+   takes the saved version and this tab's version becomes "… (conflicted copy)". When the editor has it open,
+   editing carries on in the copy (same layers, Undo kept). */
+persist.onConflict((list) => {
+  let open = null;
+  list.forEach(({ brandId, item }) => {
+    const D = S.data[brandId], i = D ? D.designs.findIndex((x) => x.id === item.id) : -1; if (i < 0) return;
+    const mine = D.designs[i], copy = JSON.parse(JSON.stringify(mine)), saved = JSON.parse(JSON.stringify(item));
+    copy.id = 'd' + uid(); copy.name = ((mine.name || 'Untitled design') + ' (conflicted copy)').slice(0, 80); copy.status = 'Draft'; copy.upd = 'Just now';
+    if (copy.source === 'Figma') { copy.source = 'Template'; delete copy.figma; }
+    ensureRatio(saved.ratio); (saved.pages || []).forEach((pg) => (pg.layers || []).forEach(migrateLayer));
+    // same object, the saved content: posts and the planner keep pointing at it
+    Object.keys(mine).forEach((k) => delete mine[k]); Object.assign(mine, saved);
+    D.designs.splice(i, 0, copy);
+    if (ED.d === mine) { ED.d = copy; open = copy; }
+  });
+  if (open) {
+    history.replaceState(history.state, '', '#/editor/' + open.id);
+    const n = $('#edName'); n && (n.value = open.name);
+    toast('This design was changed in another tab or by someone else. You are now editing your version, saved as a copy.');
+  } else {
+    toast(list.length > 1 ? `${list.length} designs were changed elsewhere. Your versions are kept as copies.` : 'A design was changed elsewhere. Your version is kept as a copy.');
+    if (!document.body.classList.contains('in-editor')) route();
+  }
+  save();
+});
 if (persist.readOnly) toast('View only: your changes in the Social Media workspace are not saved');
 
 /* ============ Color input v2: custom picker ============ */
@@ -4131,7 +4157,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(img, 0, 0, w, h);
     const d = x.getImageData(0, 0, w, h); fxPixels(d.data, fx); x.putImageData(d, 0, 0); // throws for images without CORS
-    const alpha = /^data:image\/(png|webp|gif)/i.test(src) || /\.png(\?|$)/i.test(src);
+    const alpha = /^data:image\/(png|webp|gif)/i.test(src) || /\.(png|webp|gif)(\?|$)/i.test(src);
     const blob = await new Promise((r) => c.toBlob(r, alpha ? 'image/png' : 'image/jpeg', 0.92));
     const out = await new Promise((r, j) => { const f = new FileReader(); f.onload = () => r(f.result); f.onerror = j; f.readAsDataURL(blob); });
     return { out, whole: k === 1 };
@@ -7622,6 +7648,7 @@ renderSide(); route();
 const destroy = () => {
   if (mounted !== destroy) return;
   mounted = null;
+  persist.onConflict(undefined);
   persist.dispose();
   runtime.destroy();
   EVENTS.splice(0, EVENTS.length, ...EVENTS_DEFAULT.map((e) => ({ ...e })));

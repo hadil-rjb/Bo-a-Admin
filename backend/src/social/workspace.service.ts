@@ -143,7 +143,8 @@ export class WorkspaceService {
       await this.brands.bulkWrite(dto.brandOrder.map((id, order) => ({ updateOne: { filter: { _id: id }, update: { $set: { order } } } })));
     }
 
-    await this.applyItems(this.designs, dto.designs, dto.designOrder, del.designs);
+    const designs = await this.applyDesigns(dto.designs);
+    await this.applyItems(this.designs, [], dto.designOrder, del.designs);
     await this.applyItems(this.posts, dto.posts, dto.postOrder, del.posts);
     if (dto.posts?.length || del.posts?.length) this.notion.reconcileSoon(); // Notion Calendar, when it shows every post
 
@@ -151,7 +152,51 @@ export class WorkspaceService {
     if (dto.active !== undefined) $set.active = dto.active;
     if (dto.set !== undefined) $set.set = dto.set;
     if (Object.keys($set).length) await this.workspaces.updateOne({ _id: WORKSPACE_ID }, { $set }, { upsert: true });
-    return { ok: true };
+    return { ok: true, ...designs };
+  }
+
+  /**
+   * Design upserts with optimistic concurrency. Each one carries `rev`, the revision the client's copy is based on:
+   * - same content as stored (hash): nothing is written;
+   * - `rev` is the stored revision: the design is replaced and its revision goes up by one;
+   * - `rev` is older (another tab or user saved meanwhile): refused, the stored design comes back in `conflicts`.
+   * Upserts without `rev` (older clients) are written as before. Returns the revision of every design listed.
+   */
+  private async applyDesigns(upserts: { brandId: string; item: Item; rev?: number }[] = []) {
+    const revs: Record<string, number> = {};
+    const conflicts: { brandId: string; item: Item; rev: number }[] = [];
+    const list = upserts.filter((u) => u.item && u.item.id);
+    if (!list.length) return { revs, conflicts };
+    type Row = { brandId: string; id: string; order: number; hash?: string; rev?: number };
+    const stored = new Map(
+      (await this.designs.find({ $or: list.map(({ brandId, item }) => ({ brandId, id: item.id })) }, { brandId: 1, id: 1, order: 1, hash: 1, rev: 1 }).lean<Row[]>())
+        .map((r) => [`${r.brandId}|${r.id}`, r]),
+    );
+    const conflict = async (brandId: string, id: string) => {
+      const d = await this.designs.findOne({ brandId, id }).lean<Record<string, any>>();
+      if (!d) return;
+      const { rev = 0, ...item } = strip(d)!;
+      conflicts.push({ brandId, item: item as Item, rev });
+    };
+
+    await Promise.all(list.map(async ({ brandId, item: raw, rev }) => {
+      const { rev: _ignored, ...item } = raw as Item & { rev?: number };
+      const key = `${brandId}|${item.id}`, prev = stored.get(key), cur = prev?.rev ?? 0, hash = hashOf(item);
+      if (prev && prev.hash === hash) return void (revs[key] = cur);
+      if (prev && rev !== undefined && rev !== cur) return conflict(brandId, item.id);
+      const replacement = { ...item, brandId, order: prev?.order ?? Number.MAX_SAFE_INTEGER, hash, rev: cur + 1 };
+      // The filter repeats the revision just read, so a save that lands in between matches nothing: a conflict, not an overwrite
+      const filter = prev ? { brandId, id: item.id, rev: prev.rev ?? { $exists: false } } : { brandId, id: item.id };
+      try {
+        const r = await this.designs.replaceOne(filter, replacement, { upsert: !prev });
+        if (prev && !r.matchedCount) return conflict(brandId, item.id);
+      } catch (e: any) {
+        if (e?.code === 11000) return conflict(brandId, item.id); // created by another client at the same moment
+        throw e;
+      }
+      revs[key] = cur + 1;
+    }));
+    return { revs, conflicts };
   }
 
   private async applyItems(
@@ -195,7 +240,7 @@ export class WorkspaceService {
   private async syncItems(model: Model<any>, brandId: string, items: Item[]) {
     const list = items.filter((i) => i && i.id);
     const existing = new Map(
-      (await model.find({ brandId }, { id: 1, hash: 1, order: 1 }).lean<{ id: string; hash?: string; order: number }[]>()).map((e) => [e.id, e]),
+      (await model.find({ brandId }, { id: 1, hash: 1, order: 1, rev: 1 }).lean<{ id: string; hash?: string; order: number; rev?: number }[]>()).map((e) => [e.id, e]),
     );
     const ops: AnyBulkWriteOperation[] = [];
     const owned = await this.serverOwned(model, list.map((item) => ({ brandId, item })));
@@ -204,7 +249,8 @@ export class WorkspaceService {
       const prev = existing.get(item.id);
       if (prev && prev.hash === hash && prev.order === order) return;
       const doc = owned ? mergePost(owned.get(`${brandId}|${item.id}`), item) : item;
-      ops.push({ replaceOne: { filter: { brandId, id: item.id }, replacement: { ...doc, brandId, order, hash }, upsert: true } });
+      const rev = model === (this.designs as Model<any>) ? { rev: (prev?.rev ?? 0) + 1 } : {};
+      ops.push({ replaceOne: { filter: { brandId, id: item.id }, replacement: { ...doc, brandId, order, hash, ...rev }, upsert: true } });
     });
     if (ops.length) await model.bulkWrite(ops, { ordered: false });
     await model.deleteMany({ brandId, id: { $nin: list.map((i) => i.id) } });
