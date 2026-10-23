@@ -178,6 +178,17 @@ body.in-editor #shell{display:none}
 #measure .mbox{position:absolute;outline:calc(1.5px*var(--z)) dashed #f43f5e}
 .mguide{position:absolute;background:#f43f5e;pointer-events:none}
 .mlabel{position:absolute;transform:translate(-50%,-50%);background:#f43f5e;color:#fff;font:600 calc(11px*var(--z))/1 var(--sans);padding:calc(3px*var(--z)) calc(5px*var(--z));border-radius:calc(4px*var(--z));white-space:nowrap;pointer-events:none}
+/* vector (path) layers draw an inline SVG; strokes may reach past the box */
+.ly.path{overflow:visible}
+.ly.path>svg.pv{position:absolute;left:0;top:0;overflow:visible;display:block}
+/* pen tool and point editing overlay */
+#vec{position:absolute;inset:0;pointer-events:none}
+#vec .ve-box{position:absolute;transform-origin:center}
+#vec svg{position:absolute;overflow:visible}
+#vec [data-ve]{pointer-events:all;cursor:move}
+#vec [data-ve=edge]{pointer-events:stroke;stroke-width:calc(10px*var(--z));stroke:transparent;cursor:copy}
+.ed-scroll.pen-on,.ed-scroll.pen-on *{cursor:crosshair!important}
+.el7.on{outline:2px solid var(--accent);outline-offset:-2px;color:var(--accent)}
 /* rulers (Shift R) over the top and left of the canvas */
 .ed-stage{position:relative}
 .rul{position:absolute;z-index:4;pointer-events:none;display:block}
@@ -2369,3 +2380,36 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .bm-list .it b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bm-none{padding:10px 8px;font-size:12.5px;color:var(--text-3)}
 .pbest .pnet-i .ic,.pbest .ddm .pnet-i .ic,.ptool-r .pdd[data-k="best"] .ddb .pnet-i .ic{color:#fff}
+/* v30 · Stroke and Effects lists */
+.r30{display:flex;flex-direction:column;gap:6px;padding:8px 0;border-top:1px solid var(--border-soft)}
+.r30:first-child{border-top:0;padding-top:0}
+.r30.off{opacity:.5}
+.r30-top{display:flex;align-items:center;gap:6px}
+.r30 input[type=color]{width:32px;height:28px;flex-shrink:0}
+.n30{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-3);min-width:0}
+.n30 input{width:64px}
+.q30{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.q30 .n30{flex-direction:column;align-items:stretch}
+.q30 .n30 input{width:100%}
+.s30{width:100%}
+.m30{margin-bottom:6px}
+/* v31 · frames and groups: the frame tool, the Layers tree */
+.ed-scroll.frame-on,.ed-scroll.frame-on *{cursor:crosshair!important}
+.frm31{position:absolute;border:calc(1.5px*var(--z)) solid var(--accent);background:rgba(253,14,53,.06);pointer-events:none}
+.lt31{gap:1px!important;padding:8px!important}
+.lr31{display:flex;align-items:center;gap:6px;border-radius:8px;padding:5px 8px 5px calc(8px + var(--d,0) * 16px);font-size:13px;text-align:left;width:100%;cursor:grab}
+.lr31:hover{background:var(--pill)}.lr31.on{background:rgba(253,14,53,.1)}.lr31.off .nm{opacity:.5}
+.lr31 .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lr31 .tg{color:var(--text-3)}.lr31 .tg:hover{color:var(--text-1)}
+.lr31-tw{width:14px;height:14px;display:grid;place-items:center;flex-shrink:0;color:var(--text-3);transform:rotate(-90deg);transition:transform .15s}
+.lr31-tw.open{transform:none}
+.lr31-in{flex:1;height:24px}
+.lr31.dragging{opacity:.4}
+.lr31.d-above{box-shadow:0 -2px 0 var(--accent)}.lr31.d-below{box-shadow:0 2px 0 var(--accent)}.lr31.d-in{outline:2px solid var(--accent);outline-offset:-2px}
+/* v32 · auto layout panel */
+.r32{display:flex;gap:10px;align-items:flex-start}
+.g32{display:grid;grid-template-columns:repeat(3,22px);grid-template-rows:repeat(3,22px);gap:2px;padding:4px;border-radius:8px;background:var(--pill);flex-shrink:0}
+.a32{display:grid;place-items:center;border-radius:4px}.a32 i{width:4px;height:4px;border-radius:50%;background:var(--text-3)}
+.a32:hover{background:var(--border-soft)}.a32.on i{width:10px;height:10px;border-radius:2px;background:var(--accent)}
+.c32{display:flex;flex-direction:column;gap:6px;flex:1;min-width:0}
+.c32 .n30 input{width:100%}

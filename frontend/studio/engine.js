@@ -16,6 +16,7 @@ import { IC, ic } from './icons';
 import { RATIOS, PLATFORMS, FONTS, uid, Tx, Rc, El, Im, BG, EVENTS, EVENTS_DEFAULT, CUR_COLOR, tplCalendar, tplCalendarWeek, tplPrice, tplNews, tplQuote, tplArticle, tplStat, tplLaunch, tplFeatures, tplTestimonial, tplEvent, TPL, FIGMA_FRAMES } from './templates';
 import { BOGA_LOGO } from './assets/bogaLogo';
 import { createRuntime } from './runtime';
+import * as PATH from './paths';
 
 let mounted = null; // destroy() of the running instance
 
@@ -85,7 +86,7 @@ let fxReady = async () => {};
 /** Text of a text layer as HTML (plain, or spans for mixed styles: set by the mixed text section) */
 let textHTML = (l) => esc(l.text);
 /** Mixed text hooks: apply(prop, value) styles the selected characters (true when it handled the change) */
-const RT = { apply: () => false, loadFont: () => {} };
+const RT = { apply: () => false, loadFont: () => {}, treeLive: () => {}, topGroup: () => null, selUnits: (pg, ids) => ids, tree: null, dragOn: () => false }; // tree hooks: v31
 /** Publishing client (v14 section): render + upload slides, publish now, poll results */
 let PUB = null;
 /** Connected accounts of the active brand (from the API). `S.platforms` mirrors them for the planner. */
@@ -366,14 +367,110 @@ function lstyle(l) {
   let s = `left:${l.x}px;top:${l.y}px;width:${l.w}px;height:${l.h}px;opacity:${l.op ?? 1};transform:rotate(${l.rot || 0}deg);`;
   if (l.hidden) s += 'display:none;';
   if (l.type === 'text') s += `color:${l.color};font:${l.weight} ${l.size}px/${l.lh} '${l.font}',sans-serif;text-align:${l.align};letter-spacing:${l.ls || 0}px;direction:${l.dir || 'ltr'};`;
-  else {
+  else if (l.type !== 'path') {
     s += `background:${l.fill};border-radius:${l.type === 'ellipse' ? '50%' : (l.r || 0) + 'px'};`;
-    if (l.stroke) s += `border:${l.sw || 3}px solid ${l.stroke};box-sizing:border-box;`;
+    if (l.stroke && l.sd && (l.sa || 'inside') === 'inside') s += `border:${l.sw || 3}px ${l.sd === 'dot' ? 'dotted' : 'dashed'} ${l.stroke};box-sizing:border-box;`; // other strokes: paintCss
   }
   return s;
 }
-const layerHTML = (l) => `<div class="ly ${l.type}${l.locked ? ' locked' : ''}" data-id="${l.id}" style="${lstyle(l)}">${l.type === 'text' ? textHTML(l) : ''}</div>`;
-const posterHTML = (pg) => pg.layers.map(layerHTML).join('');
+let pathSeq = 0;
+/** A gradient parsed by RT.gParse → an SVG gradient in the layer's own pixels (same geometry as the CSS one) */
+function svgGrad(g, id, w, h) {
+  const stops = [...g.s].sort((a, b) => a.p - b.p).map((x) => `<stop offset="${x.p}%" stop-color="${x.c}"${x.o < 1 ? ` stop-opacity="${x.o}"` : ''}/>`).join('');
+  if (g.kind === 'linear') {
+    const t = (g.a * Math.PI) / 180, L = Math.abs(w * Math.sin(t)) + Math.abs(h * Math.cos(t)), dx = (Math.sin(t) * L) / 2, dy = (-Math.cos(t) * L) / 2;
+    return `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${w / 2 - dx}" y1="${h / 2 - dy}" x2="${w / 2 + dx}" y2="${h / 2 + dy}">${stops}</linearGradient>`;
+  }
+  if (g.kind === 'radial') { // ellipse (or circle) reaching the farthest corner, centered "at x% y%" (default 50% 50%)
+    const at = /at\s+(-?[\d.]+)%\s+(-?[\d.]+)%/.exec(g.head || ''), cx = at ? (w * at[1]) / 100 : w / 2, cy = at ? (h * at[2]) / 100 : h / 2;
+    const fx = Math.max(cx, w - cx), fy = Math.max(cy, h - cy), circle = /circle/.test(g.head || ''), rx = circle ? Math.hypot(fx, fy) : fx * Math.SQRT2, ry = circle ? rx : fy * Math.SQRT2;
+    return `<radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="${cx}" cy="${cy}" r="${rx}" gradientTransform="translate(${cx} ${cy}) scale(1 ${ry / rx}) translate(${-cx} ${-cy})">${stops}</radialGradient>`;
+  }
+  return '';
+}
+/** Path data of a path layer at its current size: parametric shapes are redrawn, free paths are scaled */
+const pathSegs = (l) => { const w = Math.max(1, l.w), h = Math.max(1, l.h); return (l.shape && PATH.shapePath(l.shape, w, h)) || PATH.scale(PATH.parse(l.d), w / (l.vw || w), h / (l.vh || h)); };
+/** A color at an opacity, for shadows */
+const shadowColor = (c, o) => `color-mix(in srgb,${c || '#000000'} ${Math.round((o ?? 1) * 100)}%,transparent)`;
+/**
+ * Visible shadows, top first. The first drop shadow keeps the original fields (shx, shy, shb, shc, sha, plus spread shs
+ * and hide shh), so the agent and the Figma import still set it; more drop and inner shadows live in `fxs`.
+ */
+function shadowsOf(l) {
+  const out = [];
+  if ((l.shb || l.shy || l.shx || l.shs) && !l.shh) out.push({ k: 'drop', x: l.shx || 0, y: l.shy || 0, b: l.shb || 0, s: l.shs || 0, c: l.shc || '#000000', o: l.sha ?? 0.45, first: true });
+  (l.fxs || []).forEach((e) => { if (e && !e.h) out.push({ x: 0, y: 0, b: 0, s: 0, c: '#000000', o: 0.25, ...e }); });
+  return out;
+}
+/** Where a stroke sits when none is set: inside a box (CSS borders always did), centered on a vector, outside text */
+const strokeHome = (l) => (l.type === 'path' ? 'center' : l.type === 'text' ? 'outside' : 'inside');
+/**
+ * Visible strokes, top first. The first keeps the original fields (stroke, sw) plus alignment sa ('inside' | 'center' |
+ * 'outside') and dashes sd ('dash' | 'dot'); more strokes live in `sts` ({ c, w, a, d, h }).
+ */
+function strokesOf(l) {
+  const out = [], home = strokeHome(l);
+  if (l.stroke && (l.sw || 3) > 0) out.push({ c: l.stroke, w: l.sw || 3, a: l.sa || home, d: l.sd || null, first: true });
+  (l.sts || []).forEach((x) => { if (x && !x.h && x.w > 0) out.push({ a: home, d: null, ...x }); });
+  return out;
+}
+/**
+ * Strokes and shadows as CSS. Boxes: box-shadow rings for strokes (inside: inset, outside: outer, center: half of each),
+ * stacked like Figma (first on top, strokes above inner shadows, drop shadows under everything); a dashed first stroke uses
+ * the border (inside) or the outline (center, outside). Text: text-shadow and one text stroke. Vectors draw their own (pathHTML).
+ */
+function paintCss(l) {
+  const sh = shadowsOf(l), st = strokesOf(l);
+  if (l.type === 'path') return '';
+  if (l.type === 'text') {
+    let s = ''; const ts = sh.filter((e) => e.k !== 'inner').map((e) => `${e.x}px ${e.y}px ${e.b}px ${shadowColor(e.c, e.o)}`), k = st[0];
+    if (ts.length) s += `text-shadow:${ts.join(',')};`;
+    if (k) s += k.a === 'outside' ? `-webkit-text-stroke:${k.w * 2}px ${k.c};paint-order:stroke fill;` : `-webkit-text-stroke:${k.w}px ${k.c};`;
+    return s;
+  }
+  const ins = [], outs = []; let s = '';
+  st.forEach((k) => {
+    if (k.first && k.d) { if (k.a !== 'inside') s += `outline:${k.w}px ${k.d === 'dot' ? 'dotted' : 'dashed'} ${k.c};outline-offset:${k.a === 'center' ? -k.w / 2 : 0}px;`; return; } // inside: the border (lstyle)
+    if (k.a === 'inside') ins.push(`inset 0 0 0 ${k.w}px ${k.c}`);
+    else if (k.a === 'outside') outs.push(`0 0 0 ${k.w}px ${k.c}`);
+    else { ins.push(`inset 0 0 0 ${k.w / 2}px ${k.c}`); outs.push(`0 0 0 ${k.w / 2}px ${k.c}`); }
+  });
+  sh.forEach((e) => (e.k === 'inner' ? ins : outs).push(`${e.k === 'inner' ? 'inset ' : ''}${e.x}px ${e.y}px ${e.b}px ${e.s}px ${shadowColor(e.c, e.o)}`));
+  if (ins.length || outs.length) s += `box-shadow:${[...ins, ...outs].join(',')};`;
+  return s;
+}
+/**
+ * A path layer's drawing: inline SVG at the layer's size. Fills, bottom first: the base fill, then `ovs` (fills above it).
+ * Strokes, bottom first, each centered, or doubled and clipped to the shape (inside) or masked off it (outside); dashes or dots.
+ * Drop shadows as CSS drop-shadow (o.shadow false: left to the caller, e.g. the SVG export's filter).
+ */
+function pathHTML(l, o = {}) {
+  const w = Math.max(1, l.w), h = Math.max(1, l.h), base = 'pv' + l.id + '-' + ++pathSeq, dd = PATH.toD(pathSegs(l)), defs = [], body = [];
+  let n = 0; const nid = () => base + '-' + ++n, fr = l.fr === 'evenodd' ? ' fill-rule="evenodd"' : '';
+  const paint = (f) => {
+    f = String(f || 'none').trim(); if (!f || f === 'none' || f === 'transparent') return null;
+    if (/gradient\(/i.test(f)) { const g = RT.gParse && RT.gParse(f), id = nid(), def = g && svgGrad(g, id, w, h); if (def) { defs.push(def); return `url(#${id})`; } const c = /#[0-9a-f]{3,8}|rgba?\([^)]*\)/i.exec(f); return c ? c[0] : null; }
+    if (/url\(/i.test(f)) { const u = /url\((['"]?)(.*?)\1\)/i.exec(f); if (!u) return null; const id = nid(); defs.push(`<pattern id="${id}" patternUnits="userSpaceOnUse" width="${w}" height="${h}"><image href="${esc(u[2])}" width="${w}" height="${h}" preserveAspectRatio="${/contain/.test(f) ? 'xMidYMid meet' : 'xMidYMid slice'}"/></pattern>`); return `url(#${id})`; }
+    return f;
+  };
+  [[l.fill, 1], ...[...(l.ovs || [])].reverse().filter((x) => x && !x.h).map((x) => [x.v, x.o ?? 1])].forEach(([f, op]) => {
+    const p = paint(f); if (p) body.push(`<path d="${dd}" fill="${esc(p)}"${op < 1 ? ` fill-opacity="${op}"` : ''}${fr}/>`);
+  });
+  const closed = /z/i.test(dd);
+  [...strokesOf(l)].reverse().forEach((k) => {
+    const a = closed ? k.a : 'center', sw = a === 'center' ? k.w : k.w * 2, dash = k.d === 'dash' ? ` stroke-dasharray="${k.w * 3} ${k.w * 2}"` : k.d === 'dot' ? ` stroke-dasharray="0 ${k.w * 2}"` : '';
+    let cut = '';
+    if (a === 'inside') { const id = nid(); defs.push(`<clipPath id="${id}"><path d="${dd}"${fr ? ' clip-rule="evenodd"' : ''}/></clipPath>`); cut = ` clip-path="url(#${id})"`; }
+    if (a === 'outside') { const id = nid(), m = k.w * 2 + 2; defs.push(`<mask id="${id}" maskUnits="userSpaceOnUse" x="${-m}" y="${-m}" width="${w + 2 * m}" height="${h + 2 * m}"><rect x="${-m}" y="${-m}" width="${w + 2 * m}" height="${h + 2 * m}" fill="#fff"/><path d="${dd}" fill="#000"${fr}/></mask>`); cut = ` mask="url(#${id})"`; }
+    body.push(`<path d="${dd}" fill="none" stroke="${esc(k.c)}" stroke-width="${sw}" stroke-linecap="${k.d === 'dot' ? 'round' : l.cap || 'round'}" stroke-linejoin="${l.join || 'round'}"${dash}${cut}/>`);
+  });
+  const sh = o.shadow === false ? [] : shadowsOf(l).filter((e) => e.k !== 'inner');
+  const st = sh.length ? ` style="filter:${sh.map((e) => `drop-shadow(${e.x}px ${e.y}px ${e.b / 2}px ${shadowColor(e.c, e.o)})`).join(' ')}"` : '';
+  // xmlns: exports and publishing parse the slide as XML (SVG foreignObject), where an <svg> needs its namespace to draw
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="pv" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"${st} aria-hidden="true">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}${body.join('')}</svg>`;
+}
+const layerHTML = (l) => (l.type === 'group' ? '' : `<div class="ly ${l.type}${l.locked ? ' locked' : ''}" data-id="${l.id}" style="${lstyle(l)}">${l.type === 'text' ? textHTML(l) : l.type === 'path' ? pathHTML(l) : ''}</div>`);
+const posterHTML = (pg) => withTree(pg, () => pg.layers.map(layerHTML).join('')); // frames clip their content (v31)
 /** Scaled, static preview of a page (used on cards, planner, template pickers) */
 function thumb(pg, ratio, boxW, boxH) {
   const [w, h] = RATIOS[ratio], k = Math.min(boxW / w, boxH / h);
@@ -1881,14 +1978,14 @@ function edProps() {
       <div class="seg">${[['left', 'alL'], ['center', 'alC'], ['right', 'alR']].map(([a, i]) => `<button class="${l.align === a ? 'on' : ''}" data-act="edAl" data-a="${a}" title="${a}">${ic(i, 16)}</button>`).join('')}<button class="${l.dir === 'rtl' ? 'on' : ''}" data-act="edRtl" title="Right-to-left">RTL</button></div>
       <div><span class="label">Color</span><input type="color" data-p="color" value="${hex(l.color)}"></div>` : ''}
     ${canFill ? `<div><span class="label">Fill</span><input type="color" data-p="fill" value="${hex(l.fill)}">${/gradient|url/.test(l.fill) ? '<p class="xs-t muted" style="margin-top:4px">Gradient or image. Picking a color replaces it.</p>' : ''}<div class="chips" style="margin-top:8px">${edKit().colors.map((c) => `<button class="chip" style="padding:0;width:26px;height:26px;background:${c}" data-act="edColor" data-c="${c}"></button>`).join('')}</div></div>
-      ${l.type !== 'ellipse' ? `<label class="lab">Corner radius<input type="range" min="0" max="200" data-p="r" value="${l.r || 0}"></label>` : ''}` : ''}
+      ${l.type !== 'ellipse' && l.type !== 'path' ? `<label class="lab">Corner radius<input type="range" min="0" max="200" data-p="r" value="${l.r || 0}"></label>` : ''}` : ''}
     <label class="lab">Opacity<input type="range" min="0" max="1" step="0.01" data-p="op" value="${l.op ?? 1}"></label>
     <div class="row" style="gap:4px"><button class="btn secondary icon sm" data-act="edFwd" title="Bring forward">${ic('front', 16)}</button><button class="btn secondary icon sm" data-act="edBwd" title="Send backward">${ic('back', 16)}</button><button class="btn secondary icon sm" data-act="edDup" title="Duplicate (Ctrl+D)">${ic('copy', 16)}</button><button class="btn secondary icon sm" data-act="edLock" data-id="${l.id}" title="Lock">${ic(l.locked ? 'lock' : 'unlock', 16)}</button><span class="grow"></span><button class="btn secondary icon sm" data-act="edDel" title="Delete (Del)" style="color:var(--neg)">${ic('trash', 16)}</button></div></div>`;
 }
 
 /* ---------- layer helpers ---------- */
 function fitText(l) { const el = elOf(l.id); if (!el) return; el.style.height = 'auto'; l.h = Math.ceil(el.offsetHeight); el.style.height = l.h + 'px'; }
-function refreshL(l) { const el = elOf(l.id); if (!el) return; el.style.cssText = lstyle(l); if (l.type === 'text' && ED.editing !== l.id) { const h = textHTML(l); if (el.innerHTML !== h) el.innerHTML = h; } }
+function refreshL(l) { const el = elOf(l.id); if (!el) return; el.style.cssText = lstyle(l); if (l.type === 'text' && ED.editing !== l.id) { const h = textHTML(l); if (el.innerHTML !== h) el.innerHTML = h; } if (l.type === 'path') el.innerHTML = pathHTML(l); }
 function addLayer(l) { mutate(() => { curP().layers.push(l); ED.sel = l.id; }); }
 function shapeLayer(k) {
   const [W, H] = dim(), c = bgLum() > 0.6 ? '#0f172a' : '#fd0e35', cx = (w) => Math.round(W / 2 - w / 2), cy = (h) => Math.round(H / 2 - h / 2);
@@ -2013,7 +2110,7 @@ function startMove(e, l) {
   const mv = (ev) => {
     if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return; moved = true;
     const m = snapBox(b, (ev.clientX - sx) / ED.zoom, (ev.clientY - sy) / ED.zoom, T, !ev.altKey);
-    l.x = Math.round(ox + m.dx); l.y = Math.round(oy + m.dy); el.style.left = l.x + 'px'; el.style.top = l.y + 'px'; showGuides(m.gx, m.gy, m.marks); drawSel();
+    l.x = Math.round(ox + m.dx); l.y = Math.round(oy + m.dy); el.style.left = l.x + 'px'; el.style.top = l.y + 'px'; RT.treeLive(); showGuides(m.gx, m.gy, m.marks); drawSel();
     $$('#edProps input[data-p=x]').forEach((i) => (i.value = l.x)); $$('#edProps input[data-p=y]').forEach((i) => (i.value = l.y));
   };
   const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); $('#guides').innerHTML = ''; commit(ED.pre); ED.pre = null; if (moved) { edPages(); edProps(); } };
@@ -2325,7 +2422,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     if (isT(l)) { if (l.it) s += 'font-style:italic;'; if (l.ul) s += 'text-decoration:underline;'; if (l.up) s += 'text-transform:uppercase;'; }
     const fH = l.fx === true, fV = l.fy === true;
     if (fH || fV) s += `transform:rotate(${l.rot || 0}deg) scale(${fH ? -1 : 1},${fV ? -1 : 1});`;
-    if (l.shb || l.shy || l.shx) { const c = `color-mix(in srgb,${l.shc || '#000000'} ${Math.round((l.sha ?? 0.45) * 100)}%,transparent)`, v = `${l.shx || 0}px ${l.shy || 0}px ${l.shb || 0}px ${c}`; s += isT(l) ? `text-shadow:${v};` : `box-shadow:${v};`; }
+    s += paintCss(l); // strokes and shadows (all of them, see paintCss)
     if (l.bl) s += `filter:blur(${l.bl}px);`;
     return s;
   };
@@ -2479,12 +2576,17 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     return fetchCache.get(url);
   };
   /** url(…) pointing outside the document (http, relative, blob) → data URL */
+  const HREF = /\shref="(?!data:|#)([^"]+)"/g;
+  /** url(#id) (an SVG gradient or pattern of a path layer) stays: it points inside the document */
   async function inlineUrls(html) {
-    const found = new Set(); html.replace(/url\((&quot;|["']?)(?!data:)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => { found.add(u.trim()); return m; });
+    const found = new Set(); html.replace(/url\((&quot;|["']?)(?!data:|#)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => { found.add(u.trim()); return m; });
+    html.replace(HREF, (m, u) => { found.add(u.replace(/&amp;/g, '&')); return m; }); // images inside path layers' SVG
     if (!found.size) return html;
     const map = new Map(await Promise.all([...found].map(async (u) => { try { return [u, await asDataUrl(new URL(u, location.href).href)]; } catch (e) { return [u, u]; } })));
-    return html.replace(/url\((&quot;|["']?)(?!data:)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => `url(${q}${map.get(u.trim()) || u}${q})`);
+    return html.replace(/url\((&quot;|["']?)(?!data:|#)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => `url(${q}${map.get(u.trim()) || u}${q})`)
+      .replace(HREF, (m, u) => ` href="${map.get(u.replace(/&amp;/g, '&')) || u}"`);
   }
+  RT.asDataUrl = asDataUrl; RT.inlineUrls = inlineUrls;
   /** Parsed @font-face rules of the Google Fonts stylesheets on the page (base set + fonts loaded by the editor) */
   const faceCache = new Map();
   const parseRange = (v) => (v ? v.split(',').map((x) => { const [a, b] = x.trim().replace(/^U\+/i, '').split('-'); const lo = parseInt(a.replace(/\?/g, '0'), 16); return [lo, b ? parseInt(b, 16) : parseInt(a.replace(/\?/g, 'F'), 16)]; }) : null);
@@ -2512,6 +2614,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     const blocks = await Promise.all(faces.map(async (f) => { try { return f.block.replace(f.url, await asDataUrl(f.url)); } catch (e) { return f.block; } }));
     return blocks.join('');
   }
+  RT.fontCSS = fontCSS;
   /** Largest scale the browser can rasterize for this canvas (canvas area / side limits) */
   const maxScale = (w, h) => Math.max(0.1, Math.min(16384 / w, 16384 / h, Math.sqrt(64e6 / (w * h))));
   /** Renders slide i of design d to a canvas at scale s */
@@ -2586,18 +2689,18 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
   const bytes = async (b) => new Uint8Array(await b.arrayBuffer());
   /** Renders and downloads; `onStep(i, n)` reports progress. Several images are zipped into one file. */
   async function runExport(d, pgs, s, fmt, onStep) {
-    const [w, h] = RATIOS[d.ratio], base = fileBase(d), multi = pgs.length > 1, ext = fmt === 'png' ? 'png' : 'jpg';
+    const [w, h] = RATIOS[d.ratio], base = fileBase(d), multi = pgs.length > 1, ext = fmt === 'png' ? 'png' : fmt === 'svg' ? 'svg' : 'jpg';
     const out = [];
     for (const [k, i] of pgs.entries()) {
       onStep(k, pgs.length);
       if (fmt === 'pdf') { const c = await renderCanvas(d, i, s, true); out.push({ data: await bytes(await toBlob(c, 'image/jpeg', 0.95)), w, h, pxW: c.width, pxH: c.height }); }
-      else out.push({ name: `${base}${multi || d.pages.length > 1 ? '-' + String(i + 1).padStart(2, '0') : ''}.${ext}`, blob: await renderBlob(d, i, s, fmt) });
+      else out.push({ name: `${base}${multi || d.pages.length > 1 ? '-' + String(i + 1).padStart(2, '0') : ''}.${ext}`, blob: fmt === 'svg' ? new Blob([await RT.slideSVG(d, i)], { type: 'image/svg+xml' }) : await renderBlob(d, i, s, fmt) });
     }
     if (fmt === 'pdf') return download(pdfFromJpegs(out), base + '.pdf');
     if (!multi) return download(out[0].blob, out[0].name);
     download(zipStore(await Promise.all(out.map(async (f) => ({ name: f.name, data: await bytes(f.blob) })))), base + '.zip');
   }
-  const FMT_KEY = { PNG: 'png', JPG: 'jpeg', PDF: 'pdf' }, FMT_SET = { png: 'PNG', jpeg: 'JPG', pdf: 'PDF' };
+  const FMT_KEY = { PNG: 'png', JPG: 'jpeg', PDF: 'pdf', SVG: 'svg' }, FMT_SET = { png: 'PNG', jpeg: 'JPG', pdf: 'PDF', svg: 'SVG' };
   openExport = function (d, pi) {
     const n = d.pages.length, [w, h] = RATIOS[d.ratio], top = Math.floor(maxScale(w, h) * 10) / 10;
     const scales = [1, 2, 3].filter((x) => x <= top).concat(top < 1 ? [top] : []);
@@ -2605,13 +2708,13 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     const fmtOpt = (v, l) => `<option value="${v}" ${v === defF ? 'selected' : ''}>${l}</option>`;
     modal(`<div class="mh"><h2>Export</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
     <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[pi], d.ratio, 96, 120)}<div class="grow" style="display:flex;flex-direction:column;gap:12px">
-      <div class="g2f"><label class="lab">Format<select class="field" id="exF">${fmtOpt('png', 'PNG · lossless')}${fmtOpt('jpeg', 'JPG · smaller file')}${fmtOpt('pdf', 'PDF · document')}</select></label>
+      <div class="g2f"><label class="lab">Format<select class="field" id="exF">${fmtOpt('png', 'PNG · lossless')}${fmtOpt('jpeg', 'JPG · smaller file')}${fmtOpt('pdf', 'PDF · document')}${fmtOpt('svg', 'SVG · vector')}</select></label>
       <label class="lab">Size<select class="field" id="exS">${scales.map((x) => `<option value="${x}" ${x === defS ? 'selected' : ''}>${x}× · ${Math.round(w * x)} × ${Math.round(h * x)} px</option>`).join('')}</select></label></div>
       <label class="lab">Slides<select class="field" id="exP"><option value="cur">Current slide (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} slides</option>` : ''}</select></label></div></div>
       <p class="xs-t muted" id="exM">Same layout, fonts and images as the canvas.</p></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="exGo">${ic('download', 18)}Download</button></div>`, {
       onMount: (bg, close) => {
-        const hint = () => { const f = $('#exF', bg).value, all = $('#exP', bg).value === 'all' && n > 1; $('#exM', bg).textContent = f === 'pdf' ? `One PDF${all ? ` with ${n} pages` : ''}, ready for LinkedIn documents and print.` : all ? `${n} ${f === 'png' ? 'PNG' : 'JPG'} files in one ZIP, numbered in slide order.` : 'Same layout, fonts and images as the canvas.'; };
+        const hint = () => { const f = $('#exF', bg).value, all = $('#exP', bg).value === 'all' && n > 1; $('#exM', bg).textContent = f === 'svg' ? `${all ? `${n} SVG files in a ZIP` : 'One SVG file'}: shapes, paths and text stay editable in design tools. Size doesn’t apply.` : f === 'pdf' ? `One PDF${all ? ` with ${n} pages` : ''}, ready for LinkedIn documents and print.` : all ? `${n} ${f === 'png' ? 'PNG' : 'JPG'} files in one ZIP, numbered in slide order.` : 'Same layout, fonts and images as the canvas.'; };
         bg.addEventListener('change', hint); hint();
         bg.addEventListener('click', async (e) => {
           const go = e.target.closest('#exGo'); if (!go || go.disabled) return;
@@ -2748,9 +2851,10 @@ Object.assign(IC, {
   const msIds = () => (ED.ms && ED.ms.length > 1 ? ED.ms.filter((id) => byId(id)) : []);
   const msL = () => msIds().map(byId);
   const bbox = (ls) => { ls = ls.map(aabb); const x = Math.min(...ls.map((l) => l.x)), y = Math.min(...ls.map((l) => l.y)), x1 = Math.max(...ls.map((l) => l.x + l.w)), y1 = Math.max(...ls.map((l) => l.y + l.h)); return { x, y, w: x1 - x, h: y1 - y, x1, y1 }; };
-  const members = (id) => { const l = byId(id); return l && l.gid ? L().filter((x) => x.gid === l.gid).map((x) => x.id) : [id]; };
+  const members = (id) => { const l = byId(id); if (l && l.gid) return L().filter((x) => x.gid === l.gid).map((x) => x.id); const g = l && RT.topGroup(curP(), l); return g ? [g.id] : [id]; };
   const expand = (ids) => [...new Set(ids.flatMap(members))];
   function setSel(ids) {
+    ids = RT.selUnits(curP(), ids); // a group's content selects the group; nothing together with its own container
     ids = ids.filter((id) => { const l = byId(id); return l && !l.hidden; });
     if (ids.length > 1) { ED.ms = ids; ED.sel = null; } else { ED.ms = []; ED.sel = ids[0] || null; }
     drawSel(); edProps();
@@ -2793,7 +2897,7 @@ Object.assign(IC, {
   }
   function placeMtb(ls) {
     const t = $('#mtb'), bx = $('#msel b'); if (!t || !bx) return;
-    const any = ls.some((l) => l.gid), key = ls.length + '|' + any;
+    const any = ls.some((l) => l.gid || l.type === 'group'), key = ls.length + '|' + any;
     if (t.dataset.k !== key) {
       t.dataset.k = key;
       const rot = (i) => `<span style="display:grid;transform:rotate(90deg)">${ic(i, 16)}</span>`;
@@ -2860,11 +2964,11 @@ Object.assign(IC, {
       if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return; moved = true;
       const m = snapBox(b, (ev.clientX - sx) / ED.zoom, (ev.clientY - sy) / ED.zoom, T, !ev.altKey);
       o.forEach(([l, x, y]) => { l.x = Math.round(x + m.dx); l.y = Math.round(y + m.dy); const el = elOf(l.id); if (el) { el.style.left = l.x + 'px'; el.style.top = l.y + 'px'; } });
-      showGuides(m.gx, m.gy, m.marks); drawSel();
+      RT.treeLive(); showGuides(m.gx, m.gy, m.marks); drawSel();
     };
     const up = () => {
       removeEventListener('pointermove', mv); removeEventListener('pointerup', up); $('#guides').innerHTML = ''; commit(pre);
-      if (moved) { edPages(); edProps(); } else if (clickId && !(ids.length > 1 && ids.every((id) => byId(id).gid && byId(id).gid === byId(ids[0]).gid))) setSel([clickId]);
+      if (moved) { edPages(); edProps(); } else if (clickId && ids.includes(clickId) && !(ids.length > 1 && ids.every((id) => byId(id).gid && byId(id).gid === byId(ids[0]).gid))) setSel([clickId]);
     };
     addEventListener('pointermove', mv); addEventListener('pointerup', up);
   }
@@ -2893,7 +2997,7 @@ Object.assign(IC, {
           return setSel(has ? cur.filter((x) => !mem.includes(x)) : [...new Set([...cur, ...mem])]);
         }
         if (ids.includes(l.id)) { stop(); return startMoveMulti(e, ids, l.id); }
-        if (l.gid) { stop(); const mem = members(l.id); if (mem.length > 1) { setSel(mem); return startMoveMulti(e, mem, l.id); } }
+        { const mem = members(l.id); if (mem.length > 1 || mem[0] !== l.id) { stop(); setSel(mem); return startMoveMulti(e, mem, l.id); } } // a group's content: the group
         return; /* single layer: the default handler moves it */
       }
       stop();
@@ -2917,7 +3021,7 @@ Object.assign(IC, {
     if (!document.body.classList.contains('in-editor') || ED.editing || $('#cmdk') || $('.modal-bg')) return;
     const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
     const mod = e.ctrlKey || e.metaKey, k = String(e.key || '').toLowerCase(), ids = msIds(), stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
-    if (mod && k === 'a') { stop(); return setSel(L().filter((l) => !l.locked && !l.hidden).map((l) => l.id)); }
+    if (mod && k === 'a') { stop(); return setSel(L().filter((l) => !l.locked && !l.hidden && !l.pid).map((l) => l.id)); }
     if (mod && k === 'g') { stop(); return e.shiftKey ? ACT.msUngroup() : ACT.msGroup(); }
     if (mod && k === 'v' && ED.clipM && ED.clip === ED.clipM.src) { stop(); return pasteM(); }
     if (!ids.length) return;
@@ -3000,7 +3104,7 @@ Object.assign(IC, {
       let h = '';
       if (!isT(l) && !isImg && !l.icon) {
         const isG = /gradient/.test(l.fill), g = gradOf(l);
-        h += `<div class="grad7"><span class="label" style="margin:0">Fill style</span><div class="seg"><button class="${!isG ? 'on' : ''}" data-act="gMode" data-m="solid">Solid</button><button class="${isG ? 'on' : ''}" data-act="gMode" data-m="grad">Gradient</button></div>`
+        h += `<div class="grad7"><span class="label" style="margin:0">${l.ovs && l.ovs.length ? 'Bottom fill' : 'Fill style'}</span><div class="seg"><button class="${!isG ? 'on' : ''}" data-act="gMode" data-m="solid">Solid</button><button class="${isG ? 'on' : ''}" data-act="gMode" data-m="grad">Gradient</button></div>`
           + (isG ? `<div class="grad-bar" style="background:${l.fill}"></div><div class="g2f"><label class="lab">From<input type="color" data-g="c1" value="${g.c1}"></label><label class="lab">To<input type="color" data-g="c2" value="${g.c2}"></label></div><label class="lab"><span>Angle <b class="av7">${g.a}°</b></span><input type="range" min="0" max="360" data-g="a" value="${g.a}"></label><div class="chips">${GP.map(([a, c]) => `<button class="gp7" data-act="gPre" data-c1="${a}" data-c2="${c}" style="background:linear-gradient(135deg,${a},${c})" title="${a} to ${c}"></button>`).join('')}<button class="chip" data-act="gSwap">${ic('swapH', 14)}Swap</button></div>` : '') + '</div>';
       }
       const cols = docColors();
@@ -4123,6 +4227,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     s.forEach((x, i) => { if (x.p == null) x.p = (i / (s.length - 1)) * 100; });
     return { kind, a: ((Math.round(a) % 360) + 360) % 360, head, s };
   }
+  RT.gParse = gParse; // path layers draw CSS gradients as SVG ones
   const gCss = (g, k = 1) => {
     const st = [...g.s].sort((x, y) => x.p - y.p).map((x) => `${cssCol(x.c, x.o * k)} ${r1(x.p)}%`).join(', ');
     return g.kind === 'linear' ? `linear-gradient(${Math.round(g.a)}deg, ${st})` : `${g.kind}-gradient(${g.head ? g.head + ', ' : ''}${st})`;
@@ -4136,6 +4241,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (o >= 0.999) return it.v; const g = gParse(it.v); return g ? gCss(g, o) : it.v;
   };
   const ovCss = (l) => (l.ovs || []).filter((x) => !x.h).map(ovItemCss).join(', ');
+  RT.ovCss = ovCss; // the SVG export draws them too
 
   /* ---------- image adjustments: Figma's sliders, baked into the image pixels ---------- */
   const FXK = [['exposure', 'Exposure'], ['contrast', 'Contrast'], ['saturation', 'Saturation'], ['temperature', 'Temperature'], ['tint', 'Tint'], ['highlights', 'Highlights'], ['shadows', 'Shadows']];
@@ -4237,7 +4343,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   lstyle = function (l) {
     migrateLayer(l);
     let s = _ls16(l);
-    if (l.type === 'text' || l.icon || typeof l.fill !== 'string') return s;
+    if (l.type === 'text' || l.type === 'path' || l.icon || typeof l.fill !== 'string') return s;
     let bg = l.fill;
     if (fxOn(l) && /url\(/.test(bg)) {
       const u = fxUse(l);
@@ -4332,8 +4438,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 
   const swatch = (it) => (it.k === 'solid' ? `linear-gradient(90deg, ${cssCol((colOf(it.v) || { c: '#000000' }).c, 1)} 50%, ${cssCol((colOf(it.v) || { c: '#000000' }).c, it.o ?? 1)} 50%),${CHECK}` : `${it.v},${CHECK}`);
   const ovName = (it) => { if (it.k === 'solid') return String(it.v).replace('#', '').toUpperCase(); const g = gParse(it.v); return g && g.kind !== 'linear' ? g.kind[0].toUpperCase() + g.kind.slice(1) : 'Linear'; };
-  function fillPanel(l) {
-    const list = l.ovs || [], mode = fitOf(l.fill);
+  /** Figma's Fill list: the fills above, then the image (img), or nothing below for shapes (their base fill follows) */
+  function fillPanel(l, img = true) {
+    const list = l.ovs || [], mode = img ? fitOf(l.fill) : null;
     const rows = list.map((it, i) => {
       const open = ED.ovOpen === i, g = it.k === 'grad' && gParse(it.v);
       let ed = '';
@@ -4347,8 +4454,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       }
       return `<div class="fl8-row${open ? ' open' : ''}${it.h ? ' off' : ''}"><button type="button" class="fl8-sw" data-act="ovOpen" data-i="${i}" style="background:${swatch(it)}" title="Edit fill"></button><button type="button" class="fl8-n" data-act="ovOpen" data-i="${i}">${esc(ovName(it))}</button><label class="u8"><input class="field sm" type="number" min="0" max="100" data-ovo="${i}" value="${Math.round((it.o ?? 1) * 100)}"><i>%</i></label><button type="button" class="btn ghost icon sm" data-act="ovEye" data-i="${i}" data-tip="${it.h ? 'Show fill' : 'Hide fill'}">${ic(it.h ? 'eyeOff' : 'eye', 15)}</button><button type="button" class="btn ghost icon sm" data-act="ovDel" data-i="${i}" data-tip="Remove fill">${ic('minus', 15)}</button></div>${ed}`;
     }).join('');
-    return `<div class="fl8"><div class="row sp"><span class="label" style="margin:0">Fill</span><button type="button" class="btn ghost icon sm" data-act="ovAdd" data-tip="Add fill above the image">${ic('plus', 16)}</button></div>
-      ${rows}<div class="fl8-row"><span class="fl8-sw img">${ic('image', 15)}</span><span class="fl8-n">Image</span>${ddBtn('fit', FIT_ITEMS(mode).find((x) => x !== '-' && x[0] === mode)[1])}</div></div>`;
+    return `<div class="fl8"><div class="row sp"><span class="label" style="margin:0">Fill</span><button type="button" class="btn ghost icon sm" data-act="ovAdd" data-tip="${img ? 'Add fill above the image' : 'Add a fill on top'}">${ic('plus', 16)}</button></div>
+      ${rows}${img ? `<div class="fl8-row"><span class="fl8-sw img">${ic('image', 15)}</span><span class="fl8-n">Image</span>${ddBtn('fit', FIT_ITEMS(mode).find((x) => x !== '-' && x[0] === mode)[1])}</div>` : ''}</div>`;
   }
   function imagePanel(l) {
     const fx = l.adj || {}, any = fxOn(l);
@@ -4380,8 +4487,10 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       DD.weight = { items: WEIGHTS.map(([w, n]) => [w, `${n} · ${w}`, `font-weight:${w}`]), cur: l.weight, pick: setProp('weight', (v) => +v, textFit), preview: preview('weight', (v) => +v) };
       ws.outerHTML = ddBtn('weight', (WEIGHTS.find(([w]) => w == l.weight) || [l.weight, String(l.weight)])[1]);
     }
-    // shapes: gradient fill with stops and opacity
+    // shapes and vectors: the fills stacked on top of the base fill (same list as images), above the base fill's editor
     const gm = b.querySelector('[data-act=gMode]');
+    if (gm && !b.querySelector('[data-act=imgPre]')) gm.closest('.grad7').insertAdjacentHTML('beforebegin', fillPanel(l, false));
+    // shapes: gradient fill with stops and opacity
     if (gm && /gradient/.test(l.fill)) {
       const blk = gm.closest('.grad7'), g = gParse(l.fill);
       [...blk.children].slice(2).forEach((c) => c.remove());
@@ -4819,9 +4928,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 (function () {
   /* Items that can be dragged: the same buttons that add on click. Dropping places the new layer at the pointer;
      colors, fonts and suggestions dropped on a layer change that layer. */
-  const SRC = 'button[data-act="edShape"],button[data-act="edText"],button[data-act="edSugg"],button[data-act="edImg"],button[data-act="edLogo"],button[data-act="edAsset"],button[data-act="edFont"],button[data-act="edColor"],button[data-act="edTpl"],button[data-act="edClip"],button[data-act="edIcon"],button[data-act="edCombo"],[data-act="edBTpl"],[data-act="edTpl"]';
+  const SRC = 'button[data-act="edShape"],button[data-act="edText"],button[data-act="edSugg"],button[data-act="edImg"],button[data-act="edLogo"],button[data-act="edAsset"],button[data-act="edFont"],button[data-act="edColor"],button[data-act="edTpl"],button[data-act="edClip"],button[data-act="edIcon"],button[data-act="vShape"],button[data-act="edCombo"],[data-act="edBTpl"],[data-act="edTpl"]';
   const ONTO = new Set(['edColor', 'edFont', 'edSugg']); // act on the layer under the pointer when there is one
-  const PLACE = new Set(['edShape', 'edText', 'edSugg', 'edLogo', 'edAsset', 'edClip', 'edIcon']);
+  const PLACE = new Set(['edShape', 'edText', 'edSugg', 'edLogo', 'edAsset', 'edClip', 'edIcon', 'vShape']);
   const clamp9 = (n, a, b) => Math.max(a, Math.min(b, n));
   let drag = null, hold = null, ghost = null, hl = null, suppress = 0;
 
@@ -6032,7 +6141,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     svg.querySelectorAll('script,foreignObject').forEach((n) => n.remove());
     [...svg.querySelectorAll('*')].forEach((n) => [...n.attributes].forEach((a) => /^on/i.test(a.name) && n.removeAttribute(a.name)));
     const vb = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number), iw = vb.length === 4 ? vb[2] : parseFloat(svg.getAttribute('width')) || W0, ih = vb.length === 4 ? vb[3] : parseFloat(svg.getAttribute('height')) || H0;
-    const host = document.createElement('div'); host.style.cssText = `position:fixed;left:-99999px;top:0;width:${iw}px;height:${ih}px;visibility:hidden`;
+    // off screen and transparent, not visibility:hidden (inherited, it would hide every shape from the checks below)
+    const host = document.createElement('div'); host.style.cssText = `position:fixed;left:-99999px;top:0;width:${iw}px;height:${ih}px;opacity:0;pointer-events:none`;
     svg.setAttribute('width', iw); svg.setAttribute('height', ih); host.innerHTML = new XMLSerializer().serializeToString(svg); document.body.append(host);
     try {
       const live = host.querySelector('svg'), base = live.getBoundingClientRect(), texts = [];
@@ -6042,10 +6152,63 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         texts.push({ kind: 'text', name: txt.slice(0, 20), x: r.left - base.left, y: r.top - base.top, w: r.width + 4, h: r.height, text: txt, size: parseFloat(cs.fontSize) || 16, weight: parseInt(cs.fontWeight, 10) || 400, color: cs.fill && cs.fill !== 'none' ? cs.fill : cs.color, align: anchor === 'middle' ? 'center' : anchor === 'end' ? 'right' : 'left', font: STUDIO_FONTS.find((f) => cs.fontFamily.includes(f)) || 'Inter', letterSpacing: parseFloat(cs.letterSpacing) || 0 });
         t.remove();
       });
+      // simple shapes become editable vectors: plain-color fill and stroke, and no clip, mask, filter, dashes or markers on them
+      const vectors = [], NONE = (v) => !v || v === 'none';
+      const paint = (v, o) => {
+        v = String(v || 'none'); if (v === 'none' || !(o > 0)) return 'none';
+        const m = /^rgba?\(([^)]*)\)$/.exec(v); if (!m) return null; // gradients and patterns stay in the artwork
+        const p = m[1].split(/[\s,/]+/).filter(Boolean).map(parseFloat), a = (p.length > 3 ? p[3] : 1) * o;
+        return a >= 0.999 ? '#' + p.slice(0, 3).map((n) => Math.round(n).toString(16).padStart(2, '0')).join('') : `rgba(${p.slice(0, 3).map(Math.round).join(',')},${Math.round(a * 1000) / 1000})`;
+      };
+      const geom = (el) => {
+        const t = el.tagName.toLowerCase(), v = (k) => (el[k] && el[k].baseVal ? el[k].baseVal.value || 0 : 0);
+        if (t === 'path') return el.getAttribute('d');
+        if (t === 'rect') {
+          const x = v('x'), y = v('y'), w = v('width'), h = v('height'); if (w <= 0 || h <= 0) return null;
+          let rx = el.hasAttribute('rx') ? v('rx') : v('ry'), ry = el.hasAttribute('ry') ? v('ry') : rx; rx = Math.min(rx, w / 2); ry = Math.min(ry, h / 2);
+          return rx > 0 && ry > 0 ? `M${x + rx} ${y}H${x + w - rx}A${rx} ${ry} 0 0 1 ${x + w} ${y + ry}V${y + h - ry}A${rx} ${ry} 0 0 1 ${x + w - rx} ${y + h}H${x + rx}A${rx} ${ry} 0 0 1 ${x} ${y + h - ry}V${y + ry}A${rx} ${ry} 0 0 1 ${x + rx} ${y}Z` : `M${x} ${y}H${x + w}V${y + h}H${x}Z`;
+        }
+        if (t === 'circle' || t === 'ellipse') {
+          const cx = v('cx'), cy = v('cy'), rx = v(t === 'circle' ? 'r' : 'rx'), ry = v(t === 'circle' ? 'r' : 'ry'); if (rx <= 0 || ry <= 0) return null;
+          return `M${cx - rx} ${cy}A${rx} ${ry} 0 1 0 ${cx + rx} ${cy}A${rx} ${ry} 0 1 0 ${cx - rx} ${cy}Z`;
+        }
+        if (t === 'line') return `M${v('x1')} ${v('y1')}L${v('x2')} ${v('y2')}`;
+        const pts = (el.getAttribute('points') || '').trim(); return pts ? 'M' + pts + (t === 'polygon' ? 'Z' : '') : null;
+      };
+      const NAMES = { path: 'Vector', rect: 'Rectangle', circle: 'Circle', ellipse: 'Ellipse', line: 'Line', polyline: 'Polyline', polygon: 'Polygon' };
+      live.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon').forEach((el) => {
+        if (el.closest('defs,clipPath,mask,pattern,symbol,marker')) return;
+        let op = 1;
+        for (let n = el; n && n !== live; n = n.parentElement) {
+          const c = getComputedStyle(n);
+          if (c.display === 'none' || c.visibility === 'hidden' || !NONE(c.clipPath) || !NONE(c.maskImage) || !NONE(c.filter) || n.hasAttribute('mask') || n.hasAttribute('clip-path')) return;
+          op *= parseFloat(c.opacity); if (!(op > 0)) return;
+        }
+        const cs = getComputedStyle(el), fill = paint(cs.fill, parseFloat(cs.fillOpacity)), stroke = paint(cs.stroke, parseFloat(cs.strokeOpacity));
+        if (fill === null || stroke === null) return;
+        if (stroke !== 'none' && (!NONE(cs.strokeDasharray) || !NONE(cs.markerStart) || !NONE(cs.markerMid) || !NONE(cs.markerEnd))) return;
+        const d = geom(el), m = el.getCTM(); if (!d || !m) return;
+        const segs = PATH.transform(PATH.parse(d), m); if (!PATH.bounds(segs)) return;
+        const sw = stroke !== 'none' ? (parseFloat(cs.strokeWidth) || 1) * Math.sqrt(Math.abs(m.a * m.d - m.b * m.c)) : 0;
+        if (fill !== 'none' || sw) vectors.push({ segs, fill, stroke: sw ? stroke : null, sw, fr: cs.fillRule === 'evenodd', cap: cs.strokeLinecap, join: cs.strokeLinejoin, op, name: el.id || NAMES[el.tagName.toLowerCase()] });
+        el.remove();
+      });
+      // anything left (gradients, images, masks…) is drawn by the browser as one picture behind the vectors
+      const artwork = [...live.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon,image,use,text')].some((n) => !n.closest('defs,clipPath,mask,pattern,symbol,marker'));
       const rest = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new XMLSerializer().serializeToString(live)).replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29');
-      return { iw, ih, texts, rest };
+      return { iw, ih, texts, rest, vectors, artwork };
     } finally { host.remove(); }
   }
+  /** A vector read by svgLayers → a path layer, scaled by k and moved by (ox, oy) */
+  function vecLayer(v, k, ox, oy) {
+    const segs = PATH.mapPts(v.segs, (x, y) => [ox + x * k, oy + y * k]), b = PATH.bounds(segs), w = Math.max(1, b.w), h = Math.max(1, b.h);
+    return {
+      id: uid(), type: 'path', name: String(v.name).slice(0, 40), x: b.x, y: b.y, w, h, rot: 0, op: Math.round(v.op * 1000) / 1000,
+      d: PATH.toD(PATH.mapPts(segs, (x, y) => [x - b.x, y - b.y])), vw: w, vh: h, fill: v.fill,
+      ...(v.stroke ? { stroke: v.stroke, sw: Math.round(v.sw * k * 100) / 100, cap: v.cap, join: v.join } : {}), ...(v.fr ? { fr: 'evenodd' } : {}),
+    };
+  }
+  RT.svgLayers = svgLayers; RT.vecLayer = vecLayer; // pasting SVG (v29)
   /* HTML: laid out in a sandboxed frame (no scripts), then every box and text is read back */
   async function htmlLayers(src, W, H) {
     const f = document.createElement('iframe'); f.setAttribute('sandbox', 'allow-same-origin'); f.style.cssText = `position:fixed;left:-99999px;top:0;width:${W}px;height:${H}px;border:0;visibility:hidden`;
@@ -6106,7 +6269,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       } else if (kind === 'svg') {
         wait('Reading the SVG…'); const s = await svgLayers(await readAs(file, 'readAsText'), 1080, 1080);
         size = targetSize(d, s.iw, s.ih); const k = Math.min(size.W / s.iw, size.H / s.ih), ox = (size.W - s.iw * k) / 2, oy = (size.H - s.ih * k) / 2;
-        layers = [BG(size.W, size.H, '#ffffff'), Im(ox, oy, s.iw * k, s.ih * k, `url('${s.rest}') center/100% 100% no-repeat`, { name: 'Artwork' })];
+        layers = [BG(size.W, size.H, '#ffffff'), ...(s.artwork ? [Im(ox, oy, s.iw * k, s.ih * k, `url('${s.rest}') center/100% 100% no-repeat`, { name: 'Artwork' })] : []), ...s.vectors.map((v) => vecLayer(v, k, ox, oy))];
         s.texts.forEach((t) => { const sz = Math.round(t.size * k), room = Math.max(6, sz * 0.25), x0 = t.x * k + ox - (t.align === 'center' ? room / 2 : t.align === 'right' ? room : 0); const l = Tx(x0, t.y * k + oy, t.w * k + room, t.text, { name: t.name, size: sz, weight: t.weight, color: t.color, align: t.align, font: t.font, ls: t.letterSpacing * k }); l.h = t.h * k; layers.push(l); });
       } else {
         const src = await readAs(file, 'readAsDataURL'), img = await loadImg(src);
@@ -7855,6 +8018,1028 @@ function zoomToSelection() {
   const altOff = () => { if (MEAS.alt) { MEAS.alt = false; measure(); } };
   addEventListener('keyup', (e) => { if (e.key === 'Alt') altOff(); }, true);
   addEventListener('blur', altOff);
+})();
+
+/* ============ v29 · vectors: shapes, pen tool (P), point editing, SVG paste and export ============ */
+/* Path layers ({ type: 'path', d, vw, vh, shape?, fill, stroke, sw, cap, join, fr }) are drawn by pathHTML. Points are
+   edited in the layer's own axes (rotation and flips undone), so editing a rotated vector feels like editing it upright. */
+(function () {
+  Object.assign(IC, { pen: '<path d="M15.7 21.3a1 1 0 0 1-1.4 0l-1.6-1.6a1 1 0 0 1 0-1.4l5.6-5.6a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4z"/><path d="m18 13-1.4-6.9a1 1 0 0 0-.7-.8L3.2 2a1 1 0 0 0-1.2 1.2l3.3 12.7a1 1 0 0 0 .8.7L13 18"/><path d="m2.3 2.3 7.3 7.3"/><circle cx="11" cy="11" r="2"/>' });
+  const PEN = { on: false, pts: [], hover: null, closed: false };
+  const VE = { id: null, subs: null, sel: null }; // point editing: layer id, nodes in the layer's own pixels, selected node { s, i }
+  const isPath = (l) => l && l.type === 'path';
+  const veLayer = () => (VE.id && ED.d ? curP().layers.find((x) => x.id === VE.id) : null);
+  const pagePt = (e) => { const r = $('#scaler').getBoundingClientRect(); return [(e.clientX - r.left) / ED.zoom, (e.clientY - r.top) / ED.zoom]; };
+  const flips = (l) => [l.fx === true ? -1 : 1, l.fy === true ? -1 : 1];
+  /** Layer pixels → page pixels (the layer is drawn rotate(rot) · scale(flip) around its center) */
+  function fromLocal(l, lx, ly) {
+    const [sx, sy] = flips(l), t = ((l.rot || 0) * Math.PI) / 180, vx = (lx - l.w / 2) * sx, vy = (ly - l.h / 2) * sy;
+    return [l.x + l.w / 2 + vx * Math.cos(t) - vy * Math.sin(t), l.y + l.h / 2 + vx * Math.sin(t) + vy * Math.cos(t)];
+  }
+  function toLocal(l, px, py) {
+    const [sx, sy] = flips(l), t = (-(l.rot || 0) * Math.PI) / 180, vx = px - l.x - l.w / 2, vy = py - l.y - l.h / 2;
+    return [(vx * Math.cos(t) - vy * Math.sin(t)) * sx + l.w / 2, (vx * Math.sin(t) + vy * Math.cos(t)) * sy + l.h / 2];
+  }
+  const nodesOf = (l) => PATH.toNodes(PATH.scale(PATH.parse(l.d), l.w / (l.vw || l.w), l.h / (l.vh || l.h)));
+  /** A path layer whose box is the bounds of `segs` (page pixels) */
+  function pathLayer(segs, o = {}) {
+    const b = PATH.bounds(segs) || { x: 0, y: 0, w: 1, h: 1 }, w = Math.max(1, b.w), h = Math.max(1, b.h);
+    return { id: uid(), type: 'path', name: 'Vector', x: b.x, y: b.y, w, h, rot: 0, op: 1, d: PATH.toD(PATH.mapPts(segs, (x, y) => [x - b.x, y - b.y])), vw: w, vh: h, fill: 'none', ...o };
+  }
+  const writeNodes = (l) => { l.d = PATH.toD(PATH.fromNodes(VE.subs)); l.vw = l.w; l.vh = l.h; refreshL(l); };
+  /** After an edit: the box becomes the path's bounds again, without moving the drawing (rotation and flips included) */
+  function refit(l) {
+    const b = PATH.bounds(PATH.fromNodes(VE.subs)); if (!b) return;
+    const w = Math.max(1, b.w), h = Math.max(1, b.h);
+    if (Math.abs(b.x) < 0.01 && Math.abs(b.y) < 0.01 && Math.abs(w - l.w) < 0.01 && Math.abs(h - l.h) < 0.01) return;
+    const c = fromLocal(l, b.x + b.w / 2, b.y + b.h / 2);
+    VE.subs.forEach((sp) => sp.pts.forEach((n) => PATH.moveNode(n, -b.x, -b.y)));
+    Object.assign(l, { w, h, x: c[0] - w / 2, y: c[1] - h / 2 }); writeNodes(l);
+  }
+
+  /* ---------- overlay: the pen's path so far, or the points of the path being edited ---------- */
+  function drawVec() {
+    const v = $('#vec'); if (!v) return;
+    const z = 1 / ED.zoom, A = 'var(--accent)', sq = (x, y, on, attrs = '') => `<rect x="${x - 4 * z}" y="${y - 4 * z}" width="${8 * z}" height="${8 * z}" fill="${on ? A : '#fff'}" stroke="${A}" stroke-width="${1.5 * z}"${attrs}/>`;
+    const hd = (x, y, hx, hy, attrs) => `<line x1="${x}" y1="${y}" x2="${hx}" y2="${hy}" stroke="${A}" stroke-width="${z}"/><circle cx="${hx}" cy="${hy}" r="${3.5 * z}" fill="#fff" stroke="${A}" stroke-width="${1.5 * z}"${attrs}/>`;
+    if (PEN.on) {
+      const P = PEN.pts, last = P[P.length - 1], hv = PEN.hover; let h = '';
+      if (P.length) h += `<path d="${PATH.toD(PATH.fromNodes([{ closed: false, pts: P }]))}" fill="none" stroke="${A}" stroke-width="${1.5 * z}"/>`;
+      if (last && hv) h += `<path d="M${last.x} ${last.y}${last.out ? `C${last.out[0]} ${last.out[1]} ${hv[0]} ${hv[1]} ${hv[0]} ${hv[1]}` : `L${hv[0]} ${hv[1]}`}" fill="none" stroke="${A}" stroke-width="${z}" stroke-dasharray="${4 * z} ${3 * z}"/>`;
+      if (last && last.out) h += hd(last.x, last.y, last.out[0], last.out[1], '') + (last.in ? hd(last.x, last.y, last.in[0], last.in[1], '') : '');
+      const closing = P.length > 1 && hv && Math.hypot(hv[0] - P[0].x, hv[1] - P[0].y) < 8 * z;
+      P.forEach((n, i) => { h += sq(n.x, n.y, i === 0 && closing); });
+      v.innerHTML = `<svg style="left:0;top:0;width:1px;height:1px">${h}</svg>`; return;
+    }
+    const l = veLayer();
+    if (!l || !VE.subs) { v.innerHTML = ''; return; }
+    const [sx, sy] = flips(l), dd = PATH.toD(PATH.fromNodes(VE.subs)); // the outline, and a wider invisible copy to click on (adds a point)
+    let h = `<path d="${dd}" fill="none" stroke="${A}" stroke-width="${1.5 * z}"/><path d="${dd}" fill="none" data-ve="edge"/>`;
+    VE.subs.forEach((sp, s) => sp.pts.forEach((n, i) => {
+      const on = VE.sel && VE.sel.s === s && VE.sel.i === i;
+      if (n.in) h += hd(n.x, n.y, n.in[0], n.in[1], ` data-ve="in" data-s="${s}" data-i="${i}"`);
+      if (n.out) h += hd(n.x, n.y, n.out[0], n.out[1], ` data-ve="out" data-s="${s}" data-i="${i}"`);
+      h += sq(n.x, n.y, on, ` data-ve="pt" data-s="${s}" data-i="${i}"`);
+    }));
+    v.innerHTML = `<div class="ve-box" style="left:${l.x}px;top:${l.y}px;width:${l.w}px;height:${l.h}px;transform:rotate(${l.rot || 0}deg) scale(${sx},${sy})"><svg style="left:0;top:0;width:${l.w}px;height:${l.h}px">${h}</svg></div>`;
+  }
+
+  /* ---------- pen tool ---------- */
+  function startPen() {
+    if (persist.readOnly) return; veEnd(true);
+    Object.assign(PEN, { on: true, pts: [], hover: null, closed: false }); ED.sel = null; ED.ms = [];
+    const s = $('#edScroll'); s && s.classList.add('pen-on'); drawSel(); edProps(); drawVec(); ED.tab === 'elements' && edPanel();
+    toast('Pen: click to add points, drag to curve. Click the first point to close; Enter or Esc to finish.');
+  }
+  function stopPen() {
+    Object.assign(PEN, { on: false, pts: [], hover: null, closed: false });
+    const s = $('#edScroll'); s && s.classList.remove('pen-on'); drawVec(); ED.tab === 'elements' && $('#edPanel') && edPanel();
+  }
+  function penFinish() {
+    const pts = PEN.pts, closed = PEN.closed && pts.length > 2; stopPen();
+    if (pts.length < 2) return;
+    addLayer(pathLayer(PATH.fromNodes([{ closed, pts }]), { name: closed ? 'Shape' : 'Vector', stroke: autoColor(), sw: 4, cap: 'round', join: 'round' }));
+  }
+  /** Shift: lines at 45° steps from the previous point */
+  const snap45 = (a, x, y) => { const d = Math.hypot(x - a.x, y - a.y), t = Math.round(Math.atan2(y - a.y, x - a.x) / (Math.PI / 4)) * (Math.PI / 4); return [a.x + d * Math.cos(t), a.y + d * Math.sin(t)]; };
+  function penDown(e) {
+    const P = PEN.pts, p = pagePt(e);
+    if (P.length > 1 && Math.hypot(p[0] - P[0].x, p[1] - P[0].y) < 8 / ED.zoom) { PEN.closed = true; return penFinish(); }
+    const [x, y] = e.shiftKey && P.length ? snap45(P[P.length - 1], p[0], p[1]) : p, n = { x, y, in: null, out: null }, sx = e.clientX, sy = e.clientY;
+    P.push(n); drawVec();
+    const mv = (ev) => { if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 3) return; const q = pagePt(ev); n.out = q; n.in = [2 * n.x - q[0], 2 * n.y - q[1]]; PEN.hover = null; drawVec(); };
+    const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  }
+
+  /* ---------- point editing (double-click a vector, or Enter) ---------- */
+  function veStart(l) {
+    if (!isPath(l) || l.locked || persist.readOnly) return; stopPen();
+    if (l.shape) mutate(() => { l.d = PATH.toD(pathSegs(l)); l.vw = l.w; l.vh = l.h; delete l.shape; }, () => { refreshL(l); edPages(); }); // a polygon or star becomes free points
+    Object.assign(VE, { id: l.id, subs: nodesOf(l), sel: null }); ED.sel = l.id; ED.ms = [];
+    drawSel(); drawVec(); edProps();
+    toast('Editing points: drag points and handles, click the outline to add a point, Delete removes one. Enter or Esc when done.');
+  }
+  function veEnd(quiet) { if (!VE.id) return; Object.assign(VE, { id: null, subs: null, sel: null }); drawVec(); if (!quiet) { drawSel(); edProps(); } }
+  /** Two handles on one line through the point: dragging one keeps the other on that line */
+  const smooth = (n) => n.in && n.out && Math.abs(Math.abs(Math.atan2(n.in[1] - n.y, n.in[0] - n.x) - Math.atan2(n.out[1] - n.y, n.out[0] - n.x)) - Math.PI) < 0.035;
+  function veDown(e) {
+    const l = veLayer(); if (!l) return veEnd(true);
+    if (e.button !== 0 || ED.space) return;
+    const pre = snap(), hit = e.target.closest && e.target.closest('[data-ve]'), start = toLocal(l, ...pagePt(e));
+    let tg = hit && hit.dataset.ve !== 'edge' ? { s: +hit.dataset.s, i: +hit.dataset.i, part: hit.dataset.ve } : null, added = false;
+    if (!tg) { // on the outline: a new point there (the curve keeps its shape)
+      const nr = PATH.nearest(VE.subs, start[0], start[1]);
+      if (nr && nr.d < 8 / ED.zoom) { tg = { s: nr.s, i: PATH.splitSeg(VE.subs[nr.s], nr.i, nr.t), part: 'pt' }; added = true; }
+    }
+    if (!tg) { veEnd(); return; } // elsewhere: done editing, and the click selects as usual
+    e.preventDefault(); e.stopImmediatePropagation();
+    VE.sel = { s: tg.s, i: tg.i }; if (added) writeNodes(l); drawVec();
+    const node = VE.subs[tg.s].pts[tg.i], orig = JSON.parse(JSON.stringify(node)), wasSmooth = smooth(orig), sx = e.clientX, sy = e.clientY; let moved = added;
+    const mv = (ev) => {
+      if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 2) return; moved = true;
+      const q = toLocal(l, ...pagePt(ev)), dx = q[0] - start[0], dy = q[1] - start[1];
+      if (tg.part === 'pt') { Object.assign(node, JSON.parse(JSON.stringify(orig))); PATH.moveNode(node, dx, dy); }
+      else {
+        const h = tg.part, o = h === 'in' ? 'out' : 'in', p = [orig[h][0] + dx, orig[h][1] + dy]; node[h] = p;
+        if (wasSmooth && !ev.altKey) { const len = Math.hypot(orig[o][0] - orig.x, orig[o][1] - orig.y), a = Math.atan2(p[1] - node.y, p[0] - node.x) + Math.PI; node[o] = [node.x + Math.cos(a) * len, node.y + Math.sin(a) * len]; }
+      }
+      writeNodes(l); drawVec();
+    };
+    const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); if (moved) { refit(l); commit(pre); edPages(); } drawVec(); drawSel(); };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  }
+  /** Double-click a point: corner ↔ smooth (handles along the neighbours' direction, a third of the way) */
+  function veToggle(s, i) {
+    const l = veLayer(), sp = VE.subs && VE.subs[s], n = sp && sp.pts[i]; if (!n) return;
+    const pre = snap();
+    if (n.in || n.out) { n.in = n.out = null; }
+    else {
+      const P = sp.pts, a = P[i - 1] || (sp.closed ? P[P.length - 1] : null), b = P[i + 1] || (sp.closed ? P[0] : null); if (!a && !b) return;
+      const ax = a ? a.x : n.x, ay = a ? a.y : n.y, bx = b ? b.x : n.x, by = b ? b.y : n.y, dl = Math.hypot(bx - ax, by - ay) || 1, ux = (bx - ax) / dl, uy = (by - ay) / dl;
+      const la = a ? Math.hypot(n.x - a.x, n.y - a.y) / 3 : 0, lb = b ? Math.hypot(b.x - n.x, b.y - n.y) / 3 : 0;
+      n.in = a ? [n.x - ux * la, n.y - uy * la] : null; n.out = b ? [n.x + ux * lb, n.y + uy * lb] : null;
+    }
+    writeNodes(l); refit(l); commit(pre); drawVec(); drawSel(); edPages();
+  }
+  function veDelete() {
+    const l = veLayer(); if (!l || !VE.sel) return;
+    const pre = snap(), sp = VE.subs[VE.sel.s]; sp.pts.splice(VE.sel.i, 1);
+    VE.subs = VE.subs.filter((x) => x.pts.length > 1); VE.sel = null;
+    if (!VE.subs.length) { veEnd(true); mutate(() => { curP().layers = curP().layers.filter((x) => x.id !== l.id); ED.sel = null; }); return; }
+    writeNodes(l); refit(l); commit(pre); drawVec(); drawSel(); edPages();
+  }
+  function veNudge(dx, dy) {
+    const l = veLayer(), n = l && VE.sel && VE.subs[VE.sel.s].pts[VE.sel.i]; if (!n) return;
+    const [sx, sy] = flips(l), t = (-(l.rot || 0) * Math.PI) / 180, pre = snap(); // page direction → layer axes
+    PATH.moveNode(n, (dx * Math.cos(t) - dy * Math.sin(t)) * sx, (dx * Math.sin(t) + dy * Math.cos(t)) * sy);
+    writeNodes(l); refit(l); commit(pre); drawVec(); drawSel();
+  }
+
+  /* ---------- shapes in the Elements panel ---------- */
+  const VSH = {
+    poly: ['Polygon', { k: 'poly', n: 6 }, 300, 300], tri: ['Triangle', { k: 'poly', n: 3 }, 320, 280], star: ['Star', { k: 'star', n: 5, r: 0.45 }, 300, 300],
+    arrow: ['Arrow', { k: 'arrow', t: 0.36, hd: 0.4 }, 380, 180], line: ['Line', { k: 'line' }, 420, 24],
+  };
+  const vPrev = (k) => { const [, sh, w, h] = VSH[k], s = 26 / Math.max(w, h), line = sh.k === 'line'; return `<svg width="26" height="26" viewBox="-1 -1 28 28" aria-hidden="true"><path transform="translate(${(26 - w * s) / 2} ${(26 - h * s) / 2})" d="${PATH.toD(PATH.shapePath(sh, w * s, h * s))}" fill="${line ? 'none' : 'currentColor'}" stroke="currentColor" stroke-width="${line ? 2.5 : 0}" stroke-linecap="round"/></svg>`; };
+  Object.assign(ACT, {
+    vPen: () => (PEN.on ? stopPen() : startPen()),
+    vShape: (a) => {
+      const [nm, sh, w, h] = VSH[a.dataset.k], [W, H] = dim(), line = sh.k === 'line', c = bgLum() > 0.6 ? '#0f172a' : edKit().colors[0] || '#fd0e35';
+      addLayer({ id: uid(), type: 'path', name: nm, x: Math.round(W / 2 - w / 2), y: Math.round(H / 2 - h / 2), w, h, rot: 0, op: 1, shape: { ...sh }, d: PATH.toD(PATH.shapePath(sh, w, h)), vw: w, vh: h, fill: line ? 'none' : c, ...(line ? { stroke: autoColor(), sw: 6, cap: 'round' } : {}) });
+    },
+    vEdit: () => veStart(curL()),
+    vNoFill: () => { const l = curL(); isPath(l) && mutate(() => { l.fill = 'none'; }); },
+    vCap: (a) => { const l = curL(); isPath(l) && mutate(() => { l.cap = a.dataset.v; }); },
+    vRule: () => { const l = curL(); isPath(l) && mutate(() => { if (l.fr === 'evenodd') delete l.fr; else l.fr = 'evenodd'; }); },
+    /** A CSS-clipped shape (triangle, star… from "More shapes") → a vector with the same outline */
+    vConvert: () => {
+      const l = curL(), m = l && /^polygon\((.*)\)$/.exec(l.clip || ''); if (!m) return;
+      const pts = m[1].split(',').map((p) => p.trim().split(/\s+/).map((v, j) => (v.endsWith('%') ? (parseFloat(v) / 100) * (j ? l.h : l.w) : parseFloat(v) || 0)));
+      mutate(() => { Object.assign(l, { type: 'path', d: PATH.toD([{ c: 'M', p: pts[0] }, ...pts.slice(1).map((p) => ({ c: 'L', p })), { c: 'Z', p: [] }]), vw: l.w, vh: l.h }); delete l.clip; delete l.r; });
+      toast('Converted to a vector. Double-click it to edit its points.');
+    },
+  });
+  const _pn29 = edPanel;
+  edPanel = function () {
+    const r = _pn29.apply(this, arguments), p = $('#edPanel');
+    if (p && ED.tab === 'elements') {
+      const at = p.querySelector('.es7') || p.querySelector('h3');
+      at && at.insertAdjacentHTML('afterend', `<span class="label" style="margin-top:6px">Vectors</span><div class="el7grid"><button class="el7${PEN.on ? ' on' : ''}" data-n="pen vector path draw" data-act="vPen" title="Pen (P)" aria-pressed="${PEN.on}">${ic('pen', 22)}</button>${Object.keys(VSH).map((k) => `<button class="el7" data-n="${VSH[k][0].toLowerCase()} vector" data-act="vShape" data-k="${k}" title="${VSH[k][0]}">${vPrev(k)}</button>`).join('')}</div>`);
+    }
+    return r;
+  };
+
+  /* ---------- properties: a Shape section for vectors ---------- */
+  const _ep29 = edProps;
+  edProps = function () {
+    const r = _ep29.apply(this, arguments), l = curL(), b = $('#edProps .body');
+    if (!l || ED.rtab !== 'design' || !b) return r;
+    let h = '';
+    if (isPath(l)) {
+      const s = l.shape, rng = (k, lbl, min, max, step, v) => `<label class="lab">${lbl}<input type="range" min="${min}" max="${max}" step="${step}" data-v29="${k}" value="${v}"></label>`;
+      if (s && (s.k === 'poly' || s.k === 'star')) h += rng('n', s.k === 'star' ? 'Points' : 'Sides', 3, s.k === 'star' ? 24 : 12, 1, s.n);
+      if (s && s.k === 'star') h += rng('r', 'Inner radius', 0.1, 0.95, 0.01, s.r ?? 0.45);
+      if (s && s.k === 'arrow') h += rng('t', 'Shaft', 0.1, 1, 0.01, s.t ?? 0.36) + rng('hd', 'Head length', 0.1, 0.9, 0.01, s.hd ?? 0.4);
+      h += `<div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn secondary sm" data-act="vEdit" title="Double-click the vector, or press Enter">${ic('pen', 16)}${VE.id === l.id ? 'Editing points' : 'Edit points'}</button>${l.fill && l.fill !== 'none' ? '<button class="btn secondary sm" data-act="vNoFill">No fill</button>' : ''}</div>`;
+      if (l.stroke) h += `<div><span class="label">Line ends</span><div class="seg">${[['round', 'Round'], ['square', 'Square'], ['butt', 'Flat']].map(([v, t]) => `<button class="${(l.cap || 'round') === v ? 'on' : ''}" data-act="vCap" data-v="${v}">${t}</button>`).join('')}</div></div>`;
+      h += `<div class="row sp"><span class="sm-t">Even-odd fill<br><span class="xs-t muted">Overlapping parts become holes</span></span><button class="switch ${l.fr === 'evenodd' ? 'on' : ''}" data-act="vRule" aria-label="Even-odd fill"></button></div>`;
+    } else if (/^polygon\(/.test(l.clip || '') && l.type !== 'text' && !l.icon) {
+      h = '<button class="btn secondary sm" data-act="vConvert">Convert to vector</button><p class="xs-t muted">Then edit its points, or give it a stroke that follows the outline.</p>';
+    }
+    if (!h) return r;
+    const sec = document.createElement('section'); sec.className = 'ps9'; sec.dataset.sec = 'shape';
+    sec.innerHTML = `<div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="shape" aria-expanded="true">Shape${ic('chevD', 14)}</button><span class="ps9-a"></span></div><div class="ps9-b">${h}</div>`;
+    const pos = b.querySelector('.ps9[data-sec=pos]'); pos ? pos.after(sec) : b.prepend(sec);
+    return r;
+  };
+  document.addEventListener('input', (e) => {
+    const t = e.target; if (!t.dataset || !t.dataset.v29 || !t.closest('#edProps')) return;
+    const l = curL(); if (!isPath(l) || !l.shape) return; if (!ED.pre) ED.pre = snap();
+    l.shape[t.dataset.v29] = +t.value; l.d = PATH.toD(pathSegs(l)); l.vw = l.w; l.vh = l.h; refreshL(l); // the change event commits (property inputs)
+  });
+
+  /* ---------- pasting: SVG markup (e.g. "Copy as SVG"), images, or the studio's own layers ---------- */
+  const MARK = 'boga-studio-layers';
+  const PASTE = { internal: false };
+  async function pasteSVG(src) {
+    let s; try { s = await RT.svgLayers(src, 1080, 1080); } catch (e) { return toast('This SVG could not be read'); }
+    const [W, H] = dim(), m = Math.max(s.iw, s.ih), k = m > Math.min(W, H) * 0.8 ? (Math.min(W, H) * 0.8) / m : m < 120 ? (W * 0.3) / m : 1, ox = (W - s.iw * k) / 2, oy = (H - s.ih * k) / 2;
+    const ls = [...(s.artwork ? [Im(ox, oy, s.iw * k, s.ih * k, `url('${s.rest}') center/100% 100% no-repeat`, { name: 'Artwork' })] : []), ...s.vectors.map((v) => RT.vecLayer(v, k, ox, oy))];
+    s.texts.forEach((t) => { const sz = Math.round(t.size * k), room = Math.max(6, sz * 0.25), x0 = t.x * k + ox - (t.align === 'center' ? room / 2 : t.align === 'right' ? room : 0), tl = Tx(x0, t.y * k + oy, t.w * k + room, t.text, { name: t.name, size: sz, weight: t.weight, color: t.color, align: t.align, font: t.font, ls: t.letterSpacing * k }); tl.h = t.h * k; ls.push(tl); });
+    if (!ls.length) return toast('Nothing to paste in this SVG');
+    if (ls.length > 1) { const g = uid(); ls.forEach((l) => { l.gid = g; }); }
+    mutate(() => { curP().layers.push(...ls); ED.sel = ls.length === 1 ? ls[0].id : null; ED.ms = ls.length > 1 ? ls.map((l) => l.id) : []; });
+    const nv = s.vectors.length; toast(nv ? `Pasted ${nv} editable vector${nv > 1 ? 's' : ''}${s.artwork ? ', and the rest as a picture' : ''}` : 'Pasted as a picture: this SVG has no simple shapes');
+  }
+  function pasteImage(f) {
+    const r = new FileReader();
+    r.onload = () => { const im = new Image(); im.onload = () => { const [W, H] = dim(), w = Math.min(W * 0.7, im.width), h = Math.min(w * (im.height / im.width), H * 0.8), ww = h * (im.width / im.height); addLayer(Im(Math.round((W - ww) / 2), Math.round((H - h) / 2), Math.round(ww), Math.round(h), `url(${r.result}) center/cover`, { name: 'Pasted image' })); }; im.src = r.result; };
+    r.readAsDataURL(f);
+  }
+  document.addEventListener('paste', (e) => {
+    if (!document.body.classList.contains('in-editor') || ED.editing || persist.readOnly) return;
+    const t = e.target, tag = (t.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || t.isContentEditable) return;
+    const dt = e.clipboardData; if (!dt) return;
+    const txt = dt.getData('text/plain') || '', svg = dt.getData('image/svg+xml') || (/^\s*(<\?xml[\s\S]*?\?>\s*)?(<!--[\s\S]*?-->\s*)*(<!DOCTYPE[^>]*>\s*)?<svg[\s>]/i.test(txt) ? txt : '');
+    const img = [...(dt.files || [])].find((f) => /^image\/(png|jpe?g|webp|gif)$/i.test(f.type));
+    e.preventDefault();
+    if (txt !== MARK && svg) return void pasteSVG(svg);
+    if (txt !== MARK && img) return pasteImage(img);
+    // the studio's own copied layers: replay the paste shortcut for the handlers that own the layer clipboard
+    PASTE.internal = true; try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', code: 'KeyV', ctrlKey: true, bubbles: true })); } finally { PASTE.internal = false; }
+  });
+
+  /* ---------- keyboard (capture: before the single-key shortcuts) ---------- */
+  addEventListener('keydown', (e) => {
+    if (PASTE.internal || !document.body.classList.contains('in-editor') || ED.editing || $('#cmdk')) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    const mod = e.ctrlKey || e.metaKey, k = String(e.key || ''), lk = k.toLowerCase(), stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
+    if (mod && !e.shiftKey && lk === 'v') { e.stopImmediatePropagation(); return; } // no preventDefault: the browser fires 'paste' with the clipboard
+    if (mod && !e.shiftKey && (lk === 'c' || lk === 'x') && (curL() || (ED.ms && ED.ms.length))) { try { navigator.clipboard && navigator.clipboard.writeText(MARK).catch(() => {}); } catch (x) {} return; }
+    if (PEN.on) {
+      if (k === 'Enter' || k === 'Escape') { stop(); penFinish(); }
+      else if (k === 'Backspace' || k === 'Delete') { stop(); PEN.pts.pop(); drawVec(); }
+      else if (!mod && lk === 'p') { stop(); stopPen(); }
+      return;
+    }
+    if (VE.id) {
+      if (k === 'Enter' || k === 'Escape') { stop(); veEnd(); }
+      else if ((k === 'Backspace' || k === 'Delete') && VE.sel) { stop(); veDelete(); }
+      else if (k.startsWith('Arrow') && VE.sel) { stop(); const n = e.shiftKey ? 10 : 1; veNudge(k === 'ArrowLeft' ? -n : k === 'ArrowRight' ? n : 0, k === 'ArrowUp' ? -n : k === 'ArrowDown' ? n : 0); }
+      return;
+    }
+    if (!mod && !e.altKey && !e.shiftKey && lk === 'p') { stop(); startPen(); return; }
+    if (!mod && k === 'Enter' && isPath(curL())) { stop(); veStart(curL()); }
+  }, true);
+
+  /* ---------- wiring ---------- */
+  const _ds29 = drawSel;
+  drawSel = function () {
+    _ds29.apply(this, arguments);
+    if (VE.id || PEN.on) { const s = $('#sel'), f = $('#ftb'); s && (s.hidden = true); f && (f.hidden = true); }
+  };
+  const _st29 = edStage;
+  edStage = function () { // after undo, redo or a slide change: the edited vector may have changed or gone
+    _st29.apply(this, arguments);
+    if (VE.id) { const l = veLayer(); if (!isPath(l)) Object.assign(VE, { id: null, subs: null, sel: null }); else { VE.subs = nodesOf(l); if (VE.sel && !(VE.subs[VE.sel.s] && VE.subs[VE.sel.s].pts[VE.sel.i])) VE.sel = null; } }
+    drawVec();
+  };
+  const _az29 = applyZoom; applyZoom = function () { _az29.apply(this, arguments); drawVec(); };
+  const _oe29 = openEditor;
+  openEditor = function () {
+    Object.assign(PEN, { on: false, pts: [], hover: null, closed: false }); Object.assign(VE, { id: null, subs: null, sel: null });
+    _oe29.apply(this, arguments);
+    const sc = $('#edScroll'), sca = $('#scaler'); if (!sc || !sca) return;
+    sca.insertAdjacentHTML('beforeend', '<div id="vec" aria-hidden="true"></div>');
+    sc.addEventListener('pointerdown', (e) => {
+      if (PEN.on) { if (e.button !== 0 || ED.space) return; e.preventDefault(); e.stopImmediatePropagation(); return penDown(e); }
+      if (VE.id) veDown(e);
+    }, true);
+    sc.addEventListener('pointermove', (e) => { if (!PEN.on || e.buttons) return; const P = PEN.pts, p = pagePt(e); PEN.hover = e.shiftKey && P.length ? snap45(P[P.length - 1], p[0], p[1]) : p; drawVec(); });
+    sca.addEventListener('dblclick', (e) => {
+      const pt = e.target.closest && e.target.closest('[data-ve="pt"]'); if (VE.id && pt) return veToggle(+pt.dataset.s, +pt.dataset.i);
+      const ly = e.target.closest && e.target.closest('.ly.path'); if (ly && !VE.id) veStart(curP().layers.find((x) => x.id === ly.dataset.id));
+    });
+  };
+
+  /* ---------- SVG export: real vector shapes and text, images embedded ---------- */
+  /** Top-level comma split (commas inside parentheses stay) */
+  const splitTop = (v) => { const out = []; let d = 0, cur = ''; for (const ch of String(v)) { if (ch === '(') d++; else if (ch === ')') d--; if (ch === ',' && !d) { out.push(cur.trim()); cur = ''; } else cur += ch; } if (cur.trim()) out.push(cur.trim()); return out; };
+  async function slideSVG(d, i) {
+    const pg = d.pages[i], [W, H] = RATIOS[d.ratio], defs = []; let n = 0; const nid = () => 'e' + ++n;
+    const host = document.createElement('div'); host.setAttribute('aria-hidden', 'true');
+    host.style.cssText = `position:fixed;left:-100000px;top:0;width:${W}px;height:${H}px;visibility:hidden;pointer-events:none`;
+    host.innerHTML = `<div class="poster" style="width:${W}px;height:${H}px">${posterHTML(pg)}</div>`; document.body.append(host);
+    try {
+      if (document.fonts && document.fonts.ready) await document.fonts.ready;
+      const data = async (u) => { try { return await RT.asDataUrl(new URL(u, location.href).href); } catch (e) { return u; } };
+      /** A CSS background (layers, top first) → SVG fills, bottom first, in a w × h box */
+      const fills = async (bg, w, h) => {
+        const out = [];
+        for (const part of splitTop(bg).reverse()) {
+          if (/^(none|transparent)$/i.test(part)) continue;
+          if (/gradient\(/i.test(part)) { const g = RT.gParse && RT.gParse(part), id = nid(), def = g && svgGrad(g, id, w, h); if (def) { defs.push(def); out.push(`url(#${id})`); } continue; }
+          const u = /url\((['"]?)(.*?)\1\)/i.exec(part);
+          if (u) { const id = nid(), fit = /contain/.test(part) ? 'xMidYMid meet' : /100%\s+100%/.test(part) ? 'none' : 'xMidYMid slice'; defs.push(`<pattern id="${id}" patternUnits="userSpaceOnUse" width="${w}" height="${h}"><image href="${esc(await data(u[2]))}" width="${w}" height="${h}" preserveAspectRatio="${fit}"/></pattern>`); out.push(`url(#${id})`); continue; }
+          out.push(part);
+        }
+        return out;
+      };
+      const ctx = document.createElement('canvas').getContext('2d');
+      const textSVG = (l) => {
+        const el = host.querySelector(`.ly[data-id="${CSS.escape(l.id)}"]`); if (!el) return '';
+        el.style.transform = 'none'; const er = el.getBoundingClientRect(), runs = [];
+        const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let tn, cur = null;
+        while ((tn = walk.nextNode())) {
+          const s = tn.data, par = tn.parentElement;
+          for (let j = 0; j < s.length; ) {
+            const cp = s.codePointAt(j), len = cp > 0xffff ? 2 : 1, rg = document.createRange(); rg.setStart(tn, j); rg.setEnd(tn, j + len);
+            const r = rg.getClientRects()[0], ch = s.slice(j, j + len); j += len;
+            if (!r || ch === '\n') { cur = null; continue; }
+            if (cur && cur.par === par && Math.abs(cur.top - r.top) < 1) { cur.t += ch; cur.l = Math.min(cur.l, r.left); cur.r = Math.max(cur.r, r.right); }
+            else { cur = { par, top: r.top, l: r.left, r: r.right, t: ch }; runs.push(cur); }
+          }
+        }
+        const k = strokesOf(l)[0], tst = k ? ` stroke="${esc(k.c)}" stroke-width="${k.a === 'outside' ? k.w * 2 : k.w}" stroke-linejoin="round"${k.a === 'outside' ? ' paint-order="stroke"' : ''}` : '';
+        return runs.filter((u) => u.t.trim()).map((u) => {
+          const cs = getComputedStyle(u.par), rtl = cs.direction === 'rtl';
+          ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`; const m = ctx.measureText(u.t), asc = m.fontBoundingBoxAscent || parseFloat(cs.fontSize) * 0.8;
+          const txt = cs.textTransform === 'uppercase' ? u.t.toUpperCase() : cs.textTransform === 'lowercase' ? u.t.toLowerCase() : u.t;
+          const ls = parseFloat(cs.letterSpacing), deco = /underline/.test(cs.textDecorationLine) ? ' text-decoration="underline"' : '';
+          return `<text x="${Math.round(((rtl ? u.r : u.l) - er.left) * 100) / 100}" y="${Math.round((u.top - er.top + asc) * 100) / 100}" font-family="${esc(cs.fontFamily)}" font-size="${cs.fontSize}" font-weight="${cs.fontWeight}"${cs.fontStyle !== 'normal' ? ` font-style="${cs.fontStyle}"` : ''} fill="${cs.color}"${tst}${ls ? ` letter-spacing="${ls}"` : ''}${deco}${rtl ? ' direction="rtl"' : ''} xml:space="preserve">${esc(txt)}</text>`;
+        }).join('');
+      };
+      /** One SVG filter for a layer's shadows (drop: under it, inner: inside it, spread included) and its blur; returns its id */
+      const fxFilter = (l) => {
+        const sh = shadowsOf(l).filter((e) => l.type !== 'text' || e.k !== 'inner'), parts = [], under = [], over = [];
+        sh.forEach((e, i) => {
+          const r = 's' + i, sd = e.b / 2, morph = (op, rad) => (rad ? `<feMorphology operator="${op}" radius="${rad}"/>` : '');
+          if (e.k === 'inner') { // inside the shape: its alpha minus a shifted, blurred copy (a positive spread thickens it)
+            parts.push(`<feOffset in="SourceAlpha" dx="${e.x}" dy="${e.y}"/>${morph(e.s > 0 ? 'erode' : 'dilate', Math.abs(e.s))}<feGaussianBlur stdDeviation="${sd}"/><feComposite in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="${r}a"/><feFlood flood-color="${esc(e.c)}" flood-opacity="${e.o}"/><feComposite in2="${r}a" operator="in" result="${r}"/>`);
+            over.push(r);
+          } else { // under it: the alpha grown by the spread, shifted, blurred, colored
+            parts.push(`<feOffset in="SourceAlpha" dx="${e.x}" dy="${e.y}"/>${morph(e.s < 0 ? 'erode' : 'dilate', Math.abs(e.s))}<feGaussianBlur stdDeviation="${sd}" result="${r}b"/><feFlood flood-color="${esc(e.c)}" flood-opacity="${e.o}"/><feComposite in2="${r}b" operator="in" result="${r}"/>`);
+            under.push(r);
+          }
+        });
+        if (!sh.length && !l.bl) return null;
+        const id = nid(), merge = `<feMerge result="m">${[...under].reverse().map((r) => `<feMergeNode in="${r}"/>`).join('')}<feMergeNode in="SourceGraphic"/>${[...over].reverse().map((r) => `<feMergeNode in="${r}"/>`).join('')}</feMerge>`;
+        defs.push(`<filter id="${id}" x="-50%" y="-50%" width="200%" height="200%">${parts.join('')}${merge}${l.bl ? `<feGaussianBlur in="m" stdDeviation="${l.bl}"/>` : ''}</filter>`);
+        return id;
+      };
+      const body = [], TT = treeOf(pg), clipIds = new Map();
+      /** A frame's clip (page coordinates, rounded corners kept), made once */
+      const frameClip = (f) => { if (!clipIds.has(f.id)) { const id = nid(); defs.push(`<clipPath id="${id}"><rect x="${f.x}" y="${f.y}" width="${f.w}" height="${f.h}"${f.r ? ` rx="${Math.min(f.r, f.w / 2, f.h / 2)}"` : ''}/></clipPath>`); clipIds.set(f.id, id); } return clipIds.get(f.id); };
+      const bgF = await fills(String(pg.bg || '#ffffff'), W, H); bgF.forEach((f) => body.push(`<rect width="${W}" height="${H}" fill="${esc(f)}"/>`));
+      for (const l of pg.layers) {
+        const anc = ancestorsT(TT, l); // containers: hidden ones hide their content, opacity multiplies, frames clip
+        if (l.hidden || l.type === 'group' || anc.some((a) => a.hidden)) continue;
+        const aop = anc.reduce((k, a) => k * (a.op ?? 1), 1), clips = anc.filter((a) => a.type === 'frame' && !a.noclip).reverse().map(frameClip);
+        const w = l.w, h = l.h, [sx, sy] = flips(l), tf = [`translate(${l.x} ${l.y})`]; let inner = '', extra = '';
+        if (l.rot) tf.push(`rotate(${l.rot} ${w / 2} ${h / 2})`);
+        if (sx < 0 || sy < 0) tf.push(`translate(${w / 2} ${h / 2}) scale(${sx} ${sy}) translate(${-w / 2} ${-h / 2})`);
+        const fid = fxFilter(l); if (fid) extra += ` filter="url(#${fid})"`;
+        const cm = /^polygon\((.*)\)$/.exec(l.clip || '');
+        if (cm) { const id = nid(), pts = cm[1].split(',').map((p) => p.trim().split(/\s+/).map((v, j) => (v.endsWith('%') ? (parseFloat(v) / 100) * (j ? h : w) : parseFloat(v) || 0)).join(',')).join(' '); defs.push(`<clipPath id="${id}"><polygon points="${pts}"/></clipPath>`); extra += ` clip-path="url(#${id})"`; }
+        if ((l.op ?? 1) * aop < 1) extra += ` opacity="${Math.round((l.op ?? 1) * aop * 1000) / 1000}"`;
+        if (l.blend && l.blend !== 'normal') extra += ` style="mix-blend-mode:${l.blend}"`;
+        if (l.type === 'text') inner = textSVG(l);
+        else if (l.type === 'path') inner = await RT.inlineUrls(pathHTML(l, { shadow: false })); // same drawing as the canvas; shadows: the group's filter else if (l.icon && IC[l.icon]) inner = `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="none" stroke="${hex(l.fill)}" stroke-width="${l.isw || 2}" stroke-linecap="round" stroke-linejoin="round">${IC[l.icon]}</svg>`;
+        else {
+          const ell = l.type === 'ellipse', rr = Math.min(l.r || 0, w / 2, h / 2), ov = RT.ovCss ? RT.ovCss(l) : '';
+          const shape = (f, inset, more = '') => (ell ? `<ellipse cx="${w / 2}" cy="${h / 2}" rx="${w / 2 - inset}" ry="${h / 2 - inset}" fill="${esc(f)}"${more}/>` : `<rect x="${inset}" y="${inset}" width="${w - 2 * inset}" height="${h - 2 * inset}"${rr ? ` rx="${Math.max(0, rr - inset)}"` : ''} fill="${esc(f)}"${more}/>`);
+          (await fills((ov ? ov + ', ' : '') + String(l.fill || 'none'), w, h)).forEach((f) => { inner += shape(f, 0); });
+          // strokes, bottom first: inside (inset by half the width), centered on the edge, or outside (outset)
+          [...strokesOf(l)].reverse().forEach((k) => {
+            const dash = k.d === 'dash' ? ` stroke-dasharray="${k.w * 3} ${k.w * 2}"` : k.d === 'dot' ? ` stroke-dasharray="0 ${k.w * 2}" stroke-linecap="round"` : '';
+            inner += shape('none', k.a === 'inside' ? k.w / 2 : k.a === 'outside' ? -k.w / 2 : 0, ` stroke="${esc(k.c)}" stroke-width="${k.w}"${dash}`);
+          });
+        }
+        if (inner) body.push(clips.map((c) => `<g clip-path="url(#${c})">`).join('') + `<g id="${esc(String(l.name || l.type).replace(/[^\w-]+/g, '-'))}-${n}" transform="${tf.join(' ')}"${extra}>${inner}</g>` + '</g>'.repeat(clips.length));
+      }
+      const fonts = RT.fontCSS ? await RT.fontCSS(posterHTML(pg)) : '';
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${fonts ? `<style>${fonts}</style>` : ''}<defs>${defs.join('')}</defs>${body.join('')}</svg>`;
+    } finally { host.remove(); }
+  }
+  RT.slideSVG = slideSVG;
+})();
+
+/* ============ v30 · strokes and effects as lists (Figma's Stroke and Effects sections) ============ */
+/* The first stroke and the first drop shadow keep their original fields (see strokesOf / shadowsOf); the lists hold the rest.
+   Removing the first one promotes the next, so a layer with strokes or shadows always has its first one set. */
+(function () {
+  const isT = (l) => l.type === 'text', P = (l) => l.type === 'path';
+  const openPath = (l) => P(l) && !/z/i.test(PATH.toD(pathSegs(l)));
+  const STF = { c: 'stroke', w: 'sw', a: 'sa', d: 'sd' };
+  /** Stroke i: -1 is the first stroke (stroke, sw, sa, sd); others are sts[i] */
+  const stGet = (l, i) => (i < 0 ? { c: l.stroke, w: l.sw || 3, a: l.sa || strokeHome(l), d: l.sd || null } : l.sts[i]);
+  const stSet = (l, i, k, v) => { const o = i < 0 ? l : l.sts[i], f = i < 0 ? STF[k] : k; if (v == null) delete o[f]; else o[f] = v; };
+  const FX1 = { x: 'shx', y: 'shy', b: 'shb', s: 'shs', c: 'shc', o: 'sha', h: 'shh' };
+  /** Effect i: -1 is the first drop shadow (shx… fields); others are fxs[i] */
+  const fxGet = (l, i) => (i < 0 ? { k: 'drop', x: l.shx || 0, y: l.shy || 0, b: l.shb || 0, s: l.shs || 0, c: l.shc || '#000000', o: l.sha ?? 0.45, h: !!l.shh } : l.fxs[i]);
+  const fxSet = (l, i, k, v) => { const o = i < 0 ? l : l.fxs[i], f = i < 0 ? FX1[k] : k; if (v == null || v === false) delete o[f]; else o[f] = v; };
+  const hasFirst = (l) => !!(l.shb || l.shy || l.shx || l.shs) || l.shc != null;
+  const num = (key, v, lbl, step = 1, min) => `<label class="n30"><span>${lbl}</span><input class="field sm" type="number" step="${step}"${min != null ? ` min="${min}"` : ''} data-e30="${key}" value="${Math.round(v * 100) / 100}"></label>`;
+  const seg = (act, i, cur, opts) => `<div class="seg s30">${opts.map(([v, t]) => `<button type="button" class="${cur === v ? 'on' : ''}" data-act="${act}" data-i="${i}" data-v="${v}">${t}</button>`).join('')}</div>`;
+  const eye = (act, i, off, what) => `<button type="button" class="btn ghost icon sm" data-act="${act}" data-i="${i}" data-tip="${off ? 'Show' : 'Hide'} ${what}">${ic(off ? 'eyeOff' : 'eye', 15)}</button>`;
+  const del = (act, i, what) => `<button type="button" class="btn ghost icon sm" data-act="${act}" data-i="${i}" data-tip="Remove ${what}">${ic('minus', 15)}</button>`;
+  const plus = (act, tip) => `<button type="button" class="btn ghost icon sm" data-act="${act}" data-tip="${tip}">${ic('plus', 16)}</button>`;
+
+  function strokeHTML(l) {
+    const T = isT(l), list = [...(l.stroke ? [-1] : []), ...(l.sts || []).map((_, i) => i)];
+    const rows = list.map((i) => {
+      const k = stGet(l, i), al = T ? [['center', 'Center'], ['outside', 'Outside']] : [['inside', 'Inside'], ['center', 'Center'], ['outside', 'Outside']];
+      const dashes = !T && (P(l) || i < 0); // boxes: CSS has one dashed border or outline, so only the first stroke can dash
+      return `<div class="r30${i >= 0 && k.h ? ' off' : ''}"><div class="r30-top"><input type="color" data-e30="st:${i}:c" value="${hex(k.c || '#000000')}">${num(`st:${i}:w`, k.w || 1, 'Width', 0.5, 0.5)}<span class="grow"></span>${i >= 0 ? eye('s30Eye', i, k.h, 'stroke') : ''}${del('s30Del', i, 'stroke')}</div>`
+        + (openPath(l) ? '' : seg('s30Align', i, k.a || strokeHome(l), al))
+        + (dashes ? seg('s30Dash', i, k.d || 'solid', [['solid', 'Solid'], ['dash', 'Dashes'], ['dot', 'Dots']]) : '') + '</div>';
+    });
+    return { head: T && l.stroke ? '' : plus('s30Add', 'Add stroke'), body: rows.join('') || '<p class="xs-t muted">No stroke.</p>' };
+  }
+  function effectsHTML(l) {
+    const T = isT(l), list = [...(hasFirst(l) ? [-1] : []), ...(l.fxs || []).map((_, i) => i)], noInner = T || P(l);
+    const rows = list.map((i) => {
+      const e = fxGet(l, i);
+      return `<div class="r30${e.h ? ' off' : ''}"><div class="r30-top"><b class="sm-t">${e.k === 'inner' ? 'Inner shadow' : 'Drop shadow'}</b><span class="grow"></span>${eye('e30Eye', i, e.h, 'effect')}${del('e30Del', i, 'effect')}</div>`
+        + (noInner ? '' : seg('e30Kind', i, e.k, [['drop', 'Drop'], ['inner', 'Inner']]))
+        + `<div class="q30">${num(`fx:${i}:x`, e.x, 'X')}${num(`fx:${i}:y`, e.y, 'Y')}${num(`fx:${i}:b`, e.b, 'Blur', 1, 0)}${noInner ? '' : num(`fx:${i}:s`, e.s, 'Spread')}</div>`
+        + `<div class="r30-top"><input type="color" data-e30="fx:${i}:c" value="${hex(e.c)}">${num(`fx:${i}:o`, Math.round(e.o * 100), 'Opacity %', 1, 0)}</div></div>`;
+    });
+    if (l.bl) rows.push(`<div class="r30"><div class="r30-top"><b class="sm-t">Layer blur</b><span class="grow"></span>${del('e30Del', 'bl', 'blur')}</div><input type="range" min="0" max="60" data-e30="bl" value="${l.bl}" aria-label="Layer blur"></div>`);
+    if (l.bbl && !T) rows.push(`<div class="r30"><div class="r30-top"><b class="sm-t">Background blur</b><span class="grow"></span>${del('e30Del', 'bbl', 'blur')}</div><input type="range" min="0" max="40" data-e30="bbl" value="${l.bbl}" aria-label="Background blur"></div>`);
+    const add = [['drop', 'Drop shadow'], ...(noInner ? [] : [['inner', 'Inner shadow']]), ...(l.bl ? [] : [['bl', 'Layer blur']]), ...(l.bbl || T ? [] : [['bbl', 'Background blur']])];
+    const menu = ED.e30Menu ? `<div class="chips m30">${add.map(([k, t]) => `<button type="button" class="chip" data-act="e30New" data-k="${k}">${t}</button>`).join('')}</div>` : '';
+    return { head: plus('e30Add', 'Add effect'), body: menu + (rows.join('') || (menu ? '' : '<p class="xs-t muted">No effects.</p>')) };
+  }
+  /** Fills a properties section (made after `after` when the panel has none yet) */
+  function put(b, key, title, html, after) {
+    let sec = b.querySelector(`.ps9[data-sec=${key}]`);
+    if (!sec) {
+      sec = document.createElement('section'); sec.className = 'ps9'; sec.dataset.sec = key;
+      sec.innerHTML = `<div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="${key}" aria-expanded="true">${title}${ic('chevD', 14)}</button><span class="ps9-a"></span></div><div class="ps9-b"></div>`;
+      const ref = after.map((k) => b.querySelector(`.ps9[data-sec=${k}]`)).find(Boolean); ref ? ref.after(sec) : b.append(sec);
+    }
+    sec.querySelector('.ps9-b').innerHTML = html.body; sec.querySelector('.ps9-a').innerHTML = html.head;
+  }
+  const _ep30 = edProps;
+  edProps = function () {
+    const r = _ep30.apply(this, arguments), l = curL(), b = $('#edProps .body');
+    if (!l || ED.rtab !== 'design' || !b || !b.querySelector('.ps9')) return r;
+    if (ED.e30For !== l.id) { ED.e30For = l.id; ED.e30Menu = false; }
+    put(b, 'stroke', 'Stroke', strokeHTML(l), ['fill', 'look', 'shape', 'text', 'pos']);
+    put(b, 'fx', 'Effects', effectsHTML(l), ['stroke', 'fill', 'look']);
+    return r;
+  };
+
+  Object.assign(ACT, {
+    s30Add: () => { const l = curL(); if (!l) return; mutate(() => { if (!l.stroke) { l.stroke = '#000000'; l.sw = isT(l) ? 2 : 4; delete l.sa; delete l.sd; } else (l.sts = l.sts || []).push({ c: '#000000', w: 2 }); }); },
+    s30Del: (a) => {
+      const l = curL(), i = +a.dataset.i; if (!l) return;
+      mutate(() => {
+        if (i < 0) { Object.values(STF).forEach((f) => delete l[f]); const n = l.sts && l.sts.shift(); if (n) { l.stroke = n.c; l.sw = n.w; if (n.a && n.a !== strokeHome(l)) l.sa = n.a; if (n.d) l.sd = n.d; } }
+        else l.sts.splice(i, 1);
+        if (l.sts && !l.sts.length) delete l.sts;
+      });
+    },
+    s30Eye: (a) => { const l = curL(), x = l && l.sts && l.sts[+a.dataset.i]; x && mutate(() => { if (x.h) delete x.h; else x.h = true; }); },
+    s30Align: (a) => { const l = curL(), i = +a.dataset.i; l && mutate(() => stSet(l, i, 'a', i < 0 && a.dataset.v === strokeHome(l) ? null : a.dataset.v)); },
+    s30Dash: (a) => { const l = curL(), i = +a.dataset.i; l && mutate(() => stSet(l, i, 'd', a.dataset.v === 'solid' ? null : a.dataset.v)); },
+    e30Add: () => { ED.e30Menu = !ED.e30Menu; edProps(); },
+    e30New: (a) => {
+      const l = curL(), k = a.dataset.k; ED.e30Menu = false; if (!l) return;
+      mutate(() => {
+        if (k === 'bl') l.bl = 8; else if (k === 'bbl') l.bbl = 16;
+        else if (k === 'drop' && !hasFirst(l)) { Object.assign(l, { shx: 0, shy: 8, shb: 24, sha: 0.25, shc: '#000000' }); delete l.shs; delete l.shh; }
+        else (l.fxs = l.fxs || []).push(k === 'inner' ? { k, x: 0, y: 4, b: 12, s: 0, c: '#000000', o: 0.25 } : { k: 'drop', x: 0, y: 8, b: 24, s: 0, c: '#000000', o: 0.25 });
+      });
+    },
+    e30Del: (a) => {
+      const l = curL(), i = a.dataset.i; if (!l) return;
+      mutate(() => {
+        if (i === 'bl' || i === 'bbl') delete l[i];
+        else if (+i < 0) { // the first drop shadow: the next one (if any) takes its place
+          Object.values(FX1).forEach((f) => delete l[f]);
+          const j = (l.fxs || []).findIndex((e) => e.k === 'drop');
+          if (j >= 0) { const e = l.fxs.splice(j, 1)[0]; Object.assign(l, { shx: e.x, shy: e.y, shb: e.b, shc: e.c, sha: e.o }); if (e.s) l.shs = e.s; if (e.h) l.shh = true; }
+        } else l.fxs.splice(+i, 1);
+        if (l.fxs && !l.fxs.length) delete l.fxs;
+      });
+    },
+    e30Eye: (a) => { const l = curL(), i = +a.dataset.i; l && mutate(() => fxSet(l, i, 'h', !fxGet(l, i).h)); },
+    e30Kind: (a) => {
+      const l = curL(), i = +a.dataset.i, k = a.dataset.v; if (!l || fxGet(l, i).k === k) return;
+      mutate(() => {
+        if (i < 0) { const e = fxGet(l, -1); Object.values(FX1).forEach((f) => delete l[f]); (l.fxs = l.fxs || []).unshift({ k, x: e.x, y: e.y, b: e.b, s: e.s, c: e.c, o: e.o, ...(e.h ? { h: true } : {}) }); }
+        else l.fxs[i].k = k;
+      });
+    },
+  });
+  // typing in a row: live on the canvas; the change event commits it as one undo step (property inputs)
+  document.addEventListener('input', (e) => {
+    const t = e.target; if (!t.dataset || t.dataset.e30 == null || !t.closest('#edProps')) return;
+    const l = curL(); if (!l) return; if (!ED.pre) ED.pre = snap();
+    const [kind, si, k] = t.dataset.e30.split(':'), v = t.type === 'number' || t.type === 'range' ? +t.value : t.value;
+    if (kind === 'bl' || kind === 'bbl') l[kind] = v;
+    else if (kind === 'st') stSet(l, +si, k, k === 'w' ? Math.max(0.5, v) : v);
+    else if (kind === 'fx') fxSet(l, +si, k, k === 'o' ? clamp(v / 100, 0, 1) : k === 'b' ? Math.max(0, v) : v);
+    refreshL(l); drawSel();
+  });
+})();
+
+/* ============ v31 · frames and groups as layers (a layer tree, like Figma) ============ */
+/* pages[].layers stays one flat list in paint order, with page coordinates. A child names its container in `pid`:
+   a frame (a box with fill, stroke and effects that clips its content unless `noclip`) or a group (no drawing, its box is
+   always its content's bounds). A container's content comes right after it in the list. syncTree keeps all of that true,
+   and makes the content follow when a container itself is moved or resized (containers keep their last box in _x/_y/_w/_h). */
+function isContainer(l) { return !!l && (l.type === 'frame' || l.type === 'group'); }
+/** id → layer, and container id ('' for the page) → its children in paint order */
+function treeOf(pg) {
+  const byId = new Map(), kids = new Map();
+  (pg && pg.layers || []).forEach((l) => { byId.set(l.id, l); const k = l.pid || ''; if (!kids.has(k)) kids.set(k, []); kids.get(k).push(l); });
+  return { byId, kids };
+}
+function withTree(pg, fn) { const prev = RT.tree; RT.tree = treeOf(pg); try { return fn(); } finally { RT.tree = prev; } }
+/** Containers above a layer, nearest first */
+function ancestorsT(T, l) { const out = []; for (let p = l && l.pid && T.byId.get(l.pid), n = 0; p && n < 64; p = p.pid && T.byId.get(p.pid), n++) out.push(p); return out; }
+function descendantsT(T, id) { const out = []; const walk = (k) => (T.kids.get(k) || []).forEach((c) => { out.push(c); if (isContainer(c)) walk(c.id); }); walk(id); return out; }
+/** Old `gid` groups (and anything still writing them: text styles, pasted SVG) → group layers */
+function migrateGroups(pg) {
+  const L = pg.layers, by = new Map();
+  L.forEach((l) => { if (l.gid) { if (!by.has(l.gid)) by.set(l.gid, []); by.get(l.gid).push(l); } });
+  by.forEach((ms) => {
+    const pids = new Set(ms.map((m) => m.pid || '')), pid = pids.size === 1 ? [...pids][0] : '';
+    L.splice(L.indexOf(ms[0]), 0, { id: uid(), type: 'group', name: 'Group', x: 0, y: 0, w: 1, h: 1, rot: 0, op: 1, ...(pid ? { pid } : {}) });
+    const g = L[L.indexOf(ms[0]) - 1]; ms.forEach((m) => { m.pid = g.id; delete m.gid; });
+  });
+}
+/** Every container's content right after it, children in their paint order; broken parents (gone, not a container, a loop) dropped */
+function normalizeOrder(pg) {
+  const L = pg.layers, byId = new Map(L.map((l) => [l.id, l]));
+  L.forEach((l) => { if (l.pid && !isContainer(byId.get(l.pid))) delete l.pid; });
+  L.forEach((l) => { for (let p = l.pid, n = 0; p && n <= L.length; p = byId.get(p) && byId.get(p).pid, n++) if (p === l.id) { delete l.pid; break; } });
+  const T = treeOf(pg), out = [], walk = (k) => (T.kids.get(k) || []).forEach((l) => { out.push(l); if (isContainer(l)) walk(l.id); });
+  walk('');
+  if (out.length === L.length && out.every((l, i) => l === L[i])) return false;
+  L.splice(0, L.length, ...out); return true;
+}
+/** Where a frame's child goes when the frame's box changes: its constraint (left / right / both / center / scale per axis) */
+function constrain(k, O, N) {
+  [['h', 'x', 'w'], ['v', 'y', 'h']].forEach(([ax, P, S]) => {
+    const c = (k.ct && k.ct[ax]) || 'start', o0 = O[P], os = O[S], n0 = N[P], ns = N[S];
+    if (c === 'end') k[P] += n0 + ns - (o0 + os);
+    else if (c === 'center') k[P] += n0 + ns / 2 - (o0 + os / 2);
+    else if (c === 'both') { k[P] += n0 - o0; k[S] = Math.max(1, k[S] + ns - os); }
+    else if (c === 'scale' && os) { k[P] = n0 + ((k[P] - o0) * ns) / os; k[S] = Math.max(1, (k[S] * ns) / os); }
+    else k[P] += n0 - o0; // start: keeps its distance to the left / top edge
+  });
+}
+/**
+ * Auto layout (frame.al = { d: 'h' | 'v', g: gap, p: [top, right, bottom, left], m: main 'start' | 'center' | 'end' | 'between',
+ * c: cross 'start' | 'center' | 'end', hw / hh: hug width / height }): places the frame's children in a row or a column.
+ * A child can fill the main axis (gr), stretch across (stc) or stay out of the flow (ab: positioned by its constraints).
+ */
+function layoutFrame(f, kids, keep) { // keep: layers being dragged, they hold their slot but aren't moved
+  const a = f.al, H = a.d !== 'v', [pt, pr, pb, pl] = a.p || [0, 0, 0, 0], gap = a.g || 0, n = kids.length;
+  const M = H ? 'x' : 'y', C = H ? 'y' : 'x', MS = H ? 'w' : 'h', CS = H ? 'h' : 'w', m0 = H ? pl : pt, m1 = H ? pr : pb, c0 = H ? pt : pl, c1 = H ? pb : pr;
+  const hugM = H ? a.hw : a.hh, hugC = H ? a.hh : a.hw, between = a.m === 'between' && n > 1;
+  if (hugM) f[MS] = Math.max(1, m0 + m1 + kids.reduce((s, k) => s + k[MS], 0) + gap * Math.max(0, n - 1));
+  if (hugC) f[CS] = Math.max(1, c0 + c1 + Math.max(0, ...kids.filter((k) => !k.stc).map((k) => k[CS])));
+  const innerM = f[MS] - m0 - m1, innerC = f[CS] - c0 - c1, grows = hugM ? [] : kids.filter((k) => k.gr);
+  if (grows.length) { const fixed = kids.filter((k) => !k.gr).reduce((s, k) => s + k[MS], 0), each = Math.max(1, (innerM - fixed - gap * Math.max(0, n - 1)) / grows.length); grows.forEach((k) => { k[MS] = each; }); }
+  const sum = kids.reduce((s, k) => s + k[MS], 0), g = between && !grows.length ? (innerM - sum) / (n - 1) : gap, rest = innerM - sum - g * Math.max(0, n - 1);
+  let cur = f[M] + m0 + (grows.length || between ? 0 : a.m === 'center' ? rest / 2 : a.m === 'end' ? rest : 0);
+  kids.forEach((k) => {
+    if (keep && keep.has(k.id)) { cur += k[MS] + g; return; }
+    if (k.stc) k[CS] = Math.max(1, innerC);
+    k[M] = cur; cur += k[MS] + g;
+    k[C] = f[C] + c0 + (a.c === 'center' ? (innerC - k[CS]) / 2 : a.c === 'end' ? innerC - k[CS] : 0);
+  });
+}
+/**
+ * Keeps a page's tree true; returns the layers whose drawing changed (to refresh while dragging). Repeats until stable:
+ * 1) a container moved or resized directly (panel, arrows, the agent, a drag, a parent's auto layout): its children follow,
+ *    a group's by the same move and scale, a frame's by their constraints; nested containers pass it on to their own content;
+ * 2) groups take their content's bounds, empty groups go; 3) auto layout frames place their children (innermost first).
+ * Containers remember their box in _x/_y/_w/_h. Layers being dragged float (they drop into the flow on release).
+ */
+function syncTree(pg) {
+  if (!pg || !pg.layers) return [];
+  if (pg.layers.some((l) => l.gid)) migrateGroups(pg);
+  normalizeOrder(pg);
+  const changed = new Set(), r2 = (v) => Math.round(v * 100) / 100;
+  const floating = RT.dragOn() ? new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []) : null;
+  const boxOf = (l) => [l.x, l.y, l.w, l.h].join(',');
+  for (let pass = 0; pass < 6; pass++) {
+    const T = treeOf(pg), before = new Map(pg.layers.map((l) => [l, boxOf(l)]));
+    // 1) top-down: direct children follow their container
+    const visit = (k) => (T.kids.get(k) || []).forEach((c) => {
+      if (isContainer(c) && c._w != null && (c.x !== c._x || c.y !== c._y || c.w !== c._w || c.h !== c._h)) {
+        const O = { x: c._x, y: c._y, w: c._w, h: c._h }, sx = c._w ? c.w / c._w : 1, sy = c._h ? c.h / c._h : 1;
+        (T.kids.get(c.id) || []).forEach((d) => {
+          if (c.type === 'group') { d.x = c.x + (d.x - O.x) * sx; d.y = c.y + (d.y - O.y) * sy; d.w *= sx; d.h *= sy; }
+          else constrain(d, O, c);
+        });
+        descendantsT(T, c.id).forEach((d) => changed.add(d)); // a frame's new box changes its content's clipping too
+        c._x = c.x; c._y = c.y; c._w = c.w; c._h = c.h;
+      }
+      visit(c.id);
+    });
+    visit('');
+    // 2) groups wrap their content (innermost first); empty groups go
+    for (const g of [...pg.layers].reverse()) {
+      if (g.type !== 'group') continue;
+      const ks = treeOf(pg).kids.get(g.id) || [], vis = ks.filter((x) => !x.hidden), use = vis.length ? vis : ks;
+      if (!ks.length) { pg.layers.splice(pg.layers.indexOf(g), 1); if (ED.sel === g.id) ED.sel = null; continue; }
+      const bs = use.map(aabb), x = Math.min(...bs.map((b) => b.x)), y = Math.min(...bs.map((b) => b.y)), w = Math.max(...bs.map((b) => b.x + b.w)) - x, h = Math.max(...bs.map((b) => b.y + b.h)) - y;
+      if (g.x !== x || g.y !== y || g.w !== w || g.h !== h) { Object.assign(g, { x, y, w, h, rot: 0 }); g._x = x; g._y = y; g._w = w; g._h = h; }
+    }
+    // 3) auto layout, innermost frames first (a hugging frame is sized before its parent places it)
+    const T2 = treeOf(pg);
+    [...pg.layers].reverse().forEach((f) => {
+      if (f.type !== 'frame' || !f.al) return;
+      const kids = (T2.kids.get(f.id) || []).filter((k) => !k.hidden && !k.ab);
+      const fw = f.w, fh = f.h; layoutFrame(f, kids, floating);
+      kids.forEach((k) => { k.x = r2(k.x); k.y = r2(k.y); k.w = r2(k.w); k.h = r2(k.h); });
+      if (f.w !== fw || f.h !== fh) { f.w = r2(f.w); f.h = r2(f.h); }
+    });
+    let moved = false;
+    pg.layers.forEach((l) => { if (before.get(l) !== boxOf(l)) { changed.add(l); moved = true; } });
+    if (!moved && pass > 0) break;
+  }
+  pg.layers.forEach((c) => { if (isContainer(c)) { c._x = c.x; c._y = c.y; c._w = c.w; c._h = c.h; if (c.rot) c.rot = 0; } });
+  return [...changed];
+}
+/** Page point → a layer's own box pixels (rotation and flips undone) */
+function toBox(l, px, py) {
+  const t = (-(l.rot || 0) * Math.PI) / 180, vx = px - l.x - l.w / 2, vy = py - l.y - l.h / 2;
+  return [(vx * Math.cos(t) - vy * Math.sin(t)) * (l.fx === true ? -1 : 1) + l.w / 2, (vx * Math.sin(t) + vy * Math.cos(t)) * (l.fy === true ? -1 : 1) + l.h / 2];
+}
+/** Sutherland–Hodgman: polygon `subj` cut by the convex polygon `clip` */
+function clipPoly(subj, clip) {
+  const area = clip.reduce((a, p, i) => { const q = clip[(i + 1) % clip.length]; return a + p[0] * q[1] - q[0] * p[1]; }, 0), sgn = area < 0 ? -1 : 1;
+  let out = subj;
+  clip.forEach((a, i) => {
+    const b = clip[(i + 1) % clip.length], inside = (p) => sgn * ((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) >= 0;
+    const cut = (p, q) => { const d1 = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]), d2 = (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0]), t = d1 / (d1 - d2); return [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]; };
+    const src = out; out = [];
+    src.forEach((p, j) => { const q = src[(j + 1) % src.length]; if (inside(q)) { if (!inside(p)) out.push(cut(p, q)); out.push(q); } else if (inside(p)) out.push(cut(p, q)); });
+  });
+  return out;
+}
+/** CSS clip-path for a layer inside clipping frames (frames don't rotate: their boxes intersect into one rectangle) */
+function clipCss(l, frames) {
+  let x0 = -Infinity, y0 = -Infinity, x1 = Infinity, y1 = Infinity;
+  frames.forEach((f) => { x0 = Math.max(x0, f.x); y0 = Math.max(y0, f.y); x1 = Math.min(x1, f.x + f.w); y1 = Math.min(y1, f.y + f.h); });
+  if (x1 <= x0 || y1 <= y0) return 'clip-path:inset(50%);';
+  const r2 = (n) => Math.round(n * 100) / 100, own = /^polygon\((.*)\)$/.exec(l.clip || '');
+  if (!own && !l.rot && l.fx !== true && l.fy !== true) {
+    const f = frames[0], round = frames.length === 1 && f.r ? ` round ${Math.min(f.r, f.w / 2, f.h / 2)}px` : '';
+    return `clip-path:inset(${r2(y0 - l.y)}px ${r2(l.x + l.w - x1)}px ${r2(l.y + l.h - y1)}px ${r2(x0 - l.x)}px${round});`;
+  }
+  let poly = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(([px, py]) => toBox(l, px, py));
+  if (own) poly = clipPoly(own[1].split(',').map((p) => p.trim().split(/\s+/).map((v, j) => (v.endsWith('%') ? (parseFloat(v) / 100) * (j ? l.h : l.w) : parseFloat(v) || 0))), poly);
+  return poly.length > 2 ? `clip-path:polygon(${poly.map(([a, b]) => `${r2(a)}px ${r2(b)}px`).join(',')});` : 'clip-path:inset(50%);';
+}
+
+(function () {
+  Object.assign(IC, { frame31: '<path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 7h18"/><path d="M3 17h18"/>' });
+  const P = () => curP(), T0 = () => treeOf(P());
+  /** The group a click on `l` selects: the highest group above it, below the nearest frame and below a group the user went into */
+  RT.topGroup = (pg, l) => { const T = treeOf(pg); let top = null; for (const a of ancestorsT(T, l)) { if (a.type === 'frame' || a.id === ED.inGroup) break; if (a.type === 'group') top = a; } return top; };
+  /** Selection units: a group's content becomes the group; a layer is dropped when its container is selected too */
+  RT.selUnits = (pg, ids) => {
+    const T = treeOf(pg), unit = ids.map((id) => { const l = T.byId.get(id), g = l && !isContainer(l) && RT.topGroup(pg, l); return g ? g.id : id; }), set = new Set(unit);
+    return [...set].filter((id) => { const l = T.byId.get(id); return l && !ancestorsT(T, l).some((a) => set.has(a.id)); });
+  };
+  let live = false;
+  /** While dragging or typing: keep the tree true and redraw what changed */
+  RT.treeLive = () => { if (live || !ED.d) return; live = true; try { syncTree(P()).forEach((l) => refreshL(l)); } finally { live = false; } };
+
+  /* ---------- drawing: hidden / locked / faded containers pass it down, frames clip ---------- */
+  const _ls31 = lstyle;
+  lstyle = function (l) {
+    let s = _ls31(l); if (!l || !l.pid) return s;
+    const T = RT.tree || (ED.d ? treeOf(P()) : null); if (!T) return s;
+    const anc = ancestorsT(T, l); if (!anc.length) return s;
+    if (anc.some((a) => a.hidden)) return s + 'display:none;';
+    const op = anc.reduce((k, a) => k * (a.op ?? 1), l.op ?? 1); if (op !== (l.op ?? 1)) s += `opacity:${Math.round(op * 1000) / 1000};`;
+    if (anc.some((a) => a.locked)) s += 'pointer-events:none;';
+    const fr = anc.filter((a) => a.type === 'frame' && !a.noclip); if (fr.length) s += clipCss(l, fr);
+    return s;
+  };
+  const _rl31 = refreshL; refreshL = function (l) { _rl31.apply(this, arguments); if (isContainer(l)) RT.treeLive(); };
+  const _st31 = edStage; edStage = function () { if (ED.d) syncTree(P()); return _st31.apply(this, arguments); };
+  const _ds31 = drawSel;
+  drawSel = function () {
+    // leaving a group the user went into: a selection outside it ends that
+    if (ED.inGroup) { const T = T0(), g = T.byId.get(ED.inGroup), ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; if (!g || !ids.length || !ids.every((id) => { const l = T.byId.get(id); return l && ancestorsT(T, l).includes(g); })) ED.inGroup = null; }
+    _ds31.apply(this, arguments);
+    const l = curL(), h = $('#sel [data-h=rot]'); if (h) h.hidden = isContainer(l); // containers don't rotate (yet)
+    if (l && l.type === 'group') { const f = $('#ftb'); f && (f.hidden = true); }
+  };
+
+  /* ---------- delete and duplicate take the content along ---------- */
+  const _del31 = delSel;
+  delSel = function () {
+    const l = curL(); if (!isContainer(l)) return _del31.apply(this, arguments);
+    const gone = new Set([l.id, ...descendantsT(T0(), l.id).map((d) => d.id)]);
+    mutate(() => { curP().layers = curP().layers.filter((x) => !gone.has(x.id)); ED.sel = null; });
+  };
+  const _dup31 = dupSel;
+  dupSel = function () {
+    const l = curL(); if (!isContainer(l)) return _dup31.apply(this, arguments);
+    const T = T0(), block = [l, ...descendantsT(T, l.id)], map = new Map(block.map((x) => [x.id, uid()]));
+    const copy = JSON.parse(JSON.stringify(block)).map((x) => { x.id = map.get(x.id); if (x.pid && map.has(x.pid)) x.pid = map.get(x.pid); x.x += 30; x.y += 30; if (x._x != null) { x._x += 30; x._y += 30; } x.locked = false; return x; });
+    copy[0].name = (l.name || 'Frame') + ' copy';
+    mutate(() => { const L = curP().layers, end = L.indexOf(block[block.length - 1]); L.splice(end + 1, 0, ...copy); ED.sel = copy[0].id; });
+  };
+  const _msDel31 = ACT.msDel;
+  ACT.msDel = () => { const T = T0(); if (ED.ms) ED.ms = [...new Set(ED.ms.flatMap((id) => [id, ...descendantsT(T, id).map((d) => d.id)]))]; _msDel31(); };
+
+  /* ---------- group, ungroup, frame the selection ---------- */
+  function wrapSel(kind) {
+    const pg = P(), T = treeOf(pg), ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : [];
+    if (!ids.length) return toast(kind === 'frame' ? 'Select layers to frame' : 'Select layers to group');
+    const set = new Set(ids), tops = ids.map((id) => T.byId.get(id)).filter((l) => l && !ancestorsT(T, l).some((a) => set.has(a.id)));
+    const pids = new Set(tops.map((l) => l.pid || '')), pid = pids.size === 1 ? [...pids][0] : '', bs = tops.map(aabb);
+    const x = Math.min(...bs.map((b) => b.x)), y = Math.min(...bs.map((b) => b.y)), w = Math.max(...bs.map((b) => b.x + b.w)) - x, h = Math.max(...bs.map((b) => b.y + b.h)) - y;
+    const n = pg.layers.filter((l) => l.type === kind).length + 1;
+    const c = { id: uid(), type: kind, name: (kind === 'frame' ? 'Frame ' : 'Group ') + n, x, y, w, h, rot: 0, op: 1, ...(pid ? { pid } : {}), ...(kind === 'frame' ? { fill: 'transparent', r: 0 } : {}) };
+    mutate(() => { const L = pg.layers; L.splice(Math.min(...tops.map((l) => L.indexOf(l))), 0, c); tops.forEach((l) => { l.pid = c.id; }); syncTree(pg); ED.ms = []; ED.sel = c.id; });
+    toast(kind === 'frame' ? 'Framed. The frame clips what’s inside it.' : 'Grouped. Double-click inside to select one layer.');
+  }
+  function unwrapSel() {
+    const pg = P(), T = treeOf(pg), ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : [];
+    const cs = [...new Set(ids.map((id) => { const l = T.byId.get(id); return isContainer(l) ? l : l && ancestorsT(T, l).find((a) => a.type === 'group'); }).filter(Boolean))];
+    if (!cs.length) return toast('Select a group or a frame');
+    const freed = [];
+    mutate(() => { cs.forEach((c) => { (T.kids.get(c.id) || []).forEach((k) => { if (c.pid) k.pid = c.pid; else delete k.pid; freed.push(k.id); }); pg.layers.splice(pg.layers.indexOf(c), 1); }); syncTree(pg); ED.sel = freed.length === 1 ? freed[0] : null; ED.ms = freed.length > 1 ? freed : []; });
+  }
+  RT.wrapSel = wrapSel; // Shift A: a new auto layout frame (v32)
+  Object.assign(ACT, {
+    msGroup: () => wrapSel('group'), msUngroup: unwrapSel, t31Frame: () => wrapSel('frame'), t31Unwrap: unwrapSel,
+    t31Clip: () => { const l = curL(); l && l.type === 'frame' && mutate(() => { if (l.noclip) delete l.noclip; else l.noclip = true; }); },
+    t31Fold: (a) => { ED.t31Closed = ED.t31Closed || new Set(); const id = a.dataset.id; if (ED.t31Closed.has(id)) ED.t31Closed.delete(id); else ED.t31Closed.add(id); edProps(); },
+    t31Tool: () => (FRM.on ? frameTool(false) : frameTool(true)),
+  });
+
+  /* ---------- dragging a layer onto a frame puts it inside; off its frame takes it out (one undo step with the move) ---------- */
+  const DRAG = { on: false, pt: null };
+  RT.dragOn = () => DRAG.on && !!DRAG.pt; // a layer is being dragged: it floats above an auto layout (syncTree)
+  function reparent() {
+    const pg = P(), T = treeOf(pg), pt = DRAG.pt; if (!pt) return;
+    DRAG.on = false; // dropped: back into any auto layout flow
+    const ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; // what the drag moved: the selection by now
+    const tops = RT.selUnits(pg, ids).map((id) => T.byId.get(id)).filter(Boolean); let any = false;
+    tops.forEach((l) => {
+      const par = l.pid && T.byId.get(l.pid); if (par && par.type === 'group') return; // groups keep their content
+      const mine = new Set([l.id, ...descendantsT(T, l.id).map((d) => d.id)]);
+      const target = [...pg.layers].reverse().find((f) => f.type === 'frame' && !mine.has(f.id) && !f.hidden && !f.locked && pt[0] >= f.x && pt[0] <= f.x + f.w && pt[1] >= f.y && pt[1] <= f.y + f.h);
+      const to = target ? target.id : '', L = pg.layers, block = [l, ...descendantsT(T, l.id)];
+      if ((l.pid || '') !== to) { if (to) l.pid = to; else delete l.pid; L.splice(L.indexOf(l), block.length); L.push(...block); any = true; } // on top of its new siblings
+      if (target && target.al && !l.ab) { // an auto layout: the drop point picks its place in the row or column
+        const H = target.al.d !== 'v', sib = (treeOf(pg).kids.get(target.id) || []).filter((k) => k !== l && !k.ab), at = H ? pt[0] : pt[1];
+        const before = sib.find((k) => at < (H ? k.x + k.w / 2 : k.y + k.h / 2));
+        L.splice(L.indexOf(l), block.length); L.splice(before ? L.indexOf(before) : L.indexOf(sib.length ? sib[sib.length - 1] : target) + (sib.length ? descendantsT(treeOf(pg), sib[sib.length - 1].id).length + 1 : 1), 0, ...block); any = true;
+      }
+    });
+    syncTree(pg); edStage(); edPages(); // the dropped layer joins the flow again even when nothing changed
+  }
+  const _commit31 = commit;
+  commit = function () { if (DRAG.on && ED.d) reparent(); return _commit31.apply(this, arguments); };
+
+  /* ---------- frame tool (F): drag a box, or click for a 600 × 600 frame ---------- */
+  const FRM = { on: false };
+  function frameTool(on) {
+    FRM.on = on; const s = $('#edScroll'); s && s.classList.toggle('frame-on', on); ED.tab === 'elements' && $('#edPanel') && edPanel();
+    if (on) toast('Frame: drag on the canvas to draw it, or click for a 600 × 600 frame. Esc to cancel.');
+  }
+  function frameDown(e) {
+    const sca = $('#scaler'), r = sca.getBoundingClientRect(), pt = (ev) => [(ev.clientX - r.left) / ED.zoom, (ev.clientY - r.top) / ED.zoom], p0 = pt(e);
+    const box = document.createElement('div'); box.className = 'frm31'; sca.append(box); let p1 = p0;
+    const mv = (ev) => { p1 = pt(ev); const x = Math.min(p0[0], p1[0]), y = Math.min(p0[1], p1[1]); box.style.cssText = `left:${x}px;top:${y}px;width:${Math.abs(p1[0] - p0[0])}px;height:${Math.abs(p1[1] - p0[1])}px`; };
+    const up = () => {
+      removeEventListener('pointermove', mv); removeEventListener('pointerup', up); box.remove(); frameTool(false);
+      let x = Math.min(p0[0], p1[0]), y = Math.min(p0[1], p1[1]), w = Math.abs(p1[0] - p0[0]), h = Math.abs(p1[1] - p0[1]);
+      if (w < 8 && h < 8) { w = h = 600; x = p0[0] - 300; y = p0[1] - 300; }
+      const pg = P(), n = pg.layers.filter((l) => l.type === 'frame').length + 1;
+      addLayer({ id: uid(), type: 'frame', name: 'Frame ' + n, x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), rot: 0, op: 1, fill: '#ffffff', r: 0 });
+    };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+  }
+
+  /* ---------- properties: Frame and Group sections; containers don't rotate or take paint they don't have ---------- */
+  const _ep31 = edProps;
+  edProps = function () {
+    const r = _ep31.apply(this, arguments), l = curL(), b = $('#edProps .body');
+    if (ED.rtab === 'layers') { layersTree(); return r; }
+    if (!isContainer(l) || ED.rtab !== 'design' || !b) return r;
+    b.querySelectorAll('.rot9').forEach((x) => x.remove());
+    if (l.type === 'group') b.querySelectorAll('.ps9[data-sec=fill],.ps9[data-sec=stroke],.ps9[data-sec=fx],.ps9[data-sec=image],.ps9[data-sec=shape]').forEach((x) => x.remove());
+    const n = (T0().kids.get(l.id) || []).length, sec = document.createElement('section'); sec.className = 'ps9'; sec.dataset.sec = 'tree';
+    sec.innerHTML = `<div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="tree" aria-expanded="true">${l.type === 'frame' ? 'Frame' : 'Group'}${ic('chevD', 14)}</button><span class="ps9-a"></span></div><div class="ps9-b">`
+      + `<p class="xs-t muted">${n} layer${n === 1 ? '' : 's'} inside.${l.type === 'group' ? ' Double-click on the canvas to select one.' : ''}</p>`
+      + (l.type === 'frame' ? `<div class="row sp"><span class="sm-t">Clip content</span><button class="switch ${l.noclip ? '' : 'on'}" data-act="t31Clip" aria-label="Clip content"></button></div>` : '')
+      + `<button class="btn secondary sm" data-act="t31Unwrap">${l.type === 'frame' ? 'Remove frame, keep its layers' : 'Ungroup'}<span class="kbd" style="margin-left:6px">Ctrl Shift G</span></button></div>`;
+    const pos = b.querySelector('.ps9[data-sec=pos]'); pos ? pos.after(sec) : b.prepend(sec);
+    return r;
+  };
+
+  /* ---------- Layers panel: the tree (indent, fold, rename, drag above / below / into) ---------- */
+  const TI = (l) => (l.type === 'frame' ? 'frame31' : l.type === 'group' ? 'grp9' : l.type === 'text' ? 'type' : l.type === 'image' ? 'image' : l.type === 'path' ? 'pen' : 'shapes');
+  function layersTree() {
+    const b = $('#edProps .body'); if (!b) return;
+    const T = T0(), sel = new Set(ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []), closed = ED.t31Closed || new Set(), rows = [];
+    const walk = (k, depth) => [...(T.kids.get(k) || [])].reverse().forEach((l) => {
+      const c = isContainer(l), open = c && !closed.has(l.id), kids = c ? (T.kids.get(l.id) || []).length : 0;
+      rows.push(`<div class="lr31${sel.has(l.id) ? ' on' : ''}${l.hidden ? ' off' : ''}" draggable="true" data-act="edPick" data-id="${l.id}" style="--d:${depth}">`
+        + (c && kids ? `<button type="button" class="lr31-tw${open ? ' open' : ''}" data-act="t31Fold" data-id="${l.id}" aria-label="${open ? 'Collapse' : 'Expand'}">${ic('chevD', 12)}</button>` : '<i class="lr31-tw"></i>')
+        + `${ic(TI(l), 15, 'faint')}<span class="nm" data-id="${l.id}" title="Double-click to rename">${esc(l.name || l.type)}</span>`
+        + `<button class="tg" data-act="edVis" data-id="${l.id}" title="Show / hide">${ic(l.hidden ? 'eyeOff' : 'eye', 15)}</button><button class="tg" data-act="edLock" data-id="${l.id}" title="Lock">${ic(l.locked ? 'lock' : 'unlock', 15)}</button></div>`);
+      if (c && open) walk(l.id, depth + 1);
+    });
+    walk('', 0);
+    b.innerHTML = rows.join('') || '<p class="xs-t muted">No layers.</p>';
+    b.classList.add('lt31');
+  }
+  // picking a row inside a group selects that layer and lets the canvas keep it (the group counts as entered)
+  const _pick = ACT.edPick;
+  ACT.edPick = (a, e) => {
+    if (e && e.target.closest('.tg,.lr31-tw,input')) return;
+    const T = T0(), l = T.byId.get(a.dataset.id), par = l && l.pid && T.byId.get(l.pid);
+    ED.inGroup = par && par.type === 'group' ? par.id : null; // its siblings stay clickable one by one on the canvas
+    ED.ms = []; _pick(a, e);
+  };
+  // rename: double-click the name
+  document.addEventListener('dblclick', (e) => {
+    const nm = e.target.closest && e.target.closest('#edProps .lr31 .nm'); if (!nm) return;
+    const l = T0().byId.get(nm.dataset.id); if (!l) return;
+    const inp = document.createElement('input'); inp.className = 'field sm lr31-in'; inp.value = l.name || ''; nm.replaceWith(inp); inp.focus(); inp.select();
+    let done = false; const fin = (ok) => { if (done) return; done = true; const v = inp.value.trim(); if (ok && v && v !== l.name) mutate(() => { l.name = v.slice(0, 60); }); else edProps(); };
+    inp.addEventListener('keydown', (ev) => { ev.stopPropagation(); if (ev.key === 'Enter') fin(true); if (ev.key === 'Escape') fin(false); });
+    inp.addEventListener('blur', () => fin(true));
+  });
+  // drag rows: top third above, bottom third below, middle of a frame or group: into it
+  const where = (row, ev) => { const r = row.getBoundingClientRect(), y = (ev.clientY - r.top) / r.height, l = T0().byId.get(row.dataset.id); return isContainer(l) && y > 0.3 && y < 0.7 ? 'in' : y < 0.5 ? 'above' : 'below'; };
+  document.addEventListener('dragstart', (e) => { const r = e.target.closest && e.target.closest('#edProps .lr31'); if (!r) return; e.dataTransfer.setData('text/layer31', r.dataset.id); e.dataTransfer.effectAllowed = 'move'; r.classList.add('dragging'); }, true);
+  document.addEventListener('dragover', (e) => {
+    const r = e.target.closest && e.target.closest('#edProps .lr31'); if (!r || !e.dataTransfer || ![...e.dataTransfer.types].includes('text/layer31')) return;
+    e.preventDefault(); const w = where(r, e); $$('#edProps .lr31').forEach((x) => x.classList.remove('d-above', 'd-below', 'd-in')); r.classList.add('d-' + w);
+  });
+  document.addEventListener('drop', (e) => {
+    const r = e.target.closest && e.target.closest('#edProps .lr31'); if (!r || !e.dataTransfer || ![...e.dataTransfer.types].includes('text/layer31')) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    const pg = P(), T = treeOf(pg), id = e.dataTransfer.getData('text/layer31'), l = T.byId.get(id), t = T.byId.get(r.dataset.id), w = where(r, e);
+    if (!l || !t || l === t || descendantsT(T, l.id).includes(t)) return edProps();
+    mutate(() => {
+      const L = pg.layers, block = [l, ...descendantsT(T, l.id)]; L.splice(L.indexOf(l), block.length);
+      const tEnd = () => { const d = descendantsT(treeOf(pg), t.id); return L.indexOf(d.length ? d[d.length - 1] : t); };
+      // the panel lists the top of the stack first: "above" a row is later in paint order
+      if (w === 'in') { l.pid = t.id; L.splice(tEnd() + 1, 0, ...block); }
+      else { if (t.pid) l.pid = t.pid; else delete l.pid; L.splice(w === 'above' ? tEnd() + 1 : L.indexOf(t), 0, ...block); }
+      syncTree(pg);
+    });
+  }, true);
+  document.addEventListener('dragend', () => $$('#edProps .lr31').forEach((x) => x.classList.remove('dragging', 'd-above', 'd-below', 'd-in')));
+
+  /* ---------- wiring: canvas pointer, keys ---------- */
+  const _oe31 = openEditor;
+  openEditor = function () {
+    FRM.on = false; ED.inGroup = null;
+    _oe31.apply(this, arguments);
+    const sc = $('#edScroll'), sca = $('#scaler'); if (!sc || !sca) return;
+    sc.addEventListener('pointerdown', (e) => {
+      if (FRM.on && e.button === 0 && !ED.space) { e.preventDefault(); e.stopImmediatePropagation(); return frameDown(e); }
+      // a drag that starts on a layer may drop it into a frame (see commit)
+      const ly = e.target.closest && e.target.closest('.ly');
+      if (e.button === 0 && ly && !e.target.closest('[data-h]')) {
+        DRAG.on = true; DRAG.pt = null;
+        const r = sca.getBoundingClientRect(), mv = (ev) => { DRAG.pt = [(ev.clientX - r.left) / ED.zoom, (ev.clientY - r.top) / ED.zoom]; };
+        const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); setTimeout(() => { DRAG.on = false; }, 0); }; // after the move's own commit
+        addEventListener('pointermove', mv); addEventListener('pointerup', up);
+      }
+    }, true);
+    // double-click inside a selected group: go into it and select the layer under the pointer
+    sca.addEventListener('dblclick', (e) => {
+      const ly = e.target.closest && e.target.closest('.ly'); if (!ly) return;
+      const T = T0(), l = T.byId.get(ly.dataset.id), g = l && RT.topGroup(P(), l); if (!g) return;
+      ED.inGroup = g.id; const u = RT.selUnits(P(), [l.id]); ED.ms = []; ED.sel = u[0] || l.id; drawSel(); edProps();
+    });
+  };
+  addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('in-editor') || ED.editing || $('#cmdk')) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    const mod = e.ctrlKey || e.metaKey, stop = () => { e.preventDefault(); e.stopImmediatePropagation(); };
+    if (mod && e.altKey && e.code === 'KeyG') { stop(); return wrapSel('frame'); }
+    if (FRM.on && e.key === 'Escape') { stop(); return frameTool(false); }
+    if (!mod && !e.altKey && !e.shiftKey && e.code === 'KeyF') { stop(); return frameTool(!FRM.on); }
+    if (e.key === 'Escape' && ED.inGroup) { // Esc inside a group: select the group again
+      const g = T0().byId.get(ED.inGroup); if (g) { stop(); ED.inGroup = null; ED.ms = []; ED.sel = RT.selUnits(P(), [g.id])[0]; drawSel(); edProps(); }
+    }
+  }, true);
+  // the Elements panel: a Frame button next to the vectors
+  const _pn31 = edPanel;
+  edPanel = function () {
+    const r = _pn31.apply(this, arguments), p = $('#edPanel');
+    if (p && ED.tab === 'elements') { const g = p.querySelector('[data-act=vPen]'); g && g.insertAdjacentHTML('beforebegin', `<button class="el7${FRM.on ? ' on' : ''}" data-n="frame artboard container layout" data-act="t31Tool" title="Frame (F)" aria-pressed="${FRM.on}">${ic('frame31', 22)}</button>`); }
+    return r;
+  };
+})();
+
+/* ============ v32 · auto layout and constraints (Figma's frame layout) ============ */
+/* The layout itself runs in syncTree (layoutFrame, constrain); this section is the panel, Shift A and the actions. */
+(function () {
+  const P = () => curP(), T0 = () => treeOf(P()), parentOf = (l) => l && l.pid && T0().byId.get(l.pid);
+  const AXN = { start: ['Left', 'Top'], end: ['Right', 'Bottom'], both: ['Left and right', 'Top and bottom'], center: ['Center', 'Center'], scale: ['Scale', 'Scale'] };
+  /** Auto layout guessed from how a frame's children sit: row or column, the usual gap, the padding around them */
+  function inferAL(f, kids) {
+    if (!kids.length) return { d: 'v', g: 16, p: [24, 24, 24, 24], m: 'start', c: 'start', hw: false, hh: true };
+    const cx = kids.map((k) => k.x + k.w / 2), cy = kids.map((k) => k.y + k.h / 2), H = Math.max(...cx) - Math.min(...cx) >= Math.max(...cy) - Math.min(...cy);
+    const s = [...kids].sort((a, b) => (H ? a.x - b.x : a.y - b.y)), gaps = s.slice(1).map((k, i) => (H ? k.x - (s[i].x + s[i].w) : k.y - (s[i].y + s[i].h)));
+    const x0 = Math.min(...kids.map((k) => k.x)), y0 = Math.min(...kids.map((k) => k.y)), x1 = Math.max(...kids.map((k) => k.x + k.w)), y1 = Math.max(...kids.map((k) => k.y + k.h));
+    const pad = [y0 - f.y, f.x + f.w - x1, f.y + f.h - y1, x0 - f.x].map((v) => Math.max(0, Math.round(v)));
+    return { order: s, al: { d: H ? 'h' : 'v', g: gaps.length ? Math.max(0, Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length)) : 16, p: pad, m: 'start', c: 'start', hw: true, hh: true } };
+  }
+  /** Turns auto layout on for a frame: children in the order they're seen, then laid out */
+  function addAL(f) {
+    const pg = P(), T = treeOf(pg), kids = (T.kids.get(f.id) || []).filter((k) => !k.hidden), r = inferAL(f, kids);
+    mutate(() => {
+      f.al = r.al || r;
+      if (r.order) { // flow order = the visual order (left to right, or top to bottom)
+        const L = pg.layers, blocks = r.order.map((k) => [k, ...descendantsT(T, k.id)]);
+        blocks.forEach((b) => L.splice(L.indexOf(b[0]), b.length));
+        L.splice(L.indexOf(f) + 1, 0, ...blocks.flat()); // hidden children keep their places after them (the tree keeps relative order)
+      }
+      syncTree(pg);
+    });
+    toast('Auto layout on. Drag a layer inside it to change its place.');
+  }
+  const setAL = (fn) => { const f = curL(); f && f.al && mutate(() => { fn(f.al, f); syncTree(P()); }); };
+  const setChild = (fn) => { const l = curL(); l && mutate(() => { fn(l); syncTree(P()); }); };
+  Object.assign(ACT, {
+    al32Add: () => { const f = curL(); if (f && f.type === 'frame' && !f.al) addAL(f); },
+    al32Remove: () => setAL((a, f) => { delete f.al; }),
+    al32Dir: (b) => setAL((a) => { a.d = b.dataset.v; }),
+    al32Align: (b) => setAL((a) => { if (a.m !== 'between') a.m = b.dataset.m; a.c = b.dataset.c; }),
+    al32Between: () => setAL((a) => { a.m = a.m === 'between' ? 'start' : 'between'; }),
+    al32Hug: (b) => setAL((a) => { a[b.dataset.k] = b.dataset.v === 'hug'; }),
+    al32Child: (b) => setChild((l) => { const k = b.dataset.k; if (l[k]) delete l[k]; else l[k] = true; if (k === 'ab' && l.ab) { delete l.gr; delete l.stc; } }),
+  });
+  document.addEventListener('input', (e) => { // gap and padding: live, committed on change (property inputs)
+    const t = e.target; if (!t.dataset || !t.dataset.a32 || !t.closest('#edProps')) return;
+    const f = curL(); if (!f || !f.al) return; if (!ED.pre) ED.pre = snap();
+    const v = Math.max(0, +t.value || 0), p = f.al.p || (f.al.p = [0, 0, 0, 0]);
+    if (t.dataset.a32 === 'g') f.al.g = v; if (t.dataset.a32 === 'ph') { p[1] = p[3] = v; } if (t.dataset.a32 === 'pv') { p[0] = p[2] = v; }
+    refreshL(f); drawSel();
+  });
+  document.addEventListener('change', (e) => {
+    const t = e.target; if (!t.dataset || !t.dataset.c32 || !t.closest('#edProps')) return;
+    const l = curL(); if (!l) return; mutate(() => { l.ct = { ...(l.ct || {}), [t.dataset.c32]: t.value }; if (l.ct.h === 'start') delete l.ct.h; if (l.ct.v === 'start') delete l.ct.v; if (!Object.keys(l.ct).length) delete l.ct; });
+  });
+
+  const sec = (key, title, body) => `<section class="ps9" data-sec="${key}"><div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="${key}" aria-expanded="true">${title}${ic('chevD', 14)}</button><span class="ps9-a"></span></div><div class="ps9-b">${body}</div></section>`;
+  const sw = (act, k, on, label, hint) => `<div class="row sp"><span class="sm-t">${label}${hint ? `<br><span class="xs-t muted">${hint}</span>` : ''}</span><button class="switch ${on ? 'on' : ''}" data-act="${act}" data-k="${k}" aria-label="${label}"></button></div>`;
+  function alHTML(f) {
+    if (!f.al) return `<button class="btn secondary sm" data-act="al32Add">${ic('plus', 16)}Add auto layout<span class="kbd" style="margin-left:6px">Shift A</span></button><p class="xs-t muted">Stacks the frame’s layers in a row or a column, with even gaps and padding.</p>`;
+    const a = f.al, p = a.p || [0, 0, 0, 0], H = a.d !== 'v', bt = a.m === 'between';
+    const grid = ['start', 'center', 'end'].map((cv) => ['start', 'center', 'end'].map((mv) => { const on = a.c === cv && (bt || a.m === mv); return `<button type="button" class="a32${on ? ' on' : ''}" data-act="al32Align" data-m="${mv}" data-c="${cv}" aria-label="Align ${H ? `${mv} / ${cv}` : `${cv} / ${mv}`}"><i></i></button>`; }));
+    // the grid is drawn rows × columns: for a row, columns are the main axis; for a column, rows are
+    const cells = H ? grid.flat() : [0, 1, 2].flatMap((r) => [0, 1, 2].map((c) => grid[c][r]));
+    const hug = (k, lbl) => `<div class="lab">${lbl}<div class="seg">${[['fixed', 'Fixed'], ['hug', 'Hug']].map(([v, t]) => `<button type="button" class="${(a[k] ? 'hug' : 'fixed') === v ? 'on' : ''}" data-act="al32Hug" data-k="${k}" data-v="${v}">${t}</button>`).join('')}</div></div>`;
+    return `<div class="seg">${[['h', 'Row →'], ['v', 'Column ↓']].map(([v, t]) => `<button type="button" class="${(a.d || 'h') === v ? 'on' : ''}" data-act="al32Dir" data-v="${v}">${t}</button>`).join('')}</div>`
+      + `<div class="r32"><div class="g32">${cells.join('')}</div><div class="c32"><label class="n30"><span>Gap</span><input class="field sm" type="number" min="0" data-a32="g" value="${a.g || 0}"${bt ? ' disabled' : ''}></label><button type="button" class="chip${bt ? ' on' : ''}" data-act="al32Between">Space between</button>`
+      + `<label class="n30"><span>Padding ↔</span><input class="field sm" type="number" min="0" data-a32="ph" value="${p[3]}"></label><label class="n30"><span>Padding ↕</span><input class="field sm" type="number" min="0" data-a32="pv" value="${p[0]}"></label></div></div>`
+      + `<div class="g2f">${hug('hw', 'Width')}${hug('hh', 'Height')}</div><button class="btn ghost sm" data-act="al32Remove">Remove auto layout</button>`;
+  }
+  const _ep32 = edProps;
+  edProps = function () {
+    const r = _ep32.apply(this, arguments), l = curL(), b = $('#edProps .body');
+    if (!l || ED.rtab !== 'design' || !b || !b.querySelector('.ps9')) return r;
+    const par = parentOf(l), after = b.querySelector('.ps9[data-sec=tree]') || b.querySelector('.ps9[data-sec=pos]'), html = [];
+    if (l.type === 'frame') html.push(sec('al', 'Auto layout', alHTML(l)));
+    if (par && par.type === 'frame' && par.al) {
+      const H = par.al.d !== 'v';
+      html.push(sec('alc', 'In auto layout', (l.ab ? '' : sw('al32Child', 'gr', l.gr, H ? 'Fill width' : 'Fill height', 'Takes the room left in the ' + (H ? 'row' : 'column')) + sw('al32Child', 'stc', l.stc, H ? 'Fill height' : 'Fill width', 'Stretches across'))
+        + sw('al32Child', 'ab', l.ab, 'Ignore auto layout', 'Stays where you put it')));
+    }
+    if (par && par.type === 'frame' && (!par.al || l.ab)) {
+      const opt = (ax, i) => Object.keys(AXN).map((k) => `<option value="${k}" ${((l.ct && l.ct[ax]) || 'start') === k ? 'selected' : ''}>${AXN[k][i]}</option>`).join('');
+      html.push(sec('ct', 'Constraints', `<p class="xs-t muted">When “${esc(par.name || 'the frame')}” is resized</p><div class="g2f"><label class="lab">Horizontal<select class="field sm" data-c32="h">${opt('h', 0)}</select></label><label class="lab">Vertical<select class="field sm" data-c32="v">${opt('v', 1)}</select></label></div>`));
+    }
+    if (html.length) { const tmp = document.createElement('div'); tmp.innerHTML = html.join(''); const nodes = [...tmp.children]; if (after) after.after(...nodes); else b.prepend(...nodes); }
+    return r;
+  };
+  // Shift A: auto layout on the selected frame, or a new auto layout frame around the selection
+  addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('in-editor') || ED.editing || $('#cmdk')) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    if (!(e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && e.code === 'KeyA')) return;
+    const l = curL(), ids = ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []; if (!ids.length) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (l && l.type === 'frame' && !l.al) return addAL(l);
+    RT.wrapSel('frame'); const f = curL(); if (f && f.type === 'frame') addAL(f);
+  }, true);
 })();
 
 /* ============ first paint, with every renderer installed ============ */
