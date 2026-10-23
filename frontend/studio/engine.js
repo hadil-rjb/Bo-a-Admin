@@ -9486,6 +9486,150 @@ function clipCss(l, frames) {
   };
 })();
 
+/* ============ v36 · comments pinned on the canvas (threads, replies, resolve) ============ */
+/* Comment mode (Shift C, or the toolbar button): click the canvas to start a thread there; the pin keeps to the layer it
+   was put on. Every signed-in member, viewers too, can comment, reply and resolve; the author or an admin deletes.
+   Other people's comments come in on a light poll while the editor is open. */
+(function () {
+  Object.assign(IC, { cm36: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' });
+  const C = { list: [], for: null, mode: false, open: null, draft: null, showDone: false, busy: false };
+  const cPath = () => `/social/brands/${encodeURIComponent(S.active)}/designs/${encodeURIComponent(ED.d.id)}/comments`;
+  const me = () => String(user._id || user.id || ''), isAdmin = () => user.role === 'admin';
+  const threads = () => C.list.filter((c) => !c.parentId), replies = (id) => C.list.filter((c) => c.parentId === id);
+  const num = (t) => threads().indexOf(t) + 1, openCount = () => threads().filter((t) => !t.resolved).length;
+  const ago = (t) => { const s = (Date.now() - new Date(t).getTime()) / 1000; if (s < 60) return 'Just now'; if (s < 3600) return Math.round(s / 60) + ' min'; if (s < 86400) return Math.round(s / 3600) + ' h'; return new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); };
+  const initials = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+  async function load(quiet) {
+    const d = ED.d; if (!d) return;
+    try {
+      const L = await api(cPath()); if (ED.d !== d) return;
+      const changed = C.for !== d.id || JSON.stringify(L) !== JSON.stringify(C.list); C.list = L; C.for = d.id;
+      if (changed || !quiet) refresh();
+    } catch (e) { if (!quiet) toast('Comments couldn’t be loaded'); }
+  }
+  function refresh() { drawPins(); badge(); if (ED.rtab === 'comments') edProps(); }
+  /** Where a thread's pin sits: on its layer (following it), or at its point once the layer is gone */
+  function pinAt(t) {
+    const pg = ED.d.pages.find((p) => p.id === t.pageId), l = pg && t.layerId && pg.layers.find((x) => x.id === t.layerId);
+    return l && t.lx != null ? [l.x + t.lx, l.y + t.ly] : [t.x, t.y];
+  }
+  const visible = () => C.mode || ED.rtab === 'comments';
+  function drawPins() {
+    const sca = $('#scaler'); if (!sca || !ED.d) return;
+    let box = $('#pins'); if (!box) { sca.insertAdjacentHTML('beforeend', '<div id="pins"></div>'); box = $('#pins'); }
+    const pid = curP().id;
+    const ts = visible() ? threads().filter((t) => t.pageId === pid && (!t.resolved || C.showDone || C.open === t.id)) : [];
+    box.innerHTML = ts.map((t) => { const [x, y] = pinAt(t); return `<button type="button" class="pin36${t.resolved ? ' done' : ''}${C.open === t.id ? ' on' : ''}" data-pin="${t.id}" style="left:${x}px;top:${y}px" title="${esc(t.authorName)}: ${esc(t.text.slice(0, 60))}">${num(t)}</button>`; }).join('')
+      + (C.draft && C.draft.pageId === pid ? `<span class="pin36 on draft" style="left:${C.draft.x}px;top:${C.draft.y}px">+</span>` : '');
+    popover();
+  }
+  function badge() { const b = $('#edCm36'); if (!b) return; b.classList.toggle('on', C.mode); const n = openCount(); b.querySelector('.n36') && b.querySelector('.n36').remove(); if (n) b.insertAdjacentHTML('beforeend', `<span class="n36">${n}</span>`); }
+  const msg = (c) => `<div class="m36"><span class="av36">${initials(c.authorName)}</span><div class="m36-b"><div class="m36-h"><b>${esc(c.authorName || 'Someone')}</b><small>${ago(c.createdAt)}${c.edited ? ' · edited' : ''}</small>${(c.authorId && c.authorId === me()) || isAdmin() ? `<button type="button" class="btn ghost icon sm" data-act="cm36Del" data-id="${c.id}" data-tip="Delete">${ic('trash', 13)}</button>` : ''}</div><p>${esc(c.text).replace(/\n/g, '<br>')}</p></div></div>`;
+  /** The thread (or the new comment) next to its pin, on top of the editor */
+  function popover() {
+    let pop = $('#pop36'); const open = C.open && C.list.find((c) => c.id === C.open), pin = open ? $(`#pins [data-pin="${open.id}"]`) : C.draft ? $('#pins .draft') : null;
+    if (!pin) { pop && pop.remove(); return; }
+    if (!pop) { // made with the runtime's createElement, so leaving the workspace removes it (runtime.js)
+      pop = document.createElement('div'); pop.id = 'pop36'; pop.className = 'pop36'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', 'Comment thread'); document.body.append(pop);
+    }
+    const key = open ? open.id + '|' + JSON.stringify(replies(open.id).map((r) => r.id)) + open.resolved : 'draft';
+    if (pop.dataset.k !== key) {
+      pop.dataset.k = key;
+      pop.innerHTML = open
+        ? `<div class="pop36-h"><b>Comment ${num(open)}</b>${open.resolved ? `<span class="xs-t muted">Resolved${open.resolvedByName ? ' by ' + esc(open.resolvedByName) : ''}</span>` : ''}<span class="grow"></span><button type="button" class="btn ghost sm" data-act="cm36Resolve">${open.resolved ? 'Reopen' : `${ic('check', 14)}Resolve`}</button><button type="button" class="btn ghost icon sm" data-act="cm36Close" aria-label="Close">${ic('x', 15)}</button></div>`
+          + `<div class="pop36-l">${[open, ...replies(open.id)].map(msg).join('')}</div><textarea class="field pop36-in" rows="2" placeholder="Reply… (Enter to send, Shift Enter for a new line)" aria-label="Reply"></textarea>`
+        : `<div class="pop36-h"><b>New comment</b><span class="grow"></span><button type="button" class="btn ghost icon sm" data-act="cm36Close" aria-label="Close">${ic('x', 15)}</button></div><textarea class="field pop36-in" rows="3" placeholder="Add a comment… (Enter to send)" aria-label="Comment"></textarea>`;
+      const i = $('.pop36-in', pop); i && setTimeout(() => i.focus(), 0);
+    }
+    const r = pin.getBoundingClientRect(), w = pop.offsetWidth || 300, h = pop.offsetHeight || 200;
+    pop.style.left = Math.max(8, Math.min(r.right + 10, innerWidth - w - 8)) + 'px'; pop.style.top = Math.max(8, Math.min(r.top - 10, innerHeight - h - 8)) + 'px';
+  }
+  async function send(text) {
+    text = text.trim(); if (!text || C.busy) return; C.busy = true;
+    try {
+      if (C.draft) { const c = await api(cPath(), { method: 'POST', body: { text, ...C.draft } }); C.list.push(c); C.draft = null; C.open = c.id; }
+      else if (C.open) { const c = await api(cPath(), { method: 'POST', body: { text, parentId: C.open } }); C.list.push(c); const t = C.list.find((x) => x.id === C.open); if (t) t.resolved = false; }
+    } catch (e) { toast('The comment couldn’t be sent'); }
+    C.busy = false; const p = $('#pop36'); p && (p.dataset.k = ''); refresh();
+  }
+  function setMode(on) {
+    C.mode = on; if (!on) { C.draft = null; C.open = null; }
+    const s = $('#edScroll'); s && s.classList.toggle('cm-on', on); refresh();
+    if (on) { ED.sel = null; ED.ms = []; drawSel(); toast('Comments: click anywhere on the slide to leave a comment. Esc to leave.'); }
+  }
+  Object.assign(ACT, {
+    cm36Mode: () => setMode(!C.mode),
+    cm36Close: () => { C.open = null; C.draft = null; refresh(); },
+    cm36Resolve: async () => {
+      const t = C.list.find((c) => c.id === C.open); if (!t) return;
+      try { const u = await api(`${cPath()}/${t.id}`, { method: 'PATCH', body: { resolved: !t.resolved } }); Object.assign(t, u); if (u.resolved && !C.showDone) C.open = null; } catch (e) { toast('Couldn’t update the comment'); }
+      refresh();
+    },
+    cm36Del: async (a) => {
+      const id = a.dataset.id, c = C.list.find((x) => x.id === id); if (!c) return;
+      try { await api(`${cPath()}/${id}`, { method: 'DELETE' }); C.list = C.list.filter((x) => x.id !== id && x.parentId !== id); if (C.open === id) C.open = null; } catch (e) { toast('Couldn’t delete the comment'); }
+      refresh();
+    },
+    cm36Go: (a) => { const t = C.list.find((c) => c.id === a.dataset.id); if (!t) return; const i = ED.d.pages.findIndex((p) => p.id === t.pageId); if (i >= 0 && i !== ED.pi) { ED.pi = i; edAll(); } C.open = t.id; if (!C.mode) setMode(true); else refresh(); },
+    cm36Done: () => { C.showDone = !C.showDone; refresh(); },
+  });
+  // in comment mode a click starts a thread (pins and the popover take theirs); before any layer handler
+  addEventListener('pointerdown', (e) => {
+    if (!C.mode || !document.body.classList.contains('in-editor') || e.button !== 0) return;
+    if (e.target.closest('#pop36')) return;
+    const pin = e.target.closest('#pins [data-pin]');
+    if (pin) { e.preventDefault(); e.stopImmediatePropagation(); C.open = C.open === pin.dataset.pin ? null : pin.dataset.pin; C.draft = null; return refresh(); }
+    const sca = $('#scaler'), sc = $('#edScroll'); if (!sca || !sc || !sc.contains(e.target)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    const [W, H] = dim(), r = sca.getBoundingClientRect(), z = r.width / W || ED.zoom, x = (e.clientX - r.left) / z, y = (e.clientY - r.top) / z; // the scale on screen
+    if (x < 0 || y < 0 || x > W || y > H) { C.draft = null; C.open = null; return refresh(); } // off the slide: just closes
+    // the layer under the point (not the page background), so the pin follows it
+    const ly = document.elementsFromPoint(e.clientX, e.clientY).map((el) => el.closest && el.closest('#poster .ly')).find(Boolean), l = ly && curP().layers.find((q) => q.id === ly.dataset.id && !(q.locked && q.name === 'Background'));
+    C.open = null; C.draft = { pageId: curP().id, x: Math.round(x), y: Math.round(y), ...(l ? { layerId: l.id, lx: Math.round(x - l.x), ly: Math.round(y - l.y) } : {}) }; refresh();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    const i = e.target.closest && e.target.closest('#pop36 .pop36-in');
+    if (i) { e.stopPropagation(); if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(i.value); } else if (e.key === 'Escape') ACT.cm36Close(); return; }
+    if (!document.body.classList.contains('in-editor') || ED.editing) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && e.code === 'KeyC') { e.preventDefault(); e.stopImmediatePropagation(); setMode(!C.mode); }
+    else if (C.mode && e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); if (C.open || C.draft) ACT.cm36Close(); else setMode(false); }
+  }, true);
+
+  /* ---------- the Comments tab ---------- */
+  function listHTML() {
+    const ts = threads(), open = ts.filter((t) => !t.resolved), done = ts.filter((t) => t.resolved);
+    const row = (t) => { const pi = ED.d.pages.findIndex((p) => p.id === t.pageId), n = replies(t.id).length; return `<button type="button" class="c36${C.open === t.id ? ' on' : ''}${t.resolved ? ' done' : ''}" data-act="cm36Go" data-id="${t.id}"><span class="pin36 s">${num(t)}</span><span class="c36-b"><span class="c36-h"><b>${esc(t.authorName || 'Someone')}</b><small>${ago(t.createdAt)}${ED.d.pages.length > 1 && pi >= 0 ? ` · slide ${pi + 1}` : ''}</small></span><span class="c36-t">${esc(t.text)}</span>${n ? `<small>${n} repl${n === 1 ? 'y' : 'ies'}</small>` : ''}</span></button>`; };
+    return `<button class="btn ${C.mode ? 'secondary' : 'primary'} sm" data-act="cm36Mode">${ic('cm36', 16)}${C.mode ? 'Stop commenting' : 'Add a comment'}<span class="kbd" style="margin-left:6px">Shift C</span></button>`
+      + (open.length ? `<div class="c36-l">${open.map(row).join('')}</div>` : '<p class="sm-t muted">No open comments on this design.</p>')
+      + (done.length ? `<button class="btn link sm" data-act="cm36Done">${C.showDone ? 'Hide' : 'Show'} ${done.length} resolved</button>${C.showDone ? `<div class="c36-l">${done.map(row).join('')}</div>` : ''}` : '');
+  }
+  const _ep36 = edProps;
+  edProps = function () {
+    const r = _ep36.apply(this, arguments), tabs = $('#edProps .tabs');
+    if (tabs && !tabs.querySelector('[data-k=comments]')) tabs.insertAdjacentHTML('beforeend', `<button class="${ED.rtab === 'comments' ? 'on' : ''}" data-act="edRTab" data-k="comments">Comments</button>`);
+    if (ED.rtab === 'comments') {
+      tabs && tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.k === 'comments'));
+      const b = $('#edProps .body'); if (b) { b.className = 'body cm36b'; b.innerHTML = listHTML(); }
+      drawPins();
+    }
+    return r;
+  };
+  const _st36 = edStage; edStage = function () { const r = _st36.apply(this, arguments); drawPins(); return r; };
+  const _az36 = applyZoom; applyZoom = function () { _az36.apply(this, arguments); drawPins(); };
+  const _rl36 = refreshL; refreshL = function () { _rl36.apply(this, arguments); if (C.list.length && visible()) drawPins(); }; // pins follow layers being moved
+  const _oe36 = openEditor;
+  openEditor = function () {
+    Object.assign(C, { list: [], for: null, mode: false, open: null, draft: null });
+    _oe36.apply(this, arguments);
+    const at = $('#edSafe'); at && at.insertAdjacentHTML('beforebegin', `<button class="btn ghost icon sm cm36btn" id="edCm36" data-act="cm36Mode" title="Comments (Shift C)">${ic('cm36', 18)}</button>`);
+    const sc = $('#edScroll'); sc && sc.addEventListener('scroll', () => popover(), { passive: true });
+    load(true);
+  };
+  addEventListener('resize', () => popover());
+  setInterval(() => { if (ED.d && document.body.classList.contains('in-editor') && document.visibilityState === 'visible' && !C.busy && !$('#pop36 .pop36-in:focus')) load(true); }, 30000);
+})();
+
 /* ============ first paint, with every renderer installed ============ */
 /* The page was first drawn halfway through boot, before the later sections replaced textHTML / lstyle
    (mixed text runs, text effects, image adjustments, Google Fonts…). Draw it again so the canvas,
