@@ -2432,3 +2432,14 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .st33-tr:hover{background:var(--pill)}.st33-tr.on{background:rgba(253,14,53,.1)}
 .st33-tr small{color:var(--text-3);font-size:11px;white-space:nowrap}
 .st33-ed{display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:8px;background:var(--pill)}
+/* v34 · all slides on one canvas, export presets */
+#others{position:absolute;left:0;top:0;width:0;height:0;overflow:visible}
+.oth34{position:absolute;top:0;cursor:pointer}
+.oth34>.poster{box-shadow:0 8px 40px rgba(0,0,0,.35);opacity:.92;transition:opacity .15s}
+.oth34:hover>.poster{opacity:1;outline:calc(2px*var(--z)) solid rgba(253,14,53,.55)}
+.oth34 .ly{pointer-events:none}
+.oth34-l{position:absolute;left:0;color:var(--text-3);font-weight:600;white-space:nowrap;pointer-events:none}
+.oth34-l.on{color:var(--accent)}
+.ex34{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+.ex34-p{display:inline-flex;align-items:center;gap:2px;padding:0 4px 0 10px}
+.ex34-x{color:var(--text-3);padding:0 4px}.ex34-x:hover{color:var(--neg)}
