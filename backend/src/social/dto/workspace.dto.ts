@@ -1,5 +1,5 @@
 import { Type } from "class-transformer";
-import { ArrayMinSize, IsArray, IsObject, IsOptional, IsString, ValidateNested } from "class-validator";
+import { ArrayMinSize, IsArray, IsInt, IsObject, IsOptional, IsString, Min, ValidateNested } from "class-validator";
 
 /** Full workspace snapshot, the shape the studio keeps in memory (and exports as JSON). */
 export class WorkspaceDto {
@@ -23,6 +23,8 @@ export class BrandUpsert {
 export class ItemUpsert {
   @IsString() brandId!: string;
   @IsObject() item!: Record<string, any> & { id: string };
+  /** Designs: the revision this copy is based on (see WorkspaceService.applyDesigns) */
+  @IsOptional() @IsInt() @Min(0) rev?: number;
 }
 
 export class ItemRef {

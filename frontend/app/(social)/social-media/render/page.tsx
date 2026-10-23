@@ -29,6 +29,7 @@ const persist = {
   readOnly: true,
   init() {},
   load: async () => null,
+  onConflict() {},
   save() {},
   watch() {},
   flush: async () => true,
