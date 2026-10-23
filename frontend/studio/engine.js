@@ -369,7 +369,7 @@ function lstyle(l) {
   if (l.type === 'text') s += `color:${l.color};font:${l.weight} ${l.size}px/${l.lh} '${l.font}',sans-serif;text-align:${l.align};letter-spacing:${l.ls || 0}px;direction:${l.dir || 'ltr'};`;
   else if (l.type !== 'path') {
     s += `background:${l.fill};border-radius:${l.type === 'ellipse' ? '50%' : (l.r || 0) + 'px'};`;
-    if (l.stroke) s += `border:${l.sw || 3}px solid ${l.stroke};box-sizing:border-box;`;
+    if (l.stroke && l.sd && (l.sa || 'inside') === 'inside') s += `border:${l.sw || 3}px ${l.sd === 'dot' ? 'dotted' : 'dashed'} ${l.stroke};box-sizing:border-box;`; // other strokes: paintCss
   }
   return s;
 }
@@ -390,17 +390,84 @@ function svgGrad(g, id, w, h) {
 }
 /** Path data of a path layer at its current size: parametric shapes are redrawn, free paths are scaled */
 const pathSegs = (l) => { const w = Math.max(1, l.w), h = Math.max(1, l.h); return (l.shape && PATH.shapePath(l.shape, w, h)) || PATH.scale(PATH.parse(l.d), w / (l.vw || w), h / (l.vh || h)); };
-/** A path layer's drawing: inline SVG at the layer's size. Fill: color, gradient or image; stroke centered; shadow as drop-shadow */
-function pathHTML(l) {
-  const w = Math.max(1, l.w), h = Math.max(1, l.h), id = 'pv' + l.id + '-' + ++pathSeq, f = String(l.fill || 'none').trim();
-  let defs = '', fill = 'none';
-  if (/gradient\(/i.test(f)) { const g = RT.gParse && RT.gParse(f), def = g && svgGrad(g, id, w, h); if (def) { defs = def; fill = `url(#${id})`; } else { const c = /#[0-9a-f]{3,8}|rgba?\([^)]*\)/i.exec(f); fill = c ? c[0] : 'none'; } }
-  else if (/url\(/i.test(f)) { const u = /url\((['"]?)(.*?)\1\)/i.exec(f); if (u) { defs = `<pattern id="${id}" patternUnits="userSpaceOnUse" width="${w}" height="${h}"><image href="${esc(u[2])}" width="${w}" height="${h}" preserveAspectRatio="${/contain/.test(f) ? 'xMidYMid meet' : 'xMidYMid slice'}"/></pattern>`; fill = `url(#${id})`; } }
-  else if (f && f !== 'transparent') fill = f;
-  const sh = l.shb || l.shy || l.shx ? `filter:drop-shadow(${l.shx || 0}px ${l.shy || 0}px ${(l.shb || 0) / 2}px color-mix(in srgb,${l.shc || '#000000'} ${Math.round((l.sha ?? 0.45) * 100)}%,transparent))` : '';
-  const stroke = l.stroke ? ` stroke="${esc(l.stroke)}" stroke-width="${l.sw ?? 3}" stroke-linecap="${l.cap || 'round'}" stroke-linejoin="${l.join || 'round'}"` : '';
+/** A color at an opacity, for shadows */
+const shadowColor = (c, o) => `color-mix(in srgb,${c || '#000000'} ${Math.round((o ?? 1) * 100)}%,transparent)`;
+/**
+ * Visible shadows, top first. The first drop shadow keeps the original fields (shx, shy, shb, shc, sha, plus spread shs
+ * and hide shh), so the agent and the Figma import still set it; more drop and inner shadows live in `fxs`.
+ */
+function shadowsOf(l) {
+  const out = [];
+  if ((l.shb || l.shy || l.shx || l.shs) && !l.shh) out.push({ k: 'drop', x: l.shx || 0, y: l.shy || 0, b: l.shb || 0, s: l.shs || 0, c: l.shc || '#000000', o: l.sha ?? 0.45, first: true });
+  (l.fxs || []).forEach((e) => { if (e && !e.h) out.push({ x: 0, y: 0, b: 0, s: 0, c: '#000000', o: 0.25, ...e }); });
+  return out;
+}
+/** Where a stroke sits when none is set: inside a box (CSS borders always did), centered on a vector, outside text */
+const strokeHome = (l) => (l.type === 'path' ? 'center' : l.type === 'text' ? 'outside' : 'inside');
+/**
+ * Visible strokes, top first. The first keeps the original fields (stroke, sw) plus alignment sa ('inside' | 'center' |
+ * 'outside') and dashes sd ('dash' | 'dot'); more strokes live in `sts` ({ c, w, a, d, h }).
+ */
+function strokesOf(l) {
+  const out = [], home = strokeHome(l);
+  if (l.stroke && (l.sw || 3) > 0) out.push({ c: l.stroke, w: l.sw || 3, a: l.sa || home, d: l.sd || null, first: true });
+  (l.sts || []).forEach((x) => { if (x && !x.h && x.w > 0) out.push({ a: home, d: null, ...x }); });
+  return out;
+}
+/**
+ * Strokes and shadows as CSS. Boxes: box-shadow rings for strokes (inside: inset, outside: outer, center: half of each),
+ * stacked like Figma (first on top, strokes above inner shadows, drop shadows under everything); a dashed first stroke uses
+ * the border (inside) or the outline (center, outside). Text: text-shadow and one text stroke. Vectors draw their own (pathHTML).
+ */
+function paintCss(l) {
+  const sh = shadowsOf(l), st = strokesOf(l);
+  if (l.type === 'path') return '';
+  if (l.type === 'text') {
+    let s = ''; const ts = sh.filter((e) => e.k !== 'inner').map((e) => `${e.x}px ${e.y}px ${e.b}px ${shadowColor(e.c, e.o)}`), k = st[0];
+    if (ts.length) s += `text-shadow:${ts.join(',')};`;
+    if (k) s += k.a === 'outside' ? `-webkit-text-stroke:${k.w * 2}px ${k.c};paint-order:stroke fill;` : `-webkit-text-stroke:${k.w}px ${k.c};`;
+    return s;
+  }
+  const ins = [], outs = []; let s = '';
+  st.forEach((k) => {
+    if (k.first && k.d) { if (k.a !== 'inside') s += `outline:${k.w}px ${k.d === 'dot' ? 'dotted' : 'dashed'} ${k.c};outline-offset:${k.a === 'center' ? -k.w / 2 : 0}px;`; return; } // inside: the border (lstyle)
+    if (k.a === 'inside') ins.push(`inset 0 0 0 ${k.w}px ${k.c}`);
+    else if (k.a === 'outside') outs.push(`0 0 0 ${k.w}px ${k.c}`);
+    else { ins.push(`inset 0 0 0 ${k.w / 2}px ${k.c}`); outs.push(`0 0 0 ${k.w / 2}px ${k.c}`); }
+  });
+  sh.forEach((e) => (e.k === 'inner' ? ins : outs).push(`${e.k === 'inner' ? 'inset ' : ''}${e.x}px ${e.y}px ${e.b}px ${e.s}px ${shadowColor(e.c, e.o)}`));
+  if (ins.length || outs.length) s += `box-shadow:${[...ins, ...outs].join(',')};`;
+  return s;
+}
+/**
+ * A path layer's drawing: inline SVG at the layer's size. Fills, bottom first: the base fill, then `ovs` (fills above it).
+ * Strokes, bottom first, each centered, or doubled and clipped to the shape (inside) or masked off it (outside); dashes or dots.
+ * Drop shadows as CSS drop-shadow (o.shadow false: left to the caller, e.g. the SVG export's filter).
+ */
+function pathHTML(l, o = {}) {
+  const w = Math.max(1, l.w), h = Math.max(1, l.h), base = 'pv' + l.id + '-' + ++pathSeq, dd = PATH.toD(pathSegs(l)), defs = [], body = [];
+  let n = 0; const nid = () => base + '-' + ++n, fr = l.fr === 'evenodd' ? ' fill-rule="evenodd"' : '';
+  const paint = (f) => {
+    f = String(f || 'none').trim(); if (!f || f === 'none' || f === 'transparent') return null;
+    if (/gradient\(/i.test(f)) { const g = RT.gParse && RT.gParse(f), id = nid(), def = g && svgGrad(g, id, w, h); if (def) { defs.push(def); return `url(#${id})`; } const c = /#[0-9a-f]{3,8}|rgba?\([^)]*\)/i.exec(f); return c ? c[0] : null; }
+    if (/url\(/i.test(f)) { const u = /url\((['"]?)(.*?)\1\)/i.exec(f); if (!u) return null; const id = nid(); defs.push(`<pattern id="${id}" patternUnits="userSpaceOnUse" width="${w}" height="${h}"><image href="${esc(u[2])}" width="${w}" height="${h}" preserveAspectRatio="${/contain/.test(f) ? 'xMidYMid meet' : 'xMidYMid slice'}"/></pattern>`); return `url(#${id})`; }
+    return f;
+  };
+  [[l.fill, 1], ...[...(l.ovs || [])].reverse().filter((x) => x && !x.h).map((x) => [x.v, x.o ?? 1])].forEach(([f, op]) => {
+    const p = paint(f); if (p) body.push(`<path d="${dd}" fill="${esc(p)}"${op < 1 ? ` fill-opacity="${op}"` : ''}${fr}/>`);
+  });
+  const closed = /z/i.test(dd);
+  [...strokesOf(l)].reverse().forEach((k) => {
+    const a = closed ? k.a : 'center', sw = a === 'center' ? k.w : k.w * 2, dash = k.d === 'dash' ? ` stroke-dasharray="${k.w * 3} ${k.w * 2}"` : k.d === 'dot' ? ` stroke-dasharray="0 ${k.w * 2}"` : '';
+    let cut = '';
+    if (a === 'inside') { const id = nid(); defs.push(`<clipPath id="${id}"><path d="${dd}"${fr ? ' clip-rule="evenodd"' : ''}/></clipPath>`); cut = ` clip-path="url(#${id})"`; }
+    if (a === 'outside') { const id = nid(), m = k.w * 2 + 2; defs.push(`<mask id="${id}" maskUnits="userSpaceOnUse" x="${-m}" y="${-m}" width="${w + 2 * m}" height="${h + 2 * m}"><rect x="${-m}" y="${-m}" width="${w + 2 * m}" height="${h + 2 * m}" fill="#fff"/><path d="${dd}" fill="#000"${fr}/></mask>`); cut = ` mask="url(#${id})"`; }
+    body.push(`<path d="${dd}" fill="none" stroke="${esc(k.c)}" stroke-width="${sw}" stroke-linecap="${k.d === 'dot' ? 'round' : l.cap || 'round'}" stroke-linejoin="${l.join || 'round'}"${dash}${cut}/>`);
+  });
+  const sh = o.shadow === false ? [] : shadowsOf(l).filter((e) => e.k !== 'inner');
+  const st = sh.length ? ` style="filter:${sh.map((e) => `drop-shadow(${e.x}px ${e.y}px ${e.b / 2}px ${shadowColor(e.c, e.o)})`).join(' ')}"` : '';
   // xmlns: exports and publishing parse the slide as XML (SVG foreignObject), where an <svg> needs its namespace to draw
-  return `<svg xmlns="http://www.w3.org/2000/svg" class="pv" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"${sh ? ` style="${sh}"` : ''} aria-hidden="true">${defs ? `<defs>${defs}</defs>` : ''}<path d="${PATH.toD(pathSegs(l))}" fill="${esc(fill)}"${l.fr === 'evenodd' ? ' fill-rule="evenodd"' : ''}${stroke}/></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" class="pv" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"${st} aria-hidden="true">${defs.length ? `<defs>${defs.join('')}</defs>` : ''}${body.join('')}</svg>`;
 }
 const layerHTML = (l) => `<div class="ly ${l.type}${l.locked ? ' locked' : ''}" data-id="${l.id}" style="${lstyle(l)}">${l.type === 'text' ? textHTML(l) : l.type === 'path' ? pathHTML(l) : ''}</div>`;
 const posterHTML = (pg) => pg.layers.map(layerHTML).join('');
@@ -2355,7 +2422,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     if (isT(l)) { if (l.it) s += 'font-style:italic;'; if (l.ul) s += 'text-decoration:underline;'; if (l.up) s += 'text-transform:uppercase;'; }
     const fH = l.fx === true, fV = l.fy === true;
     if (fH || fV) s += `transform:rotate(${l.rot || 0}deg) scale(${fH ? -1 : 1},${fV ? -1 : 1});`;
-    if (l.shb || l.shy || l.shx) { const c = `color-mix(in srgb,${l.shc || '#000000'} ${Math.round((l.sha ?? 0.45) * 100)}%,transparent)`, v = `${l.shx || 0}px ${l.shy || 0}px ${l.shb || 0}px ${c}`; if (l.type !== 'path') s += isT(l) ? `text-shadow:${v};` : `box-shadow:${v};`; }
+    s += paintCss(l); // strokes and shadows (all of them, see paintCss)
     if (l.bl) s += `filter:blur(${l.bl}px);`;
     return s;
   };
@@ -2519,7 +2586,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     return html.replace(/url\((&quot;|["']?)(?!data:|#)((?:(?!&quot;)[^"')])+?)\1\)/g, (m, q, u) => `url(${q}${map.get(u.trim()) || u}${q})`)
       .replace(HREF, (m, u) => ` href="${map.get(u.replace(/&amp;/g, '&')) || u}"`);
   }
-  RT.asDataUrl = asDataUrl;
+  RT.asDataUrl = asDataUrl; RT.inlineUrls = inlineUrls;
   /** Parsed @font-face rules of the Google Fonts stylesheets on the page (base set + fonts loaded by the editor) */
   const faceCache = new Map();
   const parseRange = (v) => (v ? v.split(',').map((x) => { const [a, b] = x.trim().replace(/^U\+/i, '').split('-'); const lo = parseInt(a.replace(/\?/g, '0'), 16); return [lo, b ? parseInt(b, 16) : parseInt(a.replace(/\?/g, 'F'), 16)]; }) : null);
@@ -3036,7 +3103,7 @@ Object.assign(IC, {
       let h = '';
       if (!isT(l) && !isImg && !l.icon) {
         const isG = /gradient/.test(l.fill), g = gradOf(l);
-        h += `<div class="grad7"><span class="label" style="margin:0">Fill style</span><div class="seg"><button class="${!isG ? 'on' : ''}" data-act="gMode" data-m="solid">Solid</button><button class="${isG ? 'on' : ''}" data-act="gMode" data-m="grad">Gradient</button></div>`
+        h += `<div class="grad7"><span class="label" style="margin:0">${l.ovs && l.ovs.length ? 'Bottom fill' : 'Fill style'}</span><div class="seg"><button class="${!isG ? 'on' : ''}" data-act="gMode" data-m="solid">Solid</button><button class="${isG ? 'on' : ''}" data-act="gMode" data-m="grad">Gradient</button></div>`
           + (isG ? `<div class="grad-bar" style="background:${l.fill}"></div><div class="g2f"><label class="lab">From<input type="color" data-g="c1" value="${g.c1}"></label><label class="lab">To<input type="color" data-g="c2" value="${g.c2}"></label></div><label class="lab"><span>Angle <b class="av7">${g.a}°</b></span><input type="range" min="0" max="360" data-g="a" value="${g.a}"></label><div class="chips">${GP.map(([a, c]) => `<button class="gp7" data-act="gPre" data-c1="${a}" data-c2="${c}" style="background:linear-gradient(135deg,${a},${c})" title="${a} to ${c}"></button>`).join('')}<button class="chip" data-act="gSwap">${ic('swapH', 14)}Swap</button></div>` : '') + '</div>';
       }
       const cols = docColors();
@@ -4173,6 +4240,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (o >= 0.999) return it.v; const g = gParse(it.v); return g ? gCss(g, o) : it.v;
   };
   const ovCss = (l) => (l.ovs || []).filter((x) => !x.h).map(ovItemCss).join(', ');
+  RT.ovCss = ovCss; // the SVG export draws them too
 
   /* ---------- image adjustments: Figma's sliders, baked into the image pixels ---------- */
   const FXK = [['exposure', 'Exposure'], ['contrast', 'Contrast'], ['saturation', 'Saturation'], ['temperature', 'Temperature'], ['tint', 'Tint'], ['highlights', 'Highlights'], ['shadows', 'Shadows']];
@@ -4369,8 +4437,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
 
   const swatch = (it) => (it.k === 'solid' ? `linear-gradient(90deg, ${cssCol((colOf(it.v) || { c: '#000000' }).c, 1)} 50%, ${cssCol((colOf(it.v) || { c: '#000000' }).c, it.o ?? 1)} 50%),${CHECK}` : `${it.v},${CHECK}`);
   const ovName = (it) => { if (it.k === 'solid') return String(it.v).replace('#', '').toUpperCase(); const g = gParse(it.v); return g && g.kind !== 'linear' ? g.kind[0].toUpperCase() + g.kind.slice(1) : 'Linear'; };
-  function fillPanel(l) {
-    const list = l.ovs || [], mode = fitOf(l.fill);
+  /** Figma's Fill list: the fills above, then the image (img), or nothing below for shapes (their base fill follows) */
+  function fillPanel(l, img = true) {
+    const list = l.ovs || [], mode = img ? fitOf(l.fill) : null;
     const rows = list.map((it, i) => {
       const open = ED.ovOpen === i, g = it.k === 'grad' && gParse(it.v);
       let ed = '';
@@ -4384,8 +4453,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       }
       return `<div class="fl8-row${open ? ' open' : ''}${it.h ? ' off' : ''}"><button type="button" class="fl8-sw" data-act="ovOpen" data-i="${i}" style="background:${swatch(it)}" title="Edit fill"></button><button type="button" class="fl8-n" data-act="ovOpen" data-i="${i}">${esc(ovName(it))}</button><label class="u8"><input class="field sm" type="number" min="0" max="100" data-ovo="${i}" value="${Math.round((it.o ?? 1) * 100)}"><i>%</i></label><button type="button" class="btn ghost icon sm" data-act="ovEye" data-i="${i}" data-tip="${it.h ? 'Show fill' : 'Hide fill'}">${ic(it.h ? 'eyeOff' : 'eye', 15)}</button><button type="button" class="btn ghost icon sm" data-act="ovDel" data-i="${i}" data-tip="Remove fill">${ic('minus', 15)}</button></div>${ed}`;
     }).join('');
-    return `<div class="fl8"><div class="row sp"><span class="label" style="margin:0">Fill</span><button type="button" class="btn ghost icon sm" data-act="ovAdd" data-tip="Add fill above the image">${ic('plus', 16)}</button></div>
-      ${rows}<div class="fl8-row"><span class="fl8-sw img">${ic('image', 15)}</span><span class="fl8-n">Image</span>${ddBtn('fit', FIT_ITEMS(mode).find((x) => x !== '-' && x[0] === mode)[1])}</div></div>`;
+    return `<div class="fl8"><div class="row sp"><span class="label" style="margin:0">Fill</span><button type="button" class="btn ghost icon sm" data-act="ovAdd" data-tip="${img ? 'Add fill above the image' : 'Add a fill on top'}">${ic('plus', 16)}</button></div>
+      ${rows}${img ? `<div class="fl8-row"><span class="fl8-sw img">${ic('image', 15)}</span><span class="fl8-n">Image</span>${ddBtn('fit', FIT_ITEMS(mode).find((x) => x !== '-' && x[0] === mode)[1])}</div>` : ''}</div>`;
   }
   function imagePanel(l) {
     const fx = l.adj || {}, any = fxOn(l);
@@ -4417,8 +4486,10 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       DD.weight = { items: WEIGHTS.map(([w, n]) => [w, `${n} · ${w}`, `font-weight:${w}`]), cur: l.weight, pick: setProp('weight', (v) => +v, textFit), preview: preview('weight', (v) => +v) };
       ws.outerHTML = ddBtn('weight', (WEIGHTS.find(([w]) => w == l.weight) || [l.weight, String(l.weight)])[1]);
     }
-    // shapes: gradient fill with stops and opacity
+    // shapes and vectors: the fills stacked on top of the base fill (same list as images), above the base fill's editor
     const gm = b.querySelector('[data-act=gMode]');
+    if (gm && !b.querySelector('[data-act=imgPre]')) gm.closest('.grad7').insertAdjacentHTML('beforebegin', fillPanel(l, false));
+    // shapes: gradient fill with stops and opacity
     if (gm && /gradient/.test(l.fill)) {
       const blk = gm.closest('.grad7'), g = gParse(l.fill);
       [...blk.children].slice(2).forEach((c) => c.remove());
@@ -8289,13 +8360,32 @@ function zoomToSelection() {
             else { cur = { par, top: r.top, l: r.left, r: r.right, t: ch }; runs.push(cur); }
           }
         }
+        const k = strokesOf(l)[0], tst = k ? ` stroke="${esc(k.c)}" stroke-width="${k.a === 'outside' ? k.w * 2 : k.w}" stroke-linejoin="round"${k.a === 'outside' ? ' paint-order="stroke"' : ''}` : '';
         return runs.filter((u) => u.t.trim()).map((u) => {
           const cs = getComputedStyle(u.par), rtl = cs.direction === 'rtl';
           ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`; const m = ctx.measureText(u.t), asc = m.fontBoundingBoxAscent || parseFloat(cs.fontSize) * 0.8;
           const txt = cs.textTransform === 'uppercase' ? u.t.toUpperCase() : cs.textTransform === 'lowercase' ? u.t.toLowerCase() : u.t;
           const ls = parseFloat(cs.letterSpacing), deco = /underline/.test(cs.textDecorationLine) ? ' text-decoration="underline"' : '';
-          return `<text x="${Math.round(((rtl ? u.r : u.l) - er.left) * 100) / 100}" y="${Math.round((u.top - er.top + asc) * 100) / 100}" font-family="${esc(cs.fontFamily)}" font-size="${cs.fontSize}" font-weight="${cs.fontWeight}"${cs.fontStyle !== 'normal' ? ` font-style="${cs.fontStyle}"` : ''} fill="${cs.color}"${ls ? ` letter-spacing="${ls}"` : ''}${deco}${rtl ? ' direction="rtl"' : ''} xml:space="preserve">${esc(txt)}</text>`;
+          return `<text x="${Math.round(((rtl ? u.r : u.l) - er.left) * 100) / 100}" y="${Math.round((u.top - er.top + asc) * 100) / 100}" font-family="${esc(cs.fontFamily)}" font-size="${cs.fontSize}" font-weight="${cs.fontWeight}"${cs.fontStyle !== 'normal' ? ` font-style="${cs.fontStyle}"` : ''} fill="${cs.color}"${tst}${ls ? ` letter-spacing="${ls}"` : ''}${deco}${rtl ? ' direction="rtl"' : ''} xml:space="preserve">${esc(txt)}</text>`;
         }).join('');
+      };
+      /** One SVG filter for a layer's shadows (drop: under it, inner: inside it, spread included) and its blur; returns its id */
+      const fxFilter = (l) => {
+        const sh = shadowsOf(l).filter((e) => l.type !== 'text' || e.k !== 'inner'), parts = [], under = [], over = [];
+        sh.forEach((e, i) => {
+          const r = 's' + i, sd = e.b / 2, morph = (op, rad) => (rad ? `<feMorphology operator="${op}" radius="${rad}"/>` : '');
+          if (e.k === 'inner') { // inside the shape: its alpha minus a shifted, blurred copy (a positive spread thickens it)
+            parts.push(`<feOffset in="SourceAlpha" dx="${e.x}" dy="${e.y}"/>${morph(e.s > 0 ? 'erode' : 'dilate', Math.abs(e.s))}<feGaussianBlur stdDeviation="${sd}"/><feComposite in2="SourceAlpha" operator="arithmetic" k2="-1" k3="1" result="${r}a"/><feFlood flood-color="${esc(e.c)}" flood-opacity="${e.o}"/><feComposite in2="${r}a" operator="in" result="${r}"/>`);
+            over.push(r);
+          } else { // under it: the alpha grown by the spread, shifted, blurred, colored
+            parts.push(`<feOffset in="SourceAlpha" dx="${e.x}" dy="${e.y}"/>${morph(e.s < 0 ? 'erode' : 'dilate', Math.abs(e.s))}<feGaussianBlur stdDeviation="${sd}" result="${r}b"/><feFlood flood-color="${esc(e.c)}" flood-opacity="${e.o}"/><feComposite in2="${r}b" operator="in" result="${r}"/>`);
+            under.push(r);
+          }
+        });
+        if (!sh.length && !l.bl) return null;
+        const id = nid(), merge = `<feMerge result="m">${[...under].reverse().map((r) => `<feMergeNode in="${r}"/>`).join('')}<feMergeNode in="SourceGraphic"/>${[...over].reverse().map((r) => `<feMergeNode in="${r}"/>`).join('')}</feMerge>`;
+        defs.push(`<filter id="${id}" x="-50%" y="-50%" width="200%" height="200%">${parts.join('')}${merge}${l.bl ? `<feGaussianBlur in="m" stdDeviation="${l.bl}"/>` : ''}</filter>`);
+        return id;
       };
       const body = [];
       const bgF = await fills(String(pg.bg || '#ffffff'), W, H); bgF.forEach((f) => body.push(`<rect width="${W}" height="${H}" fill="${esc(f)}"/>`));
@@ -8304,25 +8394,22 @@ function zoomToSelection() {
         const w = l.w, h = l.h, [sx, sy] = flips(l), tf = [`translate(${l.x} ${l.y})`]; let inner = '', extra = '';
         if (l.rot) tf.push(`rotate(${l.rot} ${w / 2} ${h / 2})`);
         if (sx < 0 || sy < 0) tf.push(`translate(${w / 2} ${h / 2}) scale(${sx} ${sy}) translate(${-w / 2} ${-h / 2})`);
-        const fx = [];
-        if (l.bl) fx.push(`<feGaussianBlur stdDeviation="${l.bl / 2}"/>`);
-        if (l.shb || l.shy || l.shx) fx.push(`<feDropShadow dx="${l.shx || 0}" dy="${l.shy || 0}" stdDeviation="${(l.shb || 0) / 2}" flood-color="${esc(l.shc || '#000000')}" flood-opacity="${l.sha ?? 0.45}"/>`);
-        if (fx.length) { const id = nid(); defs.push(`<filter id="${id}" x="-50%" y="-50%" width="200%" height="200%">${fx.join('')}</filter>`); extra += ` filter="url(#${id})"`; }
+        const fid = fxFilter(l); if (fid) extra += ` filter="url(#${fid})"`;
         const cm = /^polygon\((.*)\)$/.exec(l.clip || '');
         if (cm) { const id = nid(), pts = cm[1].split(',').map((p) => p.trim().split(/\s+/).map((v, j) => (v.endsWith('%') ? (parseFloat(v) / 100) * (j ? h : w) : parseFloat(v) || 0)).join(',')).join(' '); defs.push(`<clipPath id="${id}"><polygon points="${pts}"/></clipPath>`); extra += ` clip-path="url(#${id})"`; }
         if ((l.op ?? 1) < 1) extra += ` opacity="${l.op}"`;
         if (l.blend && l.blend !== 'normal') extra += ` style="mix-blend-mode:${l.blend}"`;
         if (l.type === 'text') inner = textSVG(l);
-        else if (l.type === 'path') {
-          const dd = PATH.toD(pathSegs(l)), fr = l.fr === 'evenodd' ? ' fill-rule="evenodd"' : '';
-          (await fills(String(l.fill || 'none'), w, h)).forEach((f) => { inner += `<path d="${dd}" fill="${esc(f)}"${fr}/>`; });
-          if (l.stroke) inner += `<path d="${dd}" fill="none" stroke="${esc(l.stroke)}" stroke-width="${l.sw ?? 3}" stroke-linecap="${l.cap || 'round'}" stroke-linejoin="${l.join || 'round'}"/>`;
-        } else if (l.icon && IC[l.icon]) inner = `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="none" stroke="${hex(l.fill)}" stroke-width="${l.isw || 2}" stroke-linecap="round" stroke-linejoin="round">${IC[l.icon]}</svg>`;
+        else if (l.type === 'path') inner = await RT.inlineUrls(pathHTML(l, { shadow: false })); // same drawing as the canvas; shadows: the group's filter else if (l.icon && IC[l.icon]) inner = `<svg width="${w}" height="${h}" viewBox="0 0 24 24" fill="none" stroke="${hex(l.fill)}" stroke-width="${l.isw || 2}" stroke-linecap="round" stroke-linejoin="round">${IC[l.icon]}</svg>`;
         else {
-          const ell = l.type === 'ellipse', rr = Math.min(l.r || 0, w / 2, h / 2), sw = l.stroke ? l.sw || 3 : 0;
+          const ell = l.type === 'ellipse', rr = Math.min(l.r || 0, w / 2, h / 2), ov = RT.ovCss ? RT.ovCss(l) : '';
           const shape = (f, inset, more = '') => (ell ? `<ellipse cx="${w / 2}" cy="${h / 2}" rx="${w / 2 - inset}" ry="${h / 2 - inset}" fill="${esc(f)}"${more}/>` : `<rect x="${inset}" y="${inset}" width="${w - 2 * inset}" height="${h - 2 * inset}"${rr ? ` rx="${Math.max(0, rr - inset)}"` : ''} fill="${esc(f)}"${more}/>`);
-          (await fills(String(l.fill || 'none'), w, h)).forEach((f) => { inner += shape(f, 0); });
-          if (sw) inner += shape('none', sw / 2, ` stroke="${esc(l.stroke)}" stroke-width="${sw}"`); // CSS borders sit inside the box
+          (await fills((ov ? ov + ', ' : '') + String(l.fill || 'none'), w, h)).forEach((f) => { inner += shape(f, 0); });
+          // strokes, bottom first: inside (inset by half the width), centered on the edge, or outside (outset)
+          [...strokesOf(l)].reverse().forEach((k) => {
+            const dash = k.d === 'dash' ? ` stroke-dasharray="${k.w * 3} ${k.w * 2}"` : k.d === 'dot' ? ` stroke-dasharray="0 ${k.w * 2}" stroke-linecap="round"` : '';
+            inner += shape('none', k.a === 'inside' ? k.w / 2 : k.a === 'outside' ? -k.w / 2 : 0, ` stroke="${esc(k.c)}" stroke-width="${k.w}"${dash}`);
+          });
         }
         if (inner) body.push(`<g id="${esc(String(l.name || l.type).replace(/[^\w-]+/g, '-'))}-${n}" transform="${tf.join(' ')}"${extra}>${inner}</g>`);
       }
@@ -8331,6 +8418,128 @@ function zoomToSelection() {
     } finally { host.remove(); }
   }
   RT.slideSVG = slideSVG;
+})();
+
+/* ============ v30 · strokes and effects as lists (Figma's Stroke and Effects sections) ============ */
+/* The first stroke and the first drop shadow keep their original fields (see strokesOf / shadowsOf); the lists hold the rest.
+   Removing the first one promotes the next, so a layer with strokes or shadows always has its first one set. */
+(function () {
+  const isT = (l) => l.type === 'text', P = (l) => l.type === 'path';
+  const openPath = (l) => P(l) && !/z/i.test(PATH.toD(pathSegs(l)));
+  const STF = { c: 'stroke', w: 'sw', a: 'sa', d: 'sd' };
+  /** Stroke i: -1 is the first stroke (stroke, sw, sa, sd); others are sts[i] */
+  const stGet = (l, i) => (i < 0 ? { c: l.stroke, w: l.sw || 3, a: l.sa || strokeHome(l), d: l.sd || null } : l.sts[i]);
+  const stSet = (l, i, k, v) => { const o = i < 0 ? l : l.sts[i], f = i < 0 ? STF[k] : k; if (v == null) delete o[f]; else o[f] = v; };
+  const FX1 = { x: 'shx', y: 'shy', b: 'shb', s: 'shs', c: 'shc', o: 'sha', h: 'shh' };
+  /** Effect i: -1 is the first drop shadow (shx… fields); others are fxs[i] */
+  const fxGet = (l, i) => (i < 0 ? { k: 'drop', x: l.shx || 0, y: l.shy || 0, b: l.shb || 0, s: l.shs || 0, c: l.shc || '#000000', o: l.sha ?? 0.45, h: !!l.shh } : l.fxs[i]);
+  const fxSet = (l, i, k, v) => { const o = i < 0 ? l : l.fxs[i], f = i < 0 ? FX1[k] : k; if (v == null || v === false) delete o[f]; else o[f] = v; };
+  const hasFirst = (l) => !!(l.shb || l.shy || l.shx || l.shs) || l.shc != null;
+  const num = (key, v, lbl, step = 1, min) => `<label class="n30"><span>${lbl}</span><input class="field sm" type="number" step="${step}"${min != null ? ` min="${min}"` : ''} data-e30="${key}" value="${Math.round(v * 100) / 100}"></label>`;
+  const seg = (act, i, cur, opts) => `<div class="seg s30">${opts.map(([v, t]) => `<button type="button" class="${cur === v ? 'on' : ''}" data-act="${act}" data-i="${i}" data-v="${v}">${t}</button>`).join('')}</div>`;
+  const eye = (act, i, off, what) => `<button type="button" class="btn ghost icon sm" data-act="${act}" data-i="${i}" data-tip="${off ? 'Show' : 'Hide'} ${what}">${ic(off ? 'eyeOff' : 'eye', 15)}</button>`;
+  const del = (act, i, what) => `<button type="button" class="btn ghost icon sm" data-act="${act}" data-i="${i}" data-tip="Remove ${what}">${ic('minus', 15)}</button>`;
+  const plus = (act, tip) => `<button type="button" class="btn ghost icon sm" data-act="${act}" data-tip="${tip}">${ic('plus', 16)}</button>`;
+
+  function strokeHTML(l) {
+    const T = isT(l), list = [...(l.stroke ? [-1] : []), ...(l.sts || []).map((_, i) => i)];
+    const rows = list.map((i) => {
+      const k = stGet(l, i), al = T ? [['center', 'Center'], ['outside', 'Outside']] : [['inside', 'Inside'], ['center', 'Center'], ['outside', 'Outside']];
+      const dashes = !T && (P(l) || i < 0); // boxes: CSS has one dashed border or outline, so only the first stroke can dash
+      return `<div class="r30${i >= 0 && k.h ? ' off' : ''}"><div class="r30-top"><input type="color" data-e30="st:${i}:c" value="${hex(k.c || '#000000')}">${num(`st:${i}:w`, k.w || 1, 'Width', 0.5, 0.5)}<span class="grow"></span>${i >= 0 ? eye('s30Eye', i, k.h, 'stroke') : ''}${del('s30Del', i, 'stroke')}</div>`
+        + (openPath(l) ? '' : seg('s30Align', i, k.a || strokeHome(l), al))
+        + (dashes ? seg('s30Dash', i, k.d || 'solid', [['solid', 'Solid'], ['dash', 'Dashes'], ['dot', 'Dots']]) : '') + '</div>';
+    });
+    return { head: T && l.stroke ? '' : plus('s30Add', 'Add stroke'), body: rows.join('') || '<p class="xs-t muted">No stroke.</p>' };
+  }
+  function effectsHTML(l) {
+    const T = isT(l), list = [...(hasFirst(l) ? [-1] : []), ...(l.fxs || []).map((_, i) => i)], noInner = T || P(l);
+    const rows = list.map((i) => {
+      const e = fxGet(l, i);
+      return `<div class="r30${e.h ? ' off' : ''}"><div class="r30-top"><b class="sm-t">${e.k === 'inner' ? 'Inner shadow' : 'Drop shadow'}</b><span class="grow"></span>${eye('e30Eye', i, e.h, 'effect')}${del('e30Del', i, 'effect')}</div>`
+        + (noInner ? '' : seg('e30Kind', i, e.k, [['drop', 'Drop'], ['inner', 'Inner']]))
+        + `<div class="q30">${num(`fx:${i}:x`, e.x, 'X')}${num(`fx:${i}:y`, e.y, 'Y')}${num(`fx:${i}:b`, e.b, 'Blur', 1, 0)}${noInner ? '' : num(`fx:${i}:s`, e.s, 'Spread')}</div>`
+        + `<div class="r30-top"><input type="color" data-e30="fx:${i}:c" value="${hex(e.c)}">${num(`fx:${i}:o`, Math.round(e.o * 100), 'Opacity %', 1, 0)}</div></div>`;
+    });
+    if (l.bl) rows.push(`<div class="r30"><div class="r30-top"><b class="sm-t">Layer blur</b><span class="grow"></span>${del('e30Del', 'bl', 'blur')}</div><input type="range" min="0" max="60" data-e30="bl" value="${l.bl}" aria-label="Layer blur"></div>`);
+    if (l.bbl && !T) rows.push(`<div class="r30"><div class="r30-top"><b class="sm-t">Background blur</b><span class="grow"></span>${del('e30Del', 'bbl', 'blur')}</div><input type="range" min="0" max="40" data-e30="bbl" value="${l.bbl}" aria-label="Background blur"></div>`);
+    const add = [['drop', 'Drop shadow'], ...(noInner ? [] : [['inner', 'Inner shadow']]), ...(l.bl ? [] : [['bl', 'Layer blur']]), ...(l.bbl || T ? [] : [['bbl', 'Background blur']])];
+    const menu = ED.e30Menu ? `<div class="chips m30">${add.map(([k, t]) => `<button type="button" class="chip" data-act="e30New" data-k="${k}">${t}</button>`).join('')}</div>` : '';
+    return { head: plus('e30Add', 'Add effect'), body: menu + (rows.join('') || (menu ? '' : '<p class="xs-t muted">No effects.</p>')) };
+  }
+  /** Fills a properties section (made after `after` when the panel has none yet) */
+  function put(b, key, title, html, after) {
+    let sec = b.querySelector(`.ps9[data-sec=${key}]`);
+    if (!sec) {
+      sec = document.createElement('section'); sec.className = 'ps9'; sec.dataset.sec = key;
+      sec.innerHTML = `<div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="${key}" aria-expanded="true">${title}${ic('chevD', 14)}</button><span class="ps9-a"></span></div><div class="ps9-b"></div>`;
+      const ref = after.map((k) => b.querySelector(`.ps9[data-sec=${k}]`)).find(Boolean); ref ? ref.after(sec) : b.append(sec);
+    }
+    sec.querySelector('.ps9-b').innerHTML = html.body; sec.querySelector('.ps9-a').innerHTML = html.head;
+  }
+  const _ep30 = edProps;
+  edProps = function () {
+    const r = _ep30.apply(this, arguments), l = curL(), b = $('#edProps .body');
+    if (!l || ED.rtab !== 'design' || !b || !b.querySelector('.ps9')) return r;
+    if (ED.e30For !== l.id) { ED.e30For = l.id; ED.e30Menu = false; }
+    put(b, 'stroke', 'Stroke', strokeHTML(l), ['fill', 'look', 'shape', 'text', 'pos']);
+    put(b, 'fx', 'Effects', effectsHTML(l), ['stroke', 'fill', 'look']);
+    return r;
+  };
+
+  Object.assign(ACT, {
+    s30Add: () => { const l = curL(); if (!l) return; mutate(() => { if (!l.stroke) { l.stroke = '#000000'; l.sw = isT(l) ? 2 : 4; delete l.sa; delete l.sd; } else (l.sts = l.sts || []).push({ c: '#000000', w: 2 }); }); },
+    s30Del: (a) => {
+      const l = curL(), i = +a.dataset.i; if (!l) return;
+      mutate(() => {
+        if (i < 0) { Object.values(STF).forEach((f) => delete l[f]); const n = l.sts && l.sts.shift(); if (n) { l.stroke = n.c; l.sw = n.w; if (n.a && n.a !== strokeHome(l)) l.sa = n.a; if (n.d) l.sd = n.d; } }
+        else l.sts.splice(i, 1);
+        if (l.sts && !l.sts.length) delete l.sts;
+      });
+    },
+    s30Eye: (a) => { const l = curL(), x = l && l.sts && l.sts[+a.dataset.i]; x && mutate(() => { if (x.h) delete x.h; else x.h = true; }); },
+    s30Align: (a) => { const l = curL(), i = +a.dataset.i; l && mutate(() => stSet(l, i, 'a', i < 0 && a.dataset.v === strokeHome(l) ? null : a.dataset.v)); },
+    s30Dash: (a) => { const l = curL(), i = +a.dataset.i; l && mutate(() => stSet(l, i, 'd', a.dataset.v === 'solid' ? null : a.dataset.v)); },
+    e30Add: () => { ED.e30Menu = !ED.e30Menu; edProps(); },
+    e30New: (a) => {
+      const l = curL(), k = a.dataset.k; ED.e30Menu = false; if (!l) return;
+      mutate(() => {
+        if (k === 'bl') l.bl = 8; else if (k === 'bbl') l.bbl = 16;
+        else if (k === 'drop' && !hasFirst(l)) { Object.assign(l, { shx: 0, shy: 8, shb: 24, sha: 0.25, shc: '#000000' }); delete l.shs; delete l.shh; }
+        else (l.fxs = l.fxs || []).push(k === 'inner' ? { k, x: 0, y: 4, b: 12, s: 0, c: '#000000', o: 0.25 } : { k: 'drop', x: 0, y: 8, b: 24, s: 0, c: '#000000', o: 0.25 });
+      });
+    },
+    e30Del: (a) => {
+      const l = curL(), i = a.dataset.i; if (!l) return;
+      mutate(() => {
+        if (i === 'bl' || i === 'bbl') delete l[i];
+        else if (+i < 0) { // the first drop shadow: the next one (if any) takes its place
+          Object.values(FX1).forEach((f) => delete l[f]);
+          const j = (l.fxs || []).findIndex((e) => e.k === 'drop');
+          if (j >= 0) { const e = l.fxs.splice(j, 1)[0]; Object.assign(l, { shx: e.x, shy: e.y, shb: e.b, shc: e.c, sha: e.o }); if (e.s) l.shs = e.s; if (e.h) l.shh = true; }
+        } else l.fxs.splice(+i, 1);
+        if (l.fxs && !l.fxs.length) delete l.fxs;
+      });
+    },
+    e30Eye: (a) => { const l = curL(), i = +a.dataset.i; l && mutate(() => fxSet(l, i, 'h', !fxGet(l, i).h)); },
+    e30Kind: (a) => {
+      const l = curL(), i = +a.dataset.i, k = a.dataset.v; if (!l || fxGet(l, i).k === k) return;
+      mutate(() => {
+        if (i < 0) { const e = fxGet(l, -1); Object.values(FX1).forEach((f) => delete l[f]); (l.fxs = l.fxs || []).unshift({ k, x: e.x, y: e.y, b: e.b, s: e.s, c: e.c, o: e.o, ...(e.h ? { h: true } : {}) }); }
+        else l.fxs[i].k = k;
+      });
+    },
+  });
+  // typing in a row: live on the canvas; the change event commits it as one undo step (property inputs)
+  document.addEventListener('input', (e) => {
+    const t = e.target; if (!t.dataset || t.dataset.e30 == null || !t.closest('#edProps')) return;
+    const l = curL(); if (!l) return; if (!ED.pre) ED.pre = snap();
+    const [kind, si, k] = t.dataset.e30.split(':'), v = t.type === 'number' || t.type === 'range' ? +t.value : t.value;
+    if (kind === 'bl' || kind === 'bbl') l[kind] = v;
+    else if (kind === 'st') stSet(l, +si, k, k === 'w' ? Math.max(0.5, v) : v);
+    else if (kind === 'fx') fxSet(l, +si, k, k === 'o' ? clamp(v / 100, 0, 1) : k === 'b' ? Math.max(0, v) : v);
+    refreshL(l); drawSel();
+  });
 })();
 
 /* ============ first paint, with every renderer installed ============ */

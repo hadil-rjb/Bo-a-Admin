@@ -2380,3 +2380,16 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .bm-list .it b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bm-none{padding:10px 8px;font-size:12.5px;color:var(--text-3)}
 .pbest .pnet-i .ic,.pbest .ddm .pnet-i .ic,.ptool-r .pdd[data-k="best"] .ddb .pnet-i .ic{color:#fff}
+/* v30 · Stroke and Effects lists */
+.r30{display:flex;flex-direction:column;gap:6px;padding:8px 0;border-top:1px solid var(--border-soft)}
+.r30:first-child{border-top:0;padding-top:0}
+.r30.off{opacity:.5}
+.r30-top{display:flex;align-items:center;gap:6px}
+.r30 input[type=color]{width:32px;height:28px;flex-shrink:0}
+.n30{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-3);min-width:0}
+.n30 input{width:64px}
+.q30{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.q30 .n30{flex-direction:column;align-items:stretch}
+.q30 .n30 input{width:100%}
+.s30{width:100%}
+.m30{margin-bottom:6px}
