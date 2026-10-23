@@ -86,7 +86,7 @@ let fxReady = async () => {};
 /** Text of a text layer as HTML (plain, or spans for mixed styles: set by the mixed text section) */
 let textHTML = (l) => esc(l.text);
 /** Mixed text hooks: apply(prop, value) styles the selected characters (true when it handled the change) */
-const RT = { apply: () => false, loadFont: () => {}, treeLive: () => {}, topGroup: () => null, selUnits: (pg, ids) => ids, tree: null, dragOn: () => false }; // tree hooks: v31
+const RT = { apply: () => false, loadFont: () => {}, treeLive: () => {}, topGroup: () => null, selUnits: (pg, ids) => ids, tree: null, dragOn: () => false, applyStyles: () => {} }; // tree hooks: v31, styles: v33
 /** Publishing client (v14 section): render + upload slides, publish now, poll results */
 let PUB = null;
 /** Connected accounts of the active brand (from the API). `S.platforms` mirrors them for the planner. */
@@ -8559,7 +8559,7 @@ function treeOf(pg) {
   (pg && pg.layers || []).forEach((l) => { byId.set(l.id, l); const k = l.pid || ''; if (!kids.has(k)) kids.set(k, []); kids.get(k).push(l); });
   return { byId, kids };
 }
-function withTree(pg, fn) { const prev = RT.tree; RT.tree = treeOf(pg); try { return fn(); } finally { RT.tree = prev; } }
+function withTree(pg, fn) { RT.applyStyles(pg); const prev = RT.tree; RT.tree = treeOf(pg); try { return fn(); } finally { RT.tree = prev; } } // styles: v33
 /** Containers above a layer, nearest first */
 function ancestorsT(T, l) { const out = []; for (let p = l && l.pid && T.byId.get(l.pid), n = 0; p && n < 64; p = p.pid && T.byId.get(p.pid), n++) out.push(p); return out; }
 function descendantsT(T, id) { const out = []; const walk = (k) => (T.kids.get(k) || []).forEach((c) => { out.push(c); if (isContainer(c)) walk(c.id); }); walk(id); return out; }
@@ -9039,6 +9039,227 @@ function clipCss(l, frames) {
     e.preventDefault(); e.stopImmediatePropagation();
     if (l && l.type === 'frame' && !l.al) return addAL(l);
     RT.wrapSel('frame'); const f = curL(); if (f && f.type === 'frame') addAL(f);
+  }, true);
+})();
+
+/* ============ v33 · components (brand library, instances with overrides) and shared styles ============ */
+/* Components: brand.components = [{ id, name, v, w, h, layers }] (layers relative to the root frame, ids = the main's ids).
+   On a page, the main component is a frame with comp + main; an instance is a frame with comp + cv (the version it shows),
+   whose layers carry sid (the main layer they mirror) and ovr (the properties edited on that instance, which updates keep).
+   Styles: a layer's fill (text: color) linked to a brand color (fs), its type to a brand text style (ts); a value changed
+   by hand, or by the agent, detaches it. Styles resolve whenever a page is drawn (editor, thumbnails, exports, publishing). */
+(function () {
+  Object.assign(IC, {
+    comp33: '<path d="M12 3 7.5 7.5 12 12l4.5-4.5Z"/><path d="M12 12 7.5 16.5 12 21l4.5-4.5Z"/><path d="m7.5 7.5-4.5 4.5 4.5 4.5L12 12Z"/><path d="M16.5 7.5 12 12l4.5 4.5L21 12Z"/>',
+    inst33: '<path d="M12 3 21 12 12 21 3 12Z"/>',
+  });
+  const P = () => curP(), T0 = () => treeOf(P()), clone = (o) => JSON.parse(JSON.stringify(o));
+  const lib = () => { const b = brand(); return b.components || (b.components = []); }, defOf = (id) => (brand().components || []).find((c) => c.id === id);
+  // bookkeeping and placement are each layer's own; everything else follows the main unless overridden
+  const OWN = new Set(['id', 'pid', 'sid', 'comp', 'main', 'cv', 'ovr', '_x', '_y', '_w', '_h', 'x', 'y', 'locked', 'gid', 'fsv', 'tsv']);
+  const isMain = (l) => !!(l && l.comp && l.main), isInst = (l) => !!(l && l.comp && !l.main);
+  const instRoot = (T, l) => (isInst(l) ? l : ancestorsT(T, l).find(isInst));
+  const mainRoot = (T, l) => (isMain(l) ? l : ancestorsT(T, l).find(isMain));
+
+  /* ---------- definitions ---------- */
+  /** The main component's layers, relative to its root (what instances copy) */
+  function defLayers(pg, root) {
+    const T = treeOf(pg);
+    return [root, ...descendantsT(T, root.id)].map((l) => { const c = clone(l); c.x -= root.x; c.y -= root.y; ['_x', '_y', '_w', '_h', 'fsv', 'tsv', 'main', 'cv'].forEach((k) => delete c[k]); if (l === root) delete c.pid; return c; });
+  }
+  function makeComponent(root) {
+    const def = { id: 'k' + uid(), name: root.name || 'Component', v: 1, w: root.w, h: root.h, layers: [] };
+    mutate(() => { root.comp = def.id; root.main = true; def.layers = defLayers(P(), root); lib().push(def); });
+    toast('Component created. Insert copies from the Components panel; edits to this one update them all.');
+  }
+  /** Copies a definition's properties onto an instance layer, except the ones edited on the instance */
+  function copyProps(dst, src) {
+    const ov = new Set(dst.ovr || []);
+    Object.keys(src).forEach((k) => { if (!OWN.has(k) && !ov.has(k)) dst[k] = clone(src[k]); });
+    Object.keys(dst).forEach((k) => { if (!OWN.has(k) && !ov.has(k) && !(k in src)) delete dst[k]; });
+  }
+  /** Brings an instance up to its definition: properties, layers added or removed in the main, order, places */
+  function updateInstance(pg, inst, def) {
+    const T = treeOf(pg), kids = descendantsT(T, inst.id), bySid = new Map(kids.filter((k) => k.sid).map((k) => [k.sid, k])), root = def.layers[0];
+    const ov = new Set(inst.ovr || []), w0 = inst.w, h0 = inst.h;
+    copyProps(inst, root); inst.w = ov.has('w') ? w0 : root.w; inst.h = ov.has('h') ? h0 : root.h;
+    const idMap = new Map([[root.id, inst.id]]), out = [], O = { x: inst.x, y: inst.y, w: root.w, h: root.h };
+    def.layers.slice(1).forEach((src) => {
+      let c = bySid.get(src.id);
+      if (c) copyProps(c, src); else c = { ...clone(src), id: uid(), sid: src.id };
+      if (src.pid) c.pid = idMap.get(src.pid) || inst.id;
+      idMap.set(src.id, c.id);
+      if (!(c.ovr || []).includes('x')) { c.x = inst.x + src.x; c.y = inst.y + src.y; if (src.pid === root.id && (inst.w !== root.w || inst.h !== root.h)) constrain(c, O, inst); }
+      if (isContainer(c)) { c._x = c.x; c._y = c.y; c._w = c.w; c._h = c.h; }
+      out.push(c);
+    });
+    const L = pg.layers; kids.forEach((k) => { const i = L.indexOf(k); if (i >= 0) L.splice(i, 1); });
+    L.splice(L.indexOf(inst) + 1, 0, ...out);
+    inst.cv = def.v; inst._x = inst.x; inst._y = inst.y; inst._w = inst.w; inst._h = inst.h;
+  }
+  /** Every instance of a definition, in every design of the brand that has pages */
+  function eachInstance(defId, fn) {
+    (S.designs || []).forEach((d) => (d.pages || []).forEach((pg) => [...pg.layers].forEach((l) => { if (isInst(l) && l.comp === defId) fn(pg, l, d); })));
+  }
+  const sig = (layers) => JSON.stringify(layers);
+  /** A main component was edited: its definition takes the change and its instances follow */
+  function syncMains(pg) {
+    const T = treeOf(pg); let n = 0;
+    pg.layers.filter(isMain).forEach((root) => {
+      const def = defOf(root.comp); if (!def) return;
+      const layers = defLayers(pg, root); if (sig(layers) === sig(def.layers)) return;
+      Object.assign(def, { layers, v: def.v + 1, name: root.name || def.name, w: root.w, h: root.h });
+      eachInstance(def.id, (ipg, inst) => { updateInstance(ipg, inst, def); n++; });
+    });
+    return n;
+  }
+  /** Instances shown at an older version (the main changed in another design, or this tab was behind) */
+  function syncInstances(pg) { pg.layers.filter(isInst).forEach((inst) => { const def = defOf(inst.comp); if (def && inst.cv !== def.v) updateInstance(pg, inst, def); }); }
+  /** What the user changed on an instance becomes its override */
+  function trackOverrides(pre) {
+    if (!pre || !P().layers.some(isInst)) return;
+    let old; try { old = JSON.parse(pre).p[ED.pi]; } catch (e) { return; }
+    if (!old) return;
+    const byOld = new Map(old.layers.map((l) => [l.id, l])), T = T0();
+    P().layers.forEach((l) => {
+      const inst = instRoot(T, l), o = byOld.get(l.id); if (!inst || !o || (l !== inst && !l.sid)) return;
+      const io = byOld.get(inst.id), ov = new Set(l.ovr || []);
+      Object.keys({ ...l, ...o }).forEach((k) => { if (!OWN.has(k) && JSON.stringify(l[k]) !== JSON.stringify(o[k])) ov.add(k); });
+      if (l !== inst && io && (Math.abs(l.x - inst.x - (o.x - io.x)) > 0.01 || Math.abs(l.y - inst.y - (o.y - io.y)) > 0.01)) ov.add('x');
+      if (ov.size) l.ovr = [...ov];
+    });
+  }
+  const _commit33 = commit;
+  commit = function (pre) {
+    if (ED.d) RT.applyStyles(P()); // a value changed by hand detaches its style now, so the panel says so
+    const n = ED.d ? (trackOverrides(pre), syncMains(P())) : 0, r = _commit33.apply(this, arguments);
+    if (n) { edStage(); edPages(); } // copies on this page changed (a drag doesn't redraw by itself)
+    return r;
+  };
+  const _st33 = edStage; edStage = function () { if (ED.d) syncInstances(P()); return _st33.apply(this, arguments); };
+
+  function insertInstance(def, at) {
+    const [W, H] = dim(), root = def.layers[0], x = at ? at[0] - root.w / 2 : Math.round(W / 2 - root.w / 2), y = at ? at[1] - root.h / 2 : Math.round(H / 2 - root.h / 2);
+    const idMap = new Map(), out = def.layers.map((src, i) => { const c = clone(src); c.id = uid(); idMap.set(src.id, c.id); if (i) c.sid = src.id; c.x += x; c.y += y; return c; });
+    out.forEach((c, i) => { if (i) c.pid = idMap.get(def.layers[i].pid) || out[0].id; });
+    Object.assign(out[0], { comp: def.id, cv: def.v, name: def.name }); delete out[0].main; delete out[0].pid;
+    mutate(() => { P().layers.push(...out); ED.ms = []; ED.sel = out[0].id; });
+  }
+  function detach(inst) {
+    const T = T0(); mutate(() => { [inst, ...descendantsT(T, inst.id)].forEach((l) => { delete l.sid; delete l.ovr; }); delete inst.comp; delete inst.cv; });
+    toast('Detached: it’s a plain frame now');
+  }
+
+  /* ---------- styles ---------- */
+  const tsig = (o) => [o.font, o.weight, o.size, o.lh, o.ls].join('|');
+  RT.applyStyles = (pg) => {
+    const b = brand(); if (!b || !pg || !pg.layers) return;
+    const col = new Map((b.colors || []).map((c) => [c.id, c.hex])), ts = new Map((b.textStyles || []).map((t) => [t.id, t]));
+    pg.layers.forEach((l) => {
+      if (l.fs && col.has(l.fs)) { // unknown ids are left alone: the style may be another brand's
+        const k = l.type === 'text' ? 'color' : 'fill';
+        if (l.fsv != null && l[k] !== l.fsv) { delete l.fs; delete l.fsv; } else { l[k] = col.get(l.fs); l.fsv = l[k]; }
+      }
+      if (l.ts && ts.has(l.ts) && l.type === 'text') {
+        if (l.tsv != null && tsig(l) !== l.tsv) { delete l.ts; delete l.tsv; } else { const t = ts.get(l.ts); Object.assign(l, { font: t.font, weight: t.weight, size: t.size, lh: t.lh, ls: t.ls }); l.tsv = tsig(l); }
+      }
+    });
+  };
+  const fitLinked = (id) => { P().layers.forEach((l) => { if (l.ts === id) fitText(l); }); drawSel(); };
+
+  /* ---------- panel: Components tab ---------- */
+  RAIL.push(['comps', 'Components', 'comp33']);
+  const defThumb = (def, box) => {
+    const k = Math.min(box / def.w, box / def.h), pg = { layers: def.layers };
+    return `<div class="thumb" style="width:${def.w * k}px;height:${def.h * k}px;background:transparent"><div class="poster" style="width:${def.w}px;height:${def.h}px;background:transparent;transform:scale(${k})">${posterHTML(pg)}</div></div>`;
+  };
+  const _pn33 = edPanel;
+  edPanel = function () {
+    if (ED.tab !== 'comps') return _pn33.apply(this, arguments);
+    const p = $('#edPanel'), L = brand().components || []; p.classList.remove('agent');
+    let n = 0; const count = (id) => { n = 0; eachInstance(id, () => n++); return n; };
+    p.innerHTML = `<h3>Components</h3><p class="xs-t muted">Reusable pieces for ${esc(brand().name)}. Edit the main one and every copy follows, except what you changed on a copy.</p>`
+      + (L.length ? `<div class="cg33">${L.map((d) => `<div class="cc33"><button class="cc33-t" data-act="cp33Insert" data-id="${d.id}" title="Insert ${esc(d.name)}">${defThumb(d, 120)}</button><div class="row sp"><span class="sm-t cc33-n">${esc(d.name)}</span><button class="btn ghost icon sm" data-act="cp33Remove" data-id="${d.id}" data-tip="Remove from the library">${ic('trash', 14)}</button></div><span class="xs-t muted">${count(d.id)} cop${n === 1 ? 'y' : 'ies'}</span></div>`).join('')}</div>`
+        : `<p class="sm-t muted" style="margin-top:8px">No components yet. Select a frame or some layers, then press <span class="kbd">Ctrl Alt K</span> or use “Create component” in the properties.</p>`);
+  };
+  Object.assign(ACT, {
+    cp33Insert: (a) => { const d = defOf(a.dataset.id); d && insertInstance(d); },
+    cp33Remove: (a) => {
+      const d = defOf(a.dataset.id); if (!d) return;
+      let n = 0; eachInstance(d.id, (pg, inst) => { const T = treeOf(pg); [inst, ...descendantsT(T, inst.id)].forEach((l) => { delete l.sid; delete l.ovr; }); delete inst.comp; delete inst.cv; n++; });
+      P().layers.filter((l) => l.comp === d.id).forEach((l) => { delete l.comp; delete l.main; });
+      brand().components = lib().filter((x) => x !== d); save(); edAll(); toast(`Removed from the library${n ? `. ${n} cop${n === 1 ? 'y was' : 'ies were'} detached` : ''}`);
+    },
+    cp33Make: () => { const l = curL(); if (l && l.type === 'frame' && !l.comp) return makeComponent(l); RT.wrapSel('frame'); const f = curL(); if (f && f.type === 'frame') makeComponent(f); },
+    cp33Detach: () => { const l = curL(); isInst(l) && detach(l); },
+    cp33Reset: () => { const l = curL(), def = l && defOf(l.comp); if (!isInst(l) || !def) return; const T = T0(); mutate(() => { [l, ...descendantsT(T, l.id)].forEach((x) => delete x.ovr); updateInstance(P(), l, def); }); toast('Overrides reset'); },
+    cp33Main: () => {
+      const l = curL(); if (!l) return;
+      for (const [pi, pg] of ED.d.pages.entries()) { const m = pg.layers.find((x) => isMain(x) && x.comp === l.comp); if (m) { ED.pi = pi; ED.sel = m.id; ED.ms = []; return edAll(); } }
+      let where = null; (S.designs || []).forEach((d) => (d.pages || []).forEach((pg) => { if (!where && pg.layers.some((x) => isMain(x) && x.comp === l.comp)) where = d.name; }));
+      toast(where ? `The main component is in “${where}”` : 'The main component was deleted; this copy still follows the library');
+    },
+    st33Color: (a) => { const l = curL(), c = (brand().colors || []).find((x) => x.id === a.dataset.id); if (!l || !c) return; mutate(() => { l[l.type === 'text' ? 'color' : 'fill'] = c.hex; l.fs = c.id; l.fsv = c.hex; }); },
+    st33Unlink: (a) => { const l = curL(); l && mutate(() => { if (a.dataset.k === 'fs') { delete l.fs; delete l.fsv; } else { delete l.ts; delete l.tsv; } }); },
+    st33Text: (a) => { const l = curL(), t = (brand().textStyles || []).find((x) => x.id === a.dataset.id); if (!l || !t) return; mutate(() => { Object.assign(l, { font: t.font, weight: t.weight, size: t.size, lh: t.lh, ls: t.ls, ts: t.id }); l.tsv = tsig(l); delete l.runs; }, () => { edAll(); fitText(l); drawSel(); }); },
+    st33New: () => { ED.st33New = true; edProps(); const i = $('#edProps .st33-in'); i && i.focus(); },
+  });
+  function newTextStyle(name) {
+    const l = curL(); ED.st33New = false; if (!l || l.type !== 'text' || !name) return edProps();
+    const b = brand(), t = { id: 't' + uid(), name: name.slice(0, 40), font: l.font, weight: l.weight, size: l.size, lh: l.lh, ls: l.ls || 0 };
+    (b.textStyles = b.textStyles || []).push(t);
+    mutate(() => { l.ts = t.id; l.tsv = tsig(l); }); toast(`Text style “${t.name}” saved to ${b.name}`);
+  }
+  document.addEventListener('keydown', (e) => { const i = e.target.closest && e.target.closest('.st33-in'); if (!i) return; e.stopPropagation(); if (e.key === 'Enter') newTextStyle(i.value.trim()); if (e.key === 'Escape') { ED.st33New = false; edProps(); } }, true);
+  // a text style's own values: every text using it changes (brand-wide, saved with the brand kit)
+  document.addEventListener('input', (e) => {
+    const t = e.target; if (!t.dataset || !t.dataset.tsx || !t.closest('#edProps')) return;
+    const l = curL(), st = l && (brand().textStyles || []).find((x) => x.id === l.ts); if (!st) return;
+    st[t.dataset.tsx] = t.dataset.tsx === 'font' ? t.value : +t.value;
+    P().layers.forEach((x) => { if (x.ts === st.id) delete x.tsv; }); // re-applied, not detached
+    edStage(); fitLinked(st.id); save();
+  });
+
+  /* ---------- properties: Component, color styles, text styles ---------- */
+  const sec = (key, title, body) => `<section class="ps9" data-sec="${key}"><div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="${key}" aria-expanded="true">${title}${ic('chevD', 14)}</button><span class="ps9-a"></span></div><div class="ps9-b">${body}</div></section>`;
+  const _ep33 = edProps;
+  edProps = function () {
+    const r = _ep33.apply(this, arguments), l = curL(), b = $('#edProps .body');
+    if (ED.rtab === 'layers' && b) { // the tree: components and their copies get their own marks
+      const T = T0(); b.querySelectorAll('.lr31').forEach((row) => { const x = T.byId.get(row.dataset.id); if (isMain(x) || isInst(x)) { row.classList.add(isMain(x) ? 'cm33' : 'ci33'); const ic0 = row.querySelector('svg.ic'); ic0 && (ic0.outerHTML = ic(isMain(x) ? 'comp33' : 'inst33', 15)); } });
+      return r;
+    }
+    if (!b || ED.rtab !== 'design' || !b.querySelector('.ps9')) return r;
+    if (!l) return r;
+    const T = T0(), ir = instRoot(T, l), mr = mainRoot(T, l), parts = [];
+    if (isMain(l)) { let n = 0; eachInstance(l.comp, () => n++); parts.push(sec('cp', 'Main component', `<p class="xs-t muted">${n} cop${n === 1 ? 'y' : 'ies'} in ${esc(brand().name)}. Changes here update them, except what was changed on a copy.</p>`)); }
+    else if (isInst(l)) { const d = defOf(l.comp), nov = [l, ...descendantsT(T, l.id)].filter((x) => x.ovr && x.ovr.length).length;
+      parts.push(sec('cp', 'Instance', `<p class="xs-t muted">Copy of “${esc(d ? d.name : 'a removed component')}”${nov ? ` · ${nov} layer${nov === 1 ? '' : 's'} changed on this copy` : ''}.</p><div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn secondary sm" data-act="cp33Main">Go to main</button>${nov ? '<button class="btn secondary sm" data-act="cp33Reset">Reset changes</button>' : ''}<button class="btn secondary sm" data-act="cp33Detach">Detach</button></div>`)); }
+    else if (ir || mr) parts.push(sec('cp', ir ? 'In an instance' : 'In a main component', `<p class="xs-t muted">${ir ? `Changes here stay on this copy (an override).${(l.ovr || []).length ? ` Changed: ${l.ovr.join(', ')}.` : ''}` : 'Changes here update every copy.'}</p>`));
+    else if (l.type === 'frame' || l.type === 'group' || (ED.ms && ED.ms.length)) parts.push(sec('cp', 'Component', `<button class="btn secondary sm" data-act="cp33Make">${ic('comp33', 16)}Create component<span class="kbd" style="margin-left:6px">Ctrl Alt K</span></button>`));
+    if (parts.length) { const tmp = document.createElement('div'); tmp.innerHTML = parts.join(''); const pos = b.querySelector('.ps9[data-sec=pos]'); pos ? pos.after(...tmp.children) : b.prepend(...tmp.children); }
+    // color styles: the brand's colors, linked
+    const fill = b.querySelector('.ps9[data-sec=fill] .ps9-b'), cols = brand().colors || [];
+    if (fill && cols.length && l.type !== 'group' && !(l.type === 'image' && /url\(/.test(l.fill))) {
+      fill.insertAdjacentHTML('afterbegin', `<div class="st33"><div class="row sp"><span class="label" style="margin:0">Color styles</span>${l.fs ? '<button class="btn link sm" data-act="st33Unlink" data-k="fs">Detach</button>' : ''}</div><div class="st33-l">${cols.map((c) => `<button type="button" class="st33-c${l.fs === c.id ? ' on' : ''}" data-act="st33Color" data-id="${c.id}" title="${esc(c.name)} · ${esc(c.hex)}"><i style="background:${c.hex}"></i><span>${esc(c.name)}</span></button>`).join('')}</div></div>`);
+    }
+    // text styles
+    const txt = b.querySelector('.ps9[data-sec=text] .ps9-b');
+    if (txt && l.type === 'text') {
+      const ts = brand().textStyles || [], cur = ts.find((t) => t.id === l.ts);
+      const ed = cur ? `<div class="st33-ed"><label class="lab">Font<select class="field sm" data-tsx="font">${[...new Set([...FONTS, cur.font])].map((f) => `<option ${f === cur.font ? 'selected' : ''}>${f}</option>`).join('')}</select></label><div class="q30">${[['size', 'Size', 1], ['weight', 'Weight', 100], ['lh', 'Line', 0.05], ['ls', 'Spacing', 0.5]].map(([k, n, st]) => `<label class="n30"><span>${n}</span><input class="field sm" type="number" step="${st}" data-tsx="${k}" value="${cur[k] ?? 0}"></label>`).join('')}</div><p class="xs-t muted">Editing the style changes every text that uses it.</p></div>` : '';
+      txt.insertAdjacentHTML('afterbegin', `<div class="st33"><div class="row sp"><span class="label" style="margin:0">Text style</span>${cur ? '<button class="btn link sm" data-act="st33Unlink" data-k="ts">Detach</button>' : ''}</div>`
+        + (ts.length ? `<div class="st33-t">${ts.map((t) => `<button type="button" class="st33-tr${l.ts === t.id ? ' on' : ''}" data-act="st33Text" data-id="${t.id}"><b style="font:${t.weight} 14px '${t.font}',sans-serif">${esc(t.name)}</b><small>${t.size} · ${t.font}</small></button>`).join('')}</div>` : '')
+        + (ED.st33New ? '<input class="field sm st33-in" placeholder="Style name, then Enter" aria-label="New text style name">' : `<button class="btn ghost sm" data-act="st33New">${ic('plus', 14)}Create style from this text</button>`) + ed + '</div>');
+    }
+    return r;
+  };
+  const _ds33 = drawSel;
+  drawSel = function () { _ds33.apply(this, arguments); const s = $('#sel'), l = curL(); if (s) { s.classList.toggle('cm33', isMain(l)); s.classList.toggle('ci33', isInst(l)); } };
+  addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('in-editor') || ED.editing || $('#cmdk')) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    if ((e.ctrlKey || e.metaKey) && e.altKey && e.code === 'KeyK') { e.preventDefault(); e.stopImmediatePropagation(); ACT.cp33Make(); }
   }, true);
 })();
 
