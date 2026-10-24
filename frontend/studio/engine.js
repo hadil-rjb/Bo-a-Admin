@@ -683,29 +683,194 @@ ACT.fromArticle = (a) => {
   toast('Post drafted from your article'); location.hash = '#/editor/' + d.id;
 };
 
-/* ---------- Overview ---------- */
+/* ---------- Overview ----------
+   Dashboard: KPI cards, publishing chart, content health and top networks on the left, the
+   schedule (day strip, search, Next up / Ideas / Blog) on the right, recent designs under both.
+   Each widget has an id and re-renders on its own, so filters and the search keep their focus. */
+const OV = { day: null, start: null, tab: 'next', q: '', st: 'all', pf: 'all', period: 'last', top: 'week' };
+const OV_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const ovPill = (t, tone = 'n') => `<span class="ov-pill ${tone}">${t}</span>`;
+const ovTone = (s) => (s === 'Published' ? 'g' : s === 'Draft' ? 'n' : 'r');
+const ovSwap = (id, html) => { const el = document.getElementById(id); if (el) el.outerHTML = html; };
+/** Native select under a styled face: works with keyboard, screen readers and phone pickers */
+const ovSel = (key, opts, face, label) => `<label class="ov-sel">${face}${ic('chevD', 18)}<select data-ov="${key}" aria-label="${label}">${opts.map(([v, l]) => `<option value="${v}" ${OV[key] === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+/** Smooth path through the points (Catmull-Rom as cubic Béziers) */
+function ovCurve(pts) {
+  let d = `M${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2, r = (v) => +v.toFixed(1);
+    d += ` C${r(p1[0] + (p2[0] - p0[0]) / 6)},${r(p1[1] + (p2[1] - p0[1]) / 6)} ${r(p2[0] - (p3[0] - p1[0]) / 6)},${r(p2[1] - (p3[1] - p1[1]) / 6)} ${p2[0]},${p2[1]}`;
+  }
+  return d;
+}
+function ovSpark(vals, w, h, cls = '') {
+  if (vals.length < 2) vals = [vals[0] || 0, vals[0] || 0];
+  const max = Math.max(...vals, 1), n = vals.length, id = 'ovg' + uid();
+  const line = ovCurve(vals.map((v, i) => [+(i * w / (n - 1)).toFixed(1), +(h - 3 - (v / max) * (h - 6)).toFixed(1)]));
+  return `<svg class="ov-spark ${cls}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="currentColor" stop-opacity=".18"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
+    <path class="f" d="${line} L${w},${h} L0,${h} Z" fill="url(#${id})"/><path class="l" d="${line}" vector-effect="non-scaling-stroke"/></svg>`;
+}
+const OV_ART = `<svg class="ov-art" viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="54" class="a-bg"/>
+  <rect x="40" y="34" width="50" height="54" rx="6" class="a-pg" transform="rotate(10 65 61)"/>
+  <rect x="30" y="30" width="50" height="54" rx="6" class="a-pf"/><path d="M30 42h50" class="a-ln"/>
+  <path d="M42 26v8M55 26v8M68 26v8" class="a-ln"/>
+  <path d="M43 55l5 5m0-5l-5 5M62 55l5 5m0-5l-5 5" class="a-ln"/><path d="M48 72c4-3 10-3 14 0" class="a-ln"/>
+  <path d="M19 38l2 4 4 2-4 2-2 4-2-4-4-2 4-2zM98 84l1.5 3 3 1.5-3 1.5-1.5 3-1.5-3-3-1.5 3-1.5z" class="a-sp"/></svg>`;
+const ovEmpty = (t, s, act = '') => `<div class="ov-empty">${OV_ART}<p><span>${t}</span>${s ? `<span>${s}</span>` : ''}</p>${act}</div>`;
+const ovNewBtn = (label = 'New design') => `<a class="btn secondary sm" href="#/studio" data-act="goStudio">${ic('plus', 16)}${label}</a>`;
+
+function ovScheduled() {
+  const ws = monday(new Date()), today = iso(new Date()), on = (p) => OV.pf === 'all' || p.pf.includes(OV.pf);
+  const n = S.posts.filter((p) => p.status === 'Scheduled' && on(p)).length;
+  const week = OV_DAYS.map((_, i) => { const k = iso(addD(ws, i)); return S.posts.filter((p) => p.date === k && p.status !== 'Draft' && on(p)).length; });
+  const nets = Object.keys(PLATFORMS).filter((k) => S.platforms[k] || S.posts.some((p) => p.pf.includes(k)));
+  if (OV.pf !== 'all' && !nets.includes(OV.pf)) OV.pf = 'all';
+  const face = OV.pf === 'all' ? `<span class="ov-net all">${ic('globe', 13)}</span>` : `<span class="ov-net" style="background:${PLATFORMS[OV.pf].c}">${ic('net_' + OV.pf, 12)}</span>`;
+  return `<section class="widget ov-kpi" id="ovKpiS">
+    <div class="ov-kh"><div class="grow"><span class="ov-lab">Scheduled posts</span><div class="ov-num"><b>${n}</b>${ovPill(n ? 'in the planner' : 'nothing planned', n ? 'g' : 'n')}</div></div>
+      ${ovSel('pf', [['all', 'All networks'], ...nets.map((k) => [k, PLATFORMS[k].n])], face, 'Network')}</div>
+    <div class="ov-week" title="Posts going out this week">${ovSpark(week, 300, 44, week.some(Boolean) ? '' : 'flat')}${OV_DAYS.map((d, i) => `<span class="${iso(addD(ws, i)) === today ? 'on' : ''}">${d}</span>`).join('')}</div>
+  </section>`;
+}
+
+function ovDesigns() {
+  const n = S.designs.length, drafts = S.designs.filter((d) => d.status === 'Draft').length;
+  const slides = S.designs.slice(0, 8).reverse().map((d) => (d.pages ? d.pages.length : d.slides || 1) + 1);
+  return `<section class="widget ov-kpi ov-kpi-d" id="ovKpiD">
+    <span class="ov-ico">${ic('studio', 20)}</span>${n > 1 ? ovSpark(slides, 120, 40, 'mini') : ''}
+    <div><span class="ov-lab">Designs</span><div class="ov-num lg"><b>${n}</b>${n ? ovPill(drafts + ' in draft', drafts ? 'r' : 'g') : `<a class="ov-link" href="#/studio">Create the first one</a>`}</div></div>
+  </section>`;
+}
+
+function ovPublishing() {
+  const now = new Date(), y = now.getFullYear();
+  const months = [...Array(12)].map((_, i) => (OV.period === 'year' ? new Date(y, i, 1) : new Date(y, now.getMonth() - 11 + i, 1)));
+  const rows = months.map((m) => {
+    const k = m.getFullYear() + '-' + String(m.getMonth() + 1).padStart(2, '0'), ps = S.posts.filter((p) => p.date.slice(0, 7) === k), c = (s) => ps.filter((p) => p.status === s).length;
+    return { m, pub: c('Published'), sch: c('Scheduled'), dr: c('Draft') };
+  });
+  const top = Math.max(...rows.map((r) => r.pub + r.sch + r.dr)), step = Math.max(1, Math.ceil(top / 4)), max = step * 4, pc = (v) => (v / max * 100).toFixed(2) + '%';
+  const pub = S.posts.filter((p) => p.status === 'Published').length, sch = S.posts.filter((p) => p.status === 'Scheduled').length;
+  const drafts = S.designs.filter((d) => d.status === 'Draft').length, appr = S.designs.filter((d) => d.status === 'Approved').length;
+  const sum = (icon, cls, l, v, pill = '') => `<div class="ov-sum"><span class="ov-ico ${cls}">${ic(icon, 20)}</span><div><span class="ov-cap">${l}</span><div class="ov-num sm"><b>${v}</b>${pill}</div></div></div>`;
+  return `<section class="widget ov-pub" id="ovPub">
+    <div class="ov-wh"><h2 class="wtitle">${ic('chart', 24)}Publishing Overview</h2>
+      <div class="ov-legend"><span><i class="c1"></i>Published</span><span><i class="c2"></i>Scheduled</span><span><i class="c3"></i>Drafts</span></div>
+      ${ovSel('period', [['last', 'Last 12 months'], ['year', 'This year']], `<span>${OV.period === 'year' ? 'This year' : 'Last year'}</span>`, 'Period')}</div>
+    <div class="ov-sums">${sum('check', 'c1', 'Published', pub, ovPill('all time', 'g'))}${sum('cal', 'c2', 'Scheduled', sch)}${sum('doc', 'c3', 'Drafts', drafts, ovPill(appr + ' approved', 'r'))}</div>
+    <div class="ov-chart"><div class="ov-y">${[4, 3, 2, 1, 0].map((i) => `<span>${i * step}</span>`).join('')}</div>
+      <div class="ov-bars">${rows.map((r) => `<div class="ov-bar" title="${fmt(r.m, { month: 'long', year: 'numeric' })}: ${r.pub} published, ${r.sch} scheduled, ${r.dr} drafts"><span class="ov-stack">${r.pub ? `<i class="c1" style="height:${pc(r.pub)}"></i>` : ''}${r.sch ? `<i class="c2" style="height:${pc(r.sch)}"></i>` : ''}${r.dr ? `<i class="c3" style="height:${pc(r.dr)}"></i>` : ''}</span><span class="ov-m">${fmt(r.m, { month: 'narrow' })}</span></div>`).join('')}
+      ${top ? '' : `<div class="ov-over"><b>No posts in this period</b><span>Schedule a design in the planner to see it here.</span><a class="btn secondary sm" href="#/planner">Open planner</a></div>`}</div></div>
+  </section>`;
+}
+
+function ovHealth() {
+  const n = S.designs.length, pubIds = new Set(S.posts.filter((p) => p.status === 'Published').map((p) => p.d));
+  const pub = S.designs.filter((d) => d.status === 'Published' || pubIds.has(d.id)).length, rate = n ? Math.round(pub / n * 100) : 0, on = Math.round(rate / 100 * 40);
+  return `<section class="widget ov-mini" id="ovHealth">
+    <div class="ov-wh"><h2 class="wtitle">${ic('trend', 24)}Content Health</h2><a class="btn secondary sm" href="#/studio">Details</a></div>
+    <div class="ov-hr">${n ? `<div class="grow"><p class="ov-big">Your <b>publish rate</b> is <b>${rate}%</b></p><span class="ov-cap2">${pub} of ${n} design${n > 1 ? 's are' : ' is'} published.</span></div><span class="ov-emo" aria-hidden="true">${rate >= 40 ? '😎' : rate >= 15 ? '🙂' : '🌱'}</span>`
+      : `<div class="grow"><p class="ov-big">No designs yet</p><span class="ov-cap2">Create a design to start tracking your publish rate.</span></div>${ovNewBtn('New')}`}</div>
+    <div class="ov-ticks" role="img" aria-label="Publish rate ${rate}%">${[...Array(40)].map((_, i) => `<i class="${i < on ? 'on' : ''}"></i>`).join('')}</div>
+  </section>`;
+}
+
+function ovPlatforms() {
+  const now = new Date(), from = OV.top === 'week' ? iso(monday(now)) : OV.top === 'month' ? iso(new Date(now.getFullYear(), now.getMonth(), 1)) : '', to = OV.top === 'week' ? iso(addD(monday(now), 6)) : OV.top === 'month' ? iso(new Date(now.getFullYear(), now.getMonth() + 1, 0)) : '9999';
+  const ps = S.posts.filter((p) => p.date >= from && p.date <= to);
+  const rows = Object.keys(PLATFORMS).map((k) => ({ k, n: ps.filter((p) => p.pf.includes(k)).length })).filter((r) => r.n).sort((a, b) => b.n - a.n).slice(0, 4);
+  const step = Math.max(1, Math.ceil((rows[0] ? rows[0].n : 0) / 5)), max = step * 5, when = { week: 'this week', month: 'this month', all: 'yet' }[OV.top];
+  return `<section class="widget ov-mini" id="ovTop">
+    <div class="ov-wh"><h2 class="wtitle">${ic('users', 24)}Top Platforms</h2>${ovSel('top', [['week', 'Weekly'], ['month', 'Monthly'], ['all', 'All time']], `<span>${{ week: 'Weekly', month: 'Monthly', all: 'All time' }[OV.top]}</span>`, 'Period')}</div>
+    ${rows.length ? `<div class="ov-plat"><div class="ov-pgrid" aria-hidden="true" style="grid-row:1/${rows.length + 1}"></div>${rows.map((r, i) => `<span class="ov-pn" style="grid-row:${i + 1}">${PLATFORMS[r.k].n}</span><span class="ov-pt" style="grid-row:${i + 1}"><i class="c${i + 1}" style="width:${(r.n / max * 100).toFixed(2)}%" tabindex="0" aria-label="${PLATFORMS[r.k].n}: ${r.n} post${r.n > 1 ? 's' : ''}"><em>${r.n} post${r.n > 1 ? 's' : ''}</em></i></span>`).join('')}
+      <span class="ov-px" style="grid-row:${rows.length + 1}">${[...Array(6)].map((_, i) => `<span>${i * step}</span>`).join('')}</span></div>`
+      : `<div class="ov-none">${ic('send', 20)}<span>No posts ${when}. Planned posts show up here by network.</span></div>`}
+  </section>`;
+}
+
+function ovList() {
+  const q = OV.q.trim().toLowerCase(), hit = (s) => !q || String(s).toLowerCase().includes(q), miss = ovEmpty('Nothing matches “' + esc(OV.q.trim()) + '”', 'Try another word.');
+  if (OV.tab === 'ideas') {
+    const L = S.ideas.filter((i) => hit(i.t + ' ' + i.cat));
+    if (!L.length) return q ? miss : ovEmpty('No ideas yet.', 'Add new design', ovNewBtn());
+    return L.map((i) => { const lv = i.p >= 75 ? 'High' : i.p >= 45 ? 'Medium' : 'Low'; return `<div class="ov-it"><b>${esc(i.t)}</b><div class="ov-itf"><span>${esc(i.cat)}</span>${ovPill(lv, lv === 'High' ? 'r' : 'n')}</div><button class="btn secondary sm" data-act="fromTpl" data-tpl="${i.tpl}">${ic('studio', 16)}Design it</button></div>`; }).join('');
+  }
+  if (OV.tab === 'blog') {
+    const L = S.articles.map((a, i) => ({ a, i })).filter(({ a }) => hit(a.t + ' ' + a.c));
+    if (!L.length) return q ? miss : ovEmpty('No blog articles yet.', 'Live articles from Blog Admin show up here.');
+    return L.map(({ a, i }) => `<div class="ov-it"><b>${esc(a.t)}</b><div class="ov-itf"><span>${esc(a.c)}</span></div><button class="btn secondary sm" data-act="fromArticle" data-i="${i}">${ic('studio', 16)}Make post</button></div>`).join('');
+  }
+  const L = S.posts.filter((p) => p.date >= OV.day && (OV.st === 'all' ? p.status !== 'Published' : p.status === OV.st))
+    .map((p) => ({ p, d: getD(p.d) })).filter(({ d }) => d && hit(d.name)).sort((a, b) => (a.p.date + a.p.time).localeCompare(b.p.date + b.p.time));
+  if (!L.length) return q ? miss : ovEmpty(`No ${OV.st === 'all' ? 'posts' : OV.st.toLowerCase() + ' posts'} yet.`, 'Add new design', ovNewBtn());
+  return L.map(({ p, d }) => `<details class="ov-it ov-post"><summary><div class="ov-ith"><div class="grow"><b>${esc(d.name)}</b><span class="ov-when">${fmt(new Date(p.date + 'T00:00'), { weekday: 'short', month: 'short', day: '2-digit' })} · ${p.time}</span></div><span class="ov-chev">${ic('chevD', 16)}</span></div>
+    <div class="ov-itf"><span>On ${p.pf.map((k) => (PLATFORMS[k] || { n: k }).n).join(', ')}</span>${ovPill(p.status, ovTone(p.status))}</div></summary>
+    <div class="ov-itx"><div class="thumbbox">${thumb(d.pages[0], d.ratio, 64, 64)}</div><div class="grow"><span>${ratioLabel(d.ratio)}${d.pages.length > 1 ? ' · ' + d.pages.length + ' slides' : ''}</span><div class="row" style="gap:6px"><button class="btn secondary sm" data-act="open" data-id="${d.id}">Edit design</button><a class="btn ghost sm" href="#/planner">Planner</a></div></div></div></details>`).join('');
+}
+
+function ovSchedule() {
+  const sel = new Date(OV.day + 'T00:00'), start = new Date(OV.start + 'T00:00'), today = iso(new Date()), has = new Set(S.posts.map((p) => p.date));
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  return `<div class="ov-sh">
+    <div class="ov-wh"><h2 class="wtitle">${ic('cal', 24)}Schedule</h2><a class="btn secondary sm" href="#/planner">See All</a></div>
+    <div class="ov-month"><button class="ov-nb" data-act="ovMonth" data-n="-1" aria-label="Previous month">${ic('chevL', 18)}</button><b>${fmt(sel, { month: 'long', year: 'numeric' })}</b><button class="ov-nb" data-act="ovMonth" data-n="1" aria-label="Next month">${ic('chevR', 18)}</button></div>
+    <div class="ov-strip"><button class="ov-nb line" data-act="ovDays" data-n="-5" aria-label="Earlier days">${ic('chevL', 18)}</button>
+      <div class="ov-dd">${[...Array(5)].map((_, i) => { const d = addD(start, i), k = iso(d); return `<button class="ov-day ${k === OV.day ? 'on' : ''} ${k === today ? 'today' : ''}" data-act="ovDay" data-d="${k}" aria-pressed="${k === OV.day}" aria-label="${fmt(d, { weekday: 'long', day: 'numeric', month: 'long' })}"><small>${fmt(d, { weekday: 'short' })}</small><b>${String(d.getDate()).padStart(2, '0')}</b>${has.has(k) ? '<i></i>' : ''}</button>`; }).join('')}</div>
+      <button class="ov-nb line" data-act="ovDays" data-n="5" aria-label="Later days">${ic('chevR', 18)}</button></div>
+    <div class="ov-search">${ic('search', 18)}<input id="ovQ" type="search" placeholder="Search..." value="${esc(OV.q)}" autocomplete="off" aria-label="Search the schedule"><kbd>${mac ? '⌘1' : 'Ctrl 1'}</kbd><button type="button" class="ov-filt ${OV.st !== 'all' ? 'on' : ''}" data-act="ovFilter" title="Filter by status" aria-label="Filter by status" aria-haspopup="menu">${ic('filter', 18)}</button></div>
+  </div>
+  <div class="ov-tabs" role="tablist">${[['next', 'Next up', 'cal'], ['ideas', 'Ideas', 'studio'], ['blog', 'Blog', 'doc']].map(([k, l, i]) => `<button role="tab" aria-selected="${OV.tab === k}" class="${OV.tab === k ? 'on' : ''}" data-act="ovTab" data-k="${k}">${ic(i, 18)}${l}</button>`).join('')}</div>
+  <div class="ov-list" id="ovList">${ovList()}</div>`;
+}
+
 PAGES.overview = {
-  t: 'Social Media Overview', s: 'What’s going out, what needs a design, and what to post next.',
+  t: 'Social Media Overview', s: 'What’s going out, what needs a design, and what to post next.', themeFirst: true,
   actions: () => `<button class="btn secondary hide-sm" data-act="figma">${ic('figma')}Import from Figma</button><a class="btn primary" href="#/studio" data-act="goStudio">${ic('plus')}New design</a>`,
   view: () => {
-    const today = iso(new Date()), next = S.posts.filter((p) => p.date >= today && p.status !== 'Published').sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-    const stat = (l, v, d, dn) => `<div class="widget stat"><span class="muted sm-t">${l}</span><b>${v}</b><span class="delta ${dn ? 'dn' : ''}">${d}</span></div>`;
-    return `
-    <div class="grid g4">${stat('Scheduled', S.posts.filter((p) => p.status === 'Scheduled').length, 'in the planner')}${stat('Designs in draft', S.designs.filter((d) => d.status === 'Draft').length, S.designs.filter((d) => d.status === 'Approved').length + ' approved')}${stat('Published', S.posts.filter((p) => p.status === 'Published').length, 'all time')}${stat('Designs', S.designs.length, S.designs.filter((d) => d.source === 'Figma').length + ' from Figma')}</div>
-    <div class="grid g2">
-      <div class="widget"><div class="wtitle">${ic('clock', 24)}Next up<span class="sp"></span><a class="btn ghost sm" href="#/planner">Open planner</a></div>
-        <div class="list">${next.length ? '' : `<div class="empty">${ic('cal', 28)}<p>Nothing scheduled for ${esc(allOn() ? 'your brands' : brand().name)} yet.</p><a class="btn secondary" href="#/planner">Open planner</a></div>`}${next.map((p) => { const d = getD(p.d); return `<div class="li"><div class="thumbbox" style="width:56px;height:56px">${thumb(d.pages[0], d.ratio, 48, 48)}</div>
-          <div class="grow"><p class="tt">${esc(d.name)}</p><p class="xs-t muted">${fmt(new Date(p.date + 'T00:00'), { weekday: 'short', day: 'numeric', month: 'short' })} · ${p.time}</p></div>${pfDots(p.pf)}${badge(p.status)}</div>`; }).join('')}</div></div>
-      <div class="widget"><div class="wtitle">${ic('studio', 24)}Post ideas<span class="sp"></span></div>
-        <div class="list">${S.ideas.slice(0, 3).map((i, n) => `<div class="li"><div class="grow"><p class="tt">${esc(i.t)}</p><p class="xs-t muted">${i.cat}</p></div><span class="badge b-${i.p >= 75 ? 'High' : i.p >= 45 ? 'Medium' : 'Low'}">${i.p >= 75 ? 'High' : i.p >= 45 ? 'Medium' : 'Low'}</span><button class="btn secondary sm" data-act="fromTpl" data-tpl="${i.tpl}">Design it</button></div>`).join('')}</div></div>
-    </div>
-    ${S.articles.length ? `<div class="widget"><div class="wtitle">${ic('doc', 24)}From your blog<span class="sp"></span><span class="xs-t muted">Articles from Blog Admin, ready to become posts</span></div>
-      <div class="grid g3">${S.articles.map((a, i) => `<div class="idea"><p>${esc(a.t)}</p><div class="row sp"><span class="xs-t muted">${a.c}</span><button class="btn secondary sm" data-act="fromArticle" data-i="${i}">${ic('studio', 16)}Make post</button></div></div>`).join('')}</div></div>` : ''}
-    <div class="widget"><div class="wtitle">${ic('layout', 24)}Continue designing<span class="sp"></span><a class="btn ghost sm" href="#/studio">All designs</a></div>
-      ${S.designs.length ? `<div class="cards">${S.designs.slice(0, 4).map((d) => designCard(d)).join('')}</div>` : `<div class="empty">${ic('layout', 28)}<p>No designs for ${esc(allOn() ? 'your brands' : brand().name)} yet.</p><a class="btn primary" href="#/studio">${ic('plus')}Create the first one</a></div>`}</div>`;
+    if (!OV.day) { OV.day = iso(new Date()); OV.start = iso(addD(new Date(), -2)); }
+    const who = esc(allOn() ? 'your brands' : brand().name);
+    return `<div class="ov-wrap"><div class="ov">
+      <div class="ov-main">
+        <div class="ov-kpis">${ovScheduled()}${ovDesigns()}</div>
+        ${ovPublishing()}
+        <div class="ov-duo">${ovHealth()}${ovPlatforms()}</div>
+      </div>
+      <aside class="widget ov-sched" id="ovSched" aria-label="Schedule">${ovSchedule()}</aside>
+      <section class="widget ov-designs"><div class="ov-wh"><h2 class="wtitle">${ic('layout', 24)}Continue designing</h2><a class="btn ghost sm" href="#/studio">All designs</a></div>
+        ${S.designs.length ? `<div class="cards">${S.designs.slice(0, 4).map((d) => designCard(d)).join('')}</div>` : ovEmpty(`No designs for ${who} yet.`, 'Start from a template or a blank canvas.', `<a class="btn primary sm" href="#/studio" data-act="goStudio">${ic('plus', 16)}Create the first one</a>`)}</section>
+    </div></div>`;
   },
 };
 ACT.goStudio = () => {};
+const ovSched = () => { const el = document.getElementById('ovSched'); if (el) el.innerHTML = ovSchedule(); };
+Object.assign(ACT, {
+  ovDay: (a) => { OV.day = a.dataset.d; ovSched(); },
+  ovDays: (a) => { OV.start = iso(addD(new Date(OV.start + 'T00:00'), +a.dataset.n)); ovSched(); },
+  ovMonth: (a) => {
+    const d = new Date(OV.day + 'T00:00'), t = new Date(); d.setDate(1); d.setMonth(d.getMonth() + +a.dataset.n);
+    const day = d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() ? t : d;
+    OV.day = iso(day); OV.start = iso(addD(day, -2)); ovSched();
+  },
+  ovTab: (a) => { OV.tab = a.dataset.k; ovSched(); },
+  ovFilter: (btn, e) => {
+    e && e.stopPropagation(); $$('.dmenu').forEach((m) => m.remove());
+    const m = document.createElement('div'); m.className = 'dmenu'; m.setAttribute('role', 'menu');
+    m.innerHTML = `<div class="cap">Show posts</div>` + [['all', 'Upcoming'], ['Scheduled', 'Scheduled'], ['Draft', 'Drafts'], ['Published', 'Published']]
+      .map(([v, l]) => `<button type="button" role="menuitemradio" aria-checked="${OV.st === v}" class="${OV.st === v ? 'on' : ''}" data-act="ovSt" data-s="${v}"><span>${l}</span>${OV.st === v ? ic('check', 14) : ''}</button>`).join('');
+    document.body.append(m);
+    const r = btn.getBoundingClientRect(); m.style.left = Math.max(8, Math.min(r.right - m.offsetWidth, innerWidth - m.offsetWidth - 8)) + 'px'; m.style.top = r.bottom + 6 + 'px';
+    m.addEventListener('click', (ev) => { if (ev.target.closest('[data-act]')) m.remove(); });
+    const f = m.querySelector('button'); f && f.focus();
+  },
+  ovSt: (a) => { OV.st = a.dataset.s; OV.tab = 'next'; ovSched(); },
+});
+document.addEventListener('change', (e) => {
+  const s = e.target.closest && e.target.closest('select[data-ov]'); if (!s) return;
+  OV[s.dataset.ov] = s.value;
+  ({ pf: () => ovSwap('ovKpiS', ovScheduled()), period: () => ovSwap('ovPub', ovPublishing()), top: () => ovSwap('ovTop', ovPlatforms()) })[s.dataset.ov]();
+});
+document.addEventListener('input', (e) => { if (e.target.id !== 'ovQ') return; OV.q = e.target.value; const L = document.getElementById('ovList'); if (L) L.innerHTML = ovList(); });
+document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === '1') { const q = document.getElementById('ovQ'); if (q) { e.preventDefault(); q.focus(); q.select(); } } });
 
 /* ---------- Planner ---------- */
 const P = { ws: monday(new Date()), tray: 'designs' };
