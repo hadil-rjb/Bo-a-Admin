@@ -753,7 +753,7 @@ function ovMonthCard() {
   const diff = n - before, pub = ps.filter((p) => p.status === 'Published').length, pm = fmt(prevD, { month: 'short' });
   const pill = !n && !before ? ovPill('nothing yet', 'n') : ovPill((diff > 0 ? '+' : '') + diff + ' vs ' + pm, diff > 0 ? 'g' : diff < 0 ? 'r' : 'n');
   return `<section class="widget ov-kpi ov-kpi-d" id="ovKpiD">
-    <a class="ov-ico" href="#/planner" title="Open the planner" aria-label="Open the planner">${ic('send', 20)}</a>
+    <span class="ov-ico" aria-hidden="true">${ic('send', 20)}</span>
     <span class="ov-mini-c" title="Running total of posts in ${fmt(now, { month: 'long' })}">${ovSpark(byDay, 120, 40, n ? 'mini' : 'mini flat')}</span>
     <div><span class="ov-lab">Posts in ${fmt(now, { month: 'long' })}</span><div class="ov-num lg"><b>${n}</b>${pill}</div>
       <span class="ov-cap2">${n ? `${pub} published · ${n - pub} still to go out` : `Nothing planned for ${fmt(now, { month: 'long' })} yet. <a class="ov-link" href="#/planner">Plan a post</a>`}</span></div>
@@ -796,11 +796,11 @@ function ovHealth() {
 function ovPlatforms() {
   const now = new Date(), from = OV.top === 'week' ? iso(monday(now)) : OV.top === 'month' ? iso(new Date(now.getFullYear(), now.getMonth(), 1)) : '', to = OV.top === 'week' ? iso(addD(monday(now), 6)) : OV.top === 'month' ? iso(new Date(now.getFullYear(), now.getMonth() + 1, 0)) : '9999';
   const ps = S.posts.filter((p) => p.date >= from && p.date <= to);
-  const rows = Object.keys(PLATFORMS).map((k) => ({ k, n: ps.filter((p) => p.pf.includes(k)).length })).filter((r) => r.n).sort((a, b) => b.n - a.n).slice(0, 4);
-  const step = Math.max(1, Math.ceil((rows[0] ? rows[0].n : 0) / 5)), max = step * 5, when = { week: 'this week', month: 'this month', all: 'yet' }[OV.top];
+  const all = Object.keys(PLATFORMS).map((k) => ({ k, n: ps.filter((p) => p.pf.includes(k)).length })).filter((r) => r.n).sort((a, b) => b.n - a.n), rows = all.slice(0, 4), total = all.reduce((t, r) => t + r.n, 0);
+  const step = Math.max(1, Math.ceil(((rows[0] ? rows[0].n : 0) + 1) / 5)), max = step * 5, when = { week: 'this week', month: 'this month', all: 'yet' }[OV.top];
   return `<section class="widget ov-mini" id="ovTop">
     <div class="ov-wh"><h2 class="wtitle">${ic('users', 24)}Top Platforms</h2>${ovSel('top', [['week', 'Weekly'], ['month', 'Monthly'], ['all', 'All time']], `<span>${{ week: 'Weekly', month: 'Monthly', all: 'All time' }[OV.top]}</span>`, 'Period')}</div>
-    ${rows.length ? `<div class="ov-plat"><div class="ov-pgrid" aria-hidden="true" style="grid-row:1/${rows.length + 1}"></div>${rows.map((r, i) => `<span class="ov-pn" style="grid-row:${i + 1}">${PLATFORMS[r.k].n}</span><span class="ov-pt" style="grid-row:${i + 1}"><i class="c${i + 1}" style="width:${(r.n / max * 100).toFixed(2)}%" tabindex="0" aria-label="${PLATFORMS[r.k].n}: ${r.n} post${r.n > 1 ? 's' : ''}"><em>${r.n} post${r.n > 1 ? 's' : ''}</em></i></span>`).join('')}
+    ${rows.length ? `<div class="ov-plat"><div class="ov-pgrid" aria-hidden="true" style="grid-row:1/${rows.length + 1}"></div>${rows.map((r, i) => `<span class="ov-pn" style="grid-row:${i + 1}"><span class="ov-net" style="background:${PLATFORMS[r.k].c}">${ic('net_' + r.k, 12)}</span>${PLATFORMS[r.k].n}</span><span class="ov-pt" style="grid-row:${i + 1}"><i class="c${i + 1}" style="width:${(r.n / max * 100).toFixed(2)}%" tabindex="0" aria-label="${PLATFORMS[r.k].n}: ${r.n} post${r.n > 1 ? 's' : ''}"><em>${Math.round(r.n / total * 100)}% of posts</em></i><span class="ov-pv">${r.n}</span></span>`).join('')}
       <span class="ov-px" style="grid-row:${rows.length + 1}">${[...Array(6)].map((_, i) => `<span>${i * step}</span>`).join('')}</span></div>`
       : `<div class="ov-none">${ic('send', 20)}<span>No posts ${when}. Planned posts show up here by network.</span></div>`}
   </section>`;

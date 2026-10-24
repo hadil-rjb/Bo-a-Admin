@@ -2485,9 +2485,9 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
    Desktop: content column + schedule column. The layout follows the page width, not the
    viewport (container queries), so it reflows the same with or without the sidebar. */
 @layer components{:where([data-ws="social"]){
-.ov{--c1:var(--accent);--c2:var(--accent-2);--c3:var(--accent-3);--g-bg:#c2f5da;--g-tx:#0b4627;--r-bg:#ffc0c5;--r-tx:#681219;--track-bar:#f5f7fa;
+.ov{--c1:var(--accent);--c2:var(--accent-2);--c3:var(--accent-3);--g-bg:#c2f5da;--g-tx:#0b4627;--r-bg:#ffc0c5;--r-tx:#681219;--track-bar:#f5f7fa;--tip-bg:#fff;--tip-tx:var(--text-1);--tip-sub:var(--text-2);--tip-bd:var(--border);
   display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;align-items:start}
-&[data-theme="dark"] .ov{--g-bg:rgba(31,193,107,.16);--g-tx:#90d7b2;--r-bg:rgba(253,14,53,.16);--r-tx:#ffbfc5;--track-bar:#111b2e}
+&[data-theme="dark"] .ov{--g-bg:rgba(31,193,107,.16);--g-tx:#90d7b2;--r-bg:rgba(253,14,53,.16);--r-tx:#ffbfc5;--track-bar:#111b2e;--tip-bg:#1e293b;--tip-tx:#f8fafc;--tip-sub:#94a3b8;--tip-bd:#334155}
 .ov-wrap{container:ov/inline-size}
 .ov .widget{border-radius:16px;box-shadow:var(--shadow-xs);min-width:0}
 .ov .btn.secondary.sm{color:var(--text-2)}.ov .btn.secondary.sm:hover{color:var(--text-1)}
@@ -2528,7 +2528,6 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ov-spark .l{fill:none;stroke:var(--accent);stroke-width:2;stroke-linecap:round}
 .ov-spark.flat .l{stroke:var(--border);stroke-dasharray:4 4}.ov-spark.flat .f{display:none}
 .ov-kpi-d{justify-content:space-between;gap:20px}.ov-kpi-d>div{display:flex;flex-direction:column;gap:4px}
-.ov-kpi-d .ov-ico:hover{color:var(--accent);border-color:var(--text-3)}
 .ov-mini-c{position:absolute;right:20px;top:28px;width:min(140px,45%);height:44px}
 .ov-mini-c .ov-spark{width:100%;height:100%}
 .ov-kpi-d .ov-cap2{padding-top:0}
@@ -2560,12 +2559,14 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 &[data-theme="dark"] .ov-emo{background:rgba(255,241,235,.08)}
 .ov-ticks{display:flex;gap:3px;height:24px;margin-top:auto}
 .ov-ticks i{flex:1;border-radius:1px;background:var(--border)}.ov-ticks i.on{background:#1fc16b}
-.ov-plat{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:14px;row-gap:9px;align-items:center;font-size:12px;line-height:16px}
-.ov-pgrid{grid-column:2;align-self:stretch;margin:-4px 0 -9px;background:linear-gradient(to right,var(--border) 1px,transparent 1px) 0 0/20% 100%;border-right:1px solid var(--border);pointer-events:none}
-.ov-pn{grid-column:1;color:var(--text-1);min-width:56px}
-.ov-pt{grid-column:2;position:relative;height:16px}
-.ov-pt i{position:relative;display:block;height:100%;min-width:4px;border-radius:2px;outline-offset:2px}
-.ov-pt em,.ov-dot em,.ov-bar em{position:absolute;right:0;bottom:calc(100% + 8px);transform:translateX(50%);padding:4px 10px;border-radius:6px;background:#0e121b;color:#fff;font:400 13px/20px var(--sans);font-style:normal;white-space:nowrap;box-shadow:0 12px 24px rgba(14,18,27,.12);display:none;pointer-events:none;z-index:5}
+.ov-plat{position:relative;flex:1;display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:16px;row-gap:12px;align-items:center;align-content:center;font-size:13px;line-height:18px}
+.ov-pgrid{grid-column:2;align-self:stretch;margin:-6px 0 -12px;background:linear-gradient(to right,var(--border) 1px,transparent 1px) 0 0/20% 100%;border-right:1px solid var(--border);pointer-events:none}
+.ov-pn{grid-column:1;display:flex;align-items:center;gap:8px;min-width:96px;color:var(--text-1);font-weight:500}
+.ov-pn .ov-net{width:22px;height:22px;margin:0}
+.ov-pt{grid-column:2;position:relative;display:flex;align-items:center;gap:8px;height:22px}
+.ov-pv{font-size:12px;font-weight:600;color:var(--text-1);font-variant-numeric:tabular-nums}
+.ov-pt i{position:relative;display:block;flex-shrink:0;height:100%;min-width:4px;border-radius:4px;outline-offset:2px}
+.ov-pt em,.ov-dot em,.ov-bar em{position:absolute;right:0;bottom:calc(100% + 8px);transform:translateX(50%);padding:4px 10px;border-radius:8px;border:1px solid var(--tip-bd);background:var(--tip-bg);color:var(--tip-tx);font:500 13px/20px var(--sans);font-style:normal;white-space:nowrap;box-shadow:0 12px 24px rgba(14,18,27,.12),0 2px 6px rgba(14,18,27,.06);display:none;pointer-events:none;z-index:5}
 .ov-dot em{right:auto;left:50%;transform:translateX(-50%)}
 .ov-dot:first-of-type em{left:-6px;transform:none}.ov-dot:first-of-type em::after{left:11px}
 .ov-dot:last-of-type em{left:auto;right:-6px;transform:none}.ov-dot:last-of-type em::after{left:auto;right:6px}
@@ -2574,10 +2575,10 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ov-bar em{right:auto;left:50%;bottom:auto;top:0;transform:translateX(-50%);display:none;flex-direction:column;gap:2px;padding:8px 10px;font-size:12px;line-height:16px}
 .ov-bar:hover em,.ov-bar:focus-visible em{display:flex}
 .ov-bar:nth-child(-n+3) em{left:0;transform:none}.ov-bar:nth-last-child(-n+3) em{left:auto;right:0;transform:none}
-.ov-bar em b{font-weight:500;margin-bottom:2px}.ov-bar em span{display:flex;align-items:center;gap:6px;color:rgba(255,255,255,.8)}.ov-bar em i{width:8px;height:8px;border-radius:50%}
+.ov-bar em b{font-weight:500;margin-bottom:2px}.ov-bar em span{display:flex;align-items:center;gap:6px;font-weight:400;color:var(--tip-sub)}.ov-bar em i{width:8px;height:8px;border-radius:50%}
 .ov-bar em::after{display:none}
-.ov-pt em::after,.ov-dot em::after{content:'';position:absolute;left:50%;top:100%;margin-left:-5px;border:5px solid transparent;border-top-color:#0e121b}
-.ov-px{grid-column:2;display:flex;justify-content:space-between;font-size:11px;line-height:12px;font-weight:500;color:var(--text-3)}
+.ov-pt em::after,.ov-dot em::after{content:'';position:absolute;left:50%;top:100%;margin-left:-5px;border:5px solid transparent;border-top-color:var(--tip-bg);filter:drop-shadow(0 1px 0 var(--tip-bd))}
+.ov-px{grid-column:2;display:flex;padding-top:2px;justify-content:space-between;font-size:11px;line-height:12px;font-weight:500;color:var(--text-3)}
 .ov-px span{width:0;display:flex;justify-content:center}
 .ov-none{display:flex;align-items:center;gap:12px;margin:auto 0;font-size:13px;line-height:18px;color:var(--text-2)}
 .ov-none .ic{flex-shrink:0;width:40px;height:40px;padding:10px;border-radius:50%;background:var(--pill);color:var(--text-3)}
