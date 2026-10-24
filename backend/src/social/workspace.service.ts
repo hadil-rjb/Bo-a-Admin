@@ -12,6 +12,8 @@ import { mergePost } from "./publishing/post-state";
 import { ConnectionsService } from "./publishing/connections.service";
 import { NotionService } from "./notion/notion.service";
 import { PublisherService } from "./publishing/publisher.service";
+import { VersionsService } from "./versions.service";
+import { CommentsService } from "./comments.service";
 
 type Item = Record<string, any> & { id: string };
 
@@ -30,6 +32,8 @@ export class WorkspaceService {
     private readonly conns: ConnectionsService,
     private readonly publisher: PublisherService,
     private readonly notion: NotionService,
+    private readonly versions: VersionsService,
+    private readonly comments: CommentsService,
   ) {}
 
   /** Rebuilds the snapshot the client expects, or null when nothing was saved yet. */
@@ -122,6 +126,8 @@ export class WorkspaceService {
         this.templates.deleteMany({ brandId: { $in: ids } }),
         this.conns.removeBrand(ids),
         this.publisher.removeBrand(ids),
+        this.versions.removeBrands(ids),
+        this.comments.removeBrands(ids),
       ]);
     }
 
@@ -145,6 +151,8 @@ export class WorkspaceService {
 
     const designs = await this.applyDesigns(dto.designs);
     await this.applyItems(this.designs, [], dto.designOrder, del.designs);
+    await this.versions.removeFor(del.designs || []); // a deleted design's history and comments go with it
+    await this.comments.removeFor(del.designs || []);
     await this.applyItems(this.posts, dto.posts, dto.postOrder, del.posts);
     if (dto.posts?.length || del.posts?.length) this.notion.reconcileSoon(); // Notion Calendar, when it shows every post
 

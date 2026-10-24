@@ -86,7 +86,7 @@ let fxReady = async () => {};
 /** Text of a text layer as HTML (plain, or spans for mixed styles: set by the mixed text section) */
 let textHTML = (l) => esc(l.text);
 /** Mixed text hooks: apply(prop, value) styles the selected characters (true when it handled the change) */
-const RT = { apply: () => false, loadFont: () => {}, treeLive: () => {}, topGroup: () => null, selUnits: (pg, ids) => ids, tree: null, dragOn: () => false }; // tree hooks: v31
+const RT = { apply: () => false, loadFont: () => {}, treeLive: () => {}, topGroup: () => null, selUnits: (pg, ids) => ids, tree: null, dragOn: () => false, applyStyles: () => {} }; // tree hooks: v31, styles: v33
 /** Publishing client (v14 section): render + upload slides, publish now, poll results */
 let PUB = null;
 /** Connected accounts of the active brand (from the API). `S.platforms` mirrors them for the planner. */
@@ -2618,8 +2618,10 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
   /** Largest scale the browser can rasterize for this canvas (canvas area / side limits) */
   const maxScale = (w, h) => Math.max(0.1, Math.min(16384 / w, 16384 / h, Math.sqrt(64e6 / (w * h))));
   /** Renders slide i of design d to a canvas at scale s */
-  async function renderCanvas(d, i, s, opaque) {
-    const pg = d.pages[i], [w, h] = RATIOS[d.ratio]; await fxReady(pg);
+  async function renderCanvas(d, i, s, opaque) { const [w, h] = RATIOS[d.ratio]; return renderPage(d.pages[i], w, h, s, opaque); }
+  /** Renders a page-like { bg, layers } of w × h at scale s (slides, and exported selections) */
+  async function renderPage(pg, w, h, s, opaque) {
+    await fxReady(pg);
     s = Math.min(s, maxScale(w, h));
     const W = Math.round(w * s), H = Math.round(h * s);
     const body = await inlineUrls(posterHTML(pg)), bg = await inlineUrls(String(pg.bg || 'transparent')), css = await fontCSS(body);
@@ -2642,6 +2644,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     return toBlob(c, 'image/' + fmt, fmt === 'jpeg' ? 0.95 : undefined);
   }
   renderSlide = renderBlob;
+  Object.assign(RT, { renderPage, toBlob }); // export of a selection (v34)
 
   /* ---- files: ZIP (several slides in one download) and PDF (carousel document) ---- */
   const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
@@ -2682,6 +2685,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     return new Blob(chunks, { type: 'application/pdf' });
   }
   const fileBase = (d) => (d.name || 'design').trim().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60) || 'design';
+  RT.fileBase = (d) => fileBase(d); RT.download = (b, n) => download(b, n);
   function download(blob, name) {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
@@ -2710,7 +2714,7 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
     <div class="mb"><div class="row" style="gap:14px;align-items:flex-start">${thumb(d.pages[pi], d.ratio, 96, 120)}<div class="grow" style="display:flex;flex-direction:column;gap:12px">
       <div class="g2f"><label class="lab">Format<select class="field" id="exF">${fmtOpt('png', 'PNG · lossless')}${fmtOpt('jpeg', 'JPG · smaller file')}${fmtOpt('pdf', 'PDF · document')}${fmtOpt('svg', 'SVG · vector')}</select></label>
       <label class="lab">Size<select class="field" id="exS">${scales.map((x) => `<option value="${x}" ${x === defS ? 'selected' : ''}>${x}× · ${Math.round(w * x)} × ${Math.round(h * x)} px</option>`).join('')}</select></label></div>
-      <label class="lab">Slides<select class="field" id="exP"><option value="cur">Current slide (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} slides</option>` : ''}</select></label></div></div>
+      <label class="lab">Slides<select class="field" id="exP"><option value="cur">Current slide (${pi + 1})</option>${n > 1 ? `<option value="all" selected>All ${n} slides</option>` : ''}${RT.selCount && RT.selCount() ? `<option value="sel">Selection (${RT.selCount()} layer${RT.selCount() === 1 ? '' : 's'})</option>` : ''}</select></label></div></div>
       <p class="xs-t muted" id="exM">Same layout, fonts and images as the canvas.</p></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="exGo">${ic('download', 18)}Download</button></div>`, {
       onMount: (bg, close) => {
@@ -2718,10 +2722,11 @@ openEditor = function (id) { ED.agRun = (ED.agRun || 0) + 1; ED.agBusy = false; 
         bg.addEventListener('change', hint); hint();
         bg.addEventListener('click', async (e) => {
           const go = e.target.closest('#exGo'); if (!go || go.disabled) return;
-          const f = $('#exF', bg).value, s = +$('#exS', bg).value, pgs = $('#exP', bg).value === 'all' ? d.pages.map((p, i) => i) : [pi];
+          const f = $('#exF', bg).value, s = +$('#exS', bg).value, what = $('#exP', bg).value, pgs = what === 'all' ? d.pages.map((p, i) => i) : [pi];
           S.set.fmt = FMT_SET[f]; S.set.quality = s + 'x'; save();
           busy(go, true, 'Rendering…');
           try {
+            if (what === 'sel') { await RT.exportSelection(d, f, s); close(); toast('Selection downloaded'); return; }
             await runExport(d, pgs, s, f, (k, t) => { $('#exM', bg).textContent = t > 1 ? `Rendering slide ${k + 1} of ${t}…` : 'Rendering…'; });
             close(); toast(f === 'pdf' ? 'PDF downloaded' : pgs.length > 1 ? `${pgs.length} slides downloaded as a ZIP` : 'Image downloaded');
           } catch (x) { busy(go, false); $('#exM', bg).textContent = 'Export failed: ' + String((x && x.message) || 'this browser could not render the design').replace(/\.$/, '') + '. Try Chrome, Edge or Firefox.'; }
@@ -8326,8 +8331,10 @@ function zoomToSelection() {
   /* ---------- SVG export: real vector shapes and text, images embedded ---------- */
   /** Top-level comma split (commas inside parentheses stay) */
   const splitTop = (v) => { const out = []; let d = 0, cur = ''; for (const ch of String(v)) { if (ch === '(') d++; else if (ch === ')') d--; if (ch === ',' && !d) { out.push(cur.trim()); cur = ''; } else cur += ch; } if (cur.trim()) out.push(cur.trim()); return out; };
-  async function slideSVG(d, i) {
-    const pg = d.pages[i], [W, H] = RATIOS[d.ratio], defs = []; let n = 0; const nid = () => 'e' + ++n;
+  async function slideSVG(d, i) { const [W, H] = RATIOS[d.ratio]; return pageSVG(d.pages[i], W, H); }
+  /** SVG of a page-like { bg, layers } of W × H (a slide, or an exported selection) */
+  async function pageSVG(pg, W, H) {
+    const defs = []; let n = 0; const nid = () => 'e' + ++n;
     const host = document.createElement('div'); host.setAttribute('aria-hidden', 'true');
     host.style.cssText = `position:fixed;left:-100000px;top:0;width:${W}px;height:${H}px;visibility:hidden;pointer-events:none`;
     host.innerHTML = `<div class="poster" style="width:${W}px;height:${H}px">${posterHTML(pg)}</div>`; document.body.append(host);
@@ -8422,7 +8429,7 @@ function zoomToSelection() {
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${fonts ? `<style>${fonts}</style>` : ''}<defs>${defs.join('')}</defs>${body.join('')}</svg>`;
     } finally { host.remove(); }
   }
-  RT.slideSVG = slideSVG;
+  RT.slideSVG = slideSVG; RT.pageSVG = pageSVG;
 })();
 
 /* ============ v30 · strokes and effects as lists (Figma's Stroke and Effects sections) ============ */
@@ -8559,7 +8566,7 @@ function treeOf(pg) {
   (pg && pg.layers || []).forEach((l) => { byId.set(l.id, l); const k = l.pid || ''; if (!kids.has(k)) kids.set(k, []); kids.get(k).push(l); });
   return { byId, kids };
 }
-function withTree(pg, fn) { const prev = RT.tree; RT.tree = treeOf(pg); try { return fn(); } finally { RT.tree = prev; } }
+function withTree(pg, fn) { RT.applyStyles(pg); const prev = RT.tree; RT.tree = treeOf(pg); try { return fn(); } finally { RT.tree = prev; } } // styles: v33
 /** Containers above a layer, nearest first */
 function ancestorsT(T, l) { const out = []; for (let p = l && l.pid && T.byId.get(l.pid), n = 0; p && n < 64; p = p.pid && T.byId.get(p.pid), n++) out.push(p); return out; }
 function descendantsT(T, id) { const out = []; const walk = (k) => (T.kids.get(k) || []).forEach((c) => { out.push(c); if (isContainer(c)) walk(c.id); }); walk(id); return out; }
@@ -8787,6 +8794,7 @@ function clipCss(l, frames) {
   /* ---------- dragging a layer onto a frame puts it inside; off its frame takes it out (one undo step with the move) ---------- */
   const DRAG = { on: false, pt: null };
   RT.dragOn = () => DRAG.on && !!DRAG.pt; // a layer is being dragged: it floats above an auto layout (syncTree)
+  RT.dragPt = () => (DRAG.on ? DRAG.pt : null); RT.dragEnd = () => { DRAG.on = false; }; // dropping onto another slide (v34)
   function reparent() {
     const pg = P(), T = treeOf(pg), pt = DRAG.pt; if (!pt) return;
     DRAG.on = false; // dropped: back into any auto layout flow
@@ -9040,6 +9048,586 @@ function clipCss(l, frames) {
     if (l && l.type === 'frame' && !l.al) return addAL(l);
     RT.wrapSel('frame'); const f = curL(); if (f && f.type === 'frame') addAL(f);
   }, true);
+})();
+
+/* ============ v33 · components (brand library, instances with overrides) and shared styles ============ */
+/* Components: brand.components = [{ id, name, v, w, h, layers }] (layers relative to the root frame, ids = the main's ids).
+   On a page, the main component is a frame with comp + main; an instance is a frame with comp + cv (the version it shows),
+   whose layers carry sid (the main layer they mirror) and ovr (the properties edited on that instance, which updates keep).
+   Styles: a layer's fill (text: color) linked to a brand color (fs), its type to a brand text style (ts); a value changed
+   by hand, or by the agent, detaches it. Styles resolve whenever a page is drawn (editor, thumbnails, exports, publishing). */
+(function () {
+  Object.assign(IC, {
+    comp33: '<path d="M12 3 7.5 7.5 12 12l4.5-4.5Z"/><path d="M12 12 7.5 16.5 12 21l4.5-4.5Z"/><path d="m7.5 7.5-4.5 4.5 4.5 4.5L12 12Z"/><path d="M16.5 7.5 12 12l4.5 4.5L21 12Z"/>',
+    inst33: '<path d="M12 3 21 12 12 21 3 12Z"/>',
+  });
+  const P = () => curP(), T0 = () => treeOf(P()), clone = (o) => JSON.parse(JSON.stringify(o));
+  const lib = () => { const b = brand(); return b.components || (b.components = []); }, defOf = (id) => (brand().components || []).find((c) => c.id === id);
+  // bookkeeping and placement are each layer's own; everything else follows the main unless overridden
+  const OWN = new Set(['id', 'pid', 'sid', 'comp', 'main', 'cv', 'ovr', '_x', '_y', '_w', '_h', 'x', 'y', 'locked', 'gid', 'fsv', 'tsv']);
+  const isMain = (l) => !!(l && l.comp && l.main), isInst = (l) => !!(l && l.comp && !l.main);
+  const instRoot = (T, l) => (isInst(l) ? l : ancestorsT(T, l).find(isInst));
+  const mainRoot = (T, l) => (isMain(l) ? l : ancestorsT(T, l).find(isMain));
+
+  /* ---------- definitions ---------- */
+  /** The main component's layers, relative to its root (what instances copy) */
+  function defLayers(pg, root) {
+    const T = treeOf(pg);
+    return [root, ...descendantsT(T, root.id)].map((l) => { const c = clone(l); c.x -= root.x; c.y -= root.y; ['_x', '_y', '_w', '_h', 'fsv', 'tsv', 'main', 'cv'].forEach((k) => delete c[k]); if (l === root) delete c.pid; return c; });
+  }
+  function makeComponent(root) {
+    const def = { id: 'k' + uid(), name: root.name || 'Component', v: 1, w: root.w, h: root.h, layers: [] };
+    mutate(() => { root.comp = def.id; root.main = true; def.layers = defLayers(P(), root); lib().push(def); });
+    toast('Component created. Insert copies from the Components panel; edits to this one update them all.');
+  }
+  /** Copies a definition's properties onto an instance layer, except the ones edited on the instance */
+  function copyProps(dst, src) {
+    const ov = new Set(dst.ovr || []);
+    Object.keys(src).forEach((k) => { if (!OWN.has(k) && !ov.has(k)) dst[k] = clone(src[k]); });
+    Object.keys(dst).forEach((k) => { if (!OWN.has(k) && !ov.has(k) && !(k in src)) delete dst[k]; });
+  }
+  /** Brings an instance up to its definition: properties, layers added or removed in the main, order, places */
+  function updateInstance(pg, inst, def) {
+    const T = treeOf(pg), kids = descendantsT(T, inst.id), bySid = new Map(kids.filter((k) => k.sid).map((k) => [k.sid, k])), root = def.layers[0];
+    const ov = new Set(inst.ovr || []), w0 = inst.w, h0 = inst.h;
+    copyProps(inst, root); inst.w = ov.has('w') ? w0 : root.w; inst.h = ov.has('h') ? h0 : root.h;
+    const idMap = new Map([[root.id, inst.id]]), out = [], O = { x: inst.x, y: inst.y, w: root.w, h: root.h };
+    def.layers.slice(1).forEach((src) => {
+      let c = bySid.get(src.id);
+      if (c) copyProps(c, src); else c = { ...clone(src), id: uid(), sid: src.id };
+      if (src.pid) c.pid = idMap.get(src.pid) || inst.id;
+      idMap.set(src.id, c.id);
+      if (!(c.ovr || []).includes('x')) { c.x = inst.x + src.x; c.y = inst.y + src.y; if (src.pid === root.id && (inst.w !== root.w || inst.h !== root.h)) constrain(c, O, inst); }
+      if (isContainer(c)) { c._x = c.x; c._y = c.y; c._w = c.w; c._h = c.h; }
+      out.push(c);
+    });
+    const L = pg.layers; kids.forEach((k) => { const i = L.indexOf(k); if (i >= 0) L.splice(i, 1); });
+    L.splice(L.indexOf(inst) + 1, 0, ...out);
+    inst.cv = def.v; inst._x = inst.x; inst._y = inst.y; inst._w = inst.w; inst._h = inst.h;
+  }
+  /** Every instance of a definition, in every design of the brand that has pages */
+  function eachInstance(defId, fn) {
+    (S.designs || []).forEach((d) => (d.pages || []).forEach((pg) => [...pg.layers].forEach((l) => { if (isInst(l) && l.comp === defId) fn(pg, l, d); })));
+  }
+  const sig = (layers) => JSON.stringify(layers);
+  /** A main component was edited: its definition takes the change and its instances follow */
+  function syncMains(pg) {
+    const T = treeOf(pg); let n = 0;
+    pg.layers.filter(isMain).forEach((root) => {
+      const def = defOf(root.comp); if (!def) return;
+      const layers = defLayers(pg, root); if (sig(layers) === sig(def.layers)) return;
+      Object.assign(def, { layers, v: def.v + 1, name: root.name || def.name, w: root.w, h: root.h });
+      eachInstance(def.id, (ipg, inst) => { updateInstance(ipg, inst, def); n++; });
+    });
+    return n;
+  }
+  /** Instances shown at an older version (the main changed in another design, or this tab was behind) */
+  function syncInstances(pg) { pg.layers.filter(isInst).forEach((inst) => { const def = defOf(inst.comp); if (def && inst.cv !== def.v) updateInstance(pg, inst, def); }); }
+  /** What the user changed on an instance becomes its override */
+  function trackOverrides(pre) {
+    if (!pre || !P().layers.some(isInst)) return;
+    let old; try { old = JSON.parse(pre).p[ED.pi]; } catch (e) { return; }
+    if (!old) return;
+    const byOld = new Map(old.layers.map((l) => [l.id, l])), T = T0();
+    P().layers.forEach((l) => {
+      const inst = instRoot(T, l), o = byOld.get(l.id); if (!inst || !o || (l !== inst && !l.sid)) return;
+      const io = byOld.get(inst.id), ov = new Set(l.ovr || []);
+      Object.keys({ ...l, ...o }).forEach((k) => { if (!OWN.has(k) && JSON.stringify(l[k]) !== JSON.stringify(o[k])) ov.add(k); });
+      if (l !== inst && io && (Math.abs(l.x - inst.x - (o.x - io.x)) > 0.01 || Math.abs(l.y - inst.y - (o.y - io.y)) > 0.01)) ov.add('x');
+      if (ov.size) l.ovr = [...ov];
+    });
+  }
+  const _commit33 = commit;
+  commit = function (pre) {
+    if (ED.d) RT.applyStyles(P()); // a value changed by hand detaches its style now, so the panel says so
+    const n = ED.d ? (trackOverrides(pre), syncMains(P())) : 0, r = _commit33.apply(this, arguments);
+    if (n) { edStage(); edPages(); } // copies on this page changed (a drag doesn't redraw by itself)
+    return r;
+  };
+  const _st33 = edStage; edStage = function () { if (ED.d) syncInstances(P()); return _st33.apply(this, arguments); };
+
+  function insertInstance(def, at) {
+    const [W, H] = dim(), root = def.layers[0], x = at ? at[0] - root.w / 2 : Math.round(W / 2 - root.w / 2), y = at ? at[1] - root.h / 2 : Math.round(H / 2 - root.h / 2);
+    const idMap = new Map(), out = def.layers.map((src, i) => { const c = clone(src); c.id = uid(); idMap.set(src.id, c.id); if (i) c.sid = src.id; c.x += x; c.y += y; return c; });
+    out.forEach((c, i) => { if (i) c.pid = idMap.get(def.layers[i].pid) || out[0].id; });
+    Object.assign(out[0], { comp: def.id, cv: def.v, name: def.name }); delete out[0].main; delete out[0].pid;
+    mutate(() => { P().layers.push(...out); ED.ms = []; ED.sel = out[0].id; });
+  }
+  function detach(inst) {
+    const T = T0(); mutate(() => { [inst, ...descendantsT(T, inst.id)].forEach((l) => { delete l.sid; delete l.ovr; }); delete inst.comp; delete inst.cv; });
+    toast('Detached: it’s a plain frame now');
+  }
+
+  /* ---------- styles ---------- */
+  const tsig = (o) => [o.font, o.weight, o.size, o.lh, o.ls].join('|');
+  RT.applyStyles = (pg) => {
+    const b = brand(); if (!b || !pg || !pg.layers) return;
+    const col = new Map((b.colors || []).map((c) => [c.id, c.hex])), ts = new Map((b.textStyles || []).map((t) => [t.id, t]));
+    pg.layers.forEach((l) => {
+      if (l.fs && col.has(l.fs)) { // unknown ids are left alone: the style may be another brand's
+        const k = l.type === 'text' ? 'color' : 'fill';
+        if (l.fsv != null && l[k] !== l.fsv) { delete l.fs; delete l.fsv; } else { l[k] = col.get(l.fs); l.fsv = l[k]; }
+      }
+      if (l.ts && ts.has(l.ts) && l.type === 'text') {
+        if (l.tsv != null && tsig(l) !== l.tsv) { delete l.ts; delete l.tsv; } else { const t = ts.get(l.ts); Object.assign(l, { font: t.font, weight: t.weight, size: t.size, lh: t.lh, ls: t.ls }); l.tsv = tsig(l); }
+      }
+    });
+  };
+  const fitLinked = (id) => { P().layers.forEach((l) => { if (l.ts === id) fitText(l); }); drawSel(); };
+
+  /* ---------- panel: Components tab ---------- */
+  RAIL.push(['comps', 'Components', 'comp33']);
+  const defThumb = (def, box) => {
+    const k = Math.min(box / def.w, box / def.h), pg = { layers: def.layers };
+    return `<div class="thumb" style="width:${def.w * k}px;height:${def.h * k}px;background:transparent"><div class="poster" style="width:${def.w}px;height:${def.h}px;background:transparent;transform:scale(${k})">${posterHTML(pg)}</div></div>`;
+  };
+  const _pn33 = edPanel;
+  edPanel = function () {
+    if (ED.tab !== 'comps') return _pn33.apply(this, arguments);
+    const p = $('#edPanel'), L = brand().components || []; p.classList.remove('agent');
+    let n = 0; const count = (id) => { n = 0; eachInstance(id, () => n++); return n; };
+    p.innerHTML = `<h3>Components</h3><p class="xs-t muted">Reusable pieces for ${esc(brand().name)}. Edit the main one and every copy follows, except what you changed on a copy.</p>`
+      + (L.length ? `<div class="cg33">${L.map((d) => `<div class="cc33"><button class="cc33-t" data-act="cp33Insert" data-id="${d.id}" title="Insert ${esc(d.name)}">${defThumb(d, 120)}</button><div class="row sp"><span class="sm-t cc33-n">${esc(d.name)}</span><button class="btn ghost icon sm" data-act="cp33Remove" data-id="${d.id}" data-tip="Remove from the library">${ic('trash', 14)}</button></div><span class="xs-t muted">${count(d.id)} cop${n === 1 ? 'y' : 'ies'}</span></div>`).join('')}</div>`
+        : `<p class="sm-t muted" style="margin-top:8px">No components yet. Select a frame or some layers, then press <span class="kbd">Ctrl Alt K</span> or use “Create component” in the properties.</p>`);
+  };
+  Object.assign(ACT, {
+    cp33Insert: (a) => { const d = defOf(a.dataset.id); d && insertInstance(d); },
+    cp33Remove: (a) => {
+      const d = defOf(a.dataset.id); if (!d) return;
+      let n = 0; eachInstance(d.id, (pg, inst) => { const T = treeOf(pg); [inst, ...descendantsT(T, inst.id)].forEach((l) => { delete l.sid; delete l.ovr; }); delete inst.comp; delete inst.cv; n++; });
+      P().layers.filter((l) => l.comp === d.id).forEach((l) => { delete l.comp; delete l.main; });
+      brand().components = lib().filter((x) => x !== d); save(); edAll(); toast(`Removed from the library${n ? `. ${n} cop${n === 1 ? 'y was' : 'ies were'} detached` : ''}`);
+    },
+    cp33Make: () => { const l = curL(); if (l && l.type === 'frame' && !l.comp) return makeComponent(l); RT.wrapSel('frame'); const f = curL(); if (f && f.type === 'frame') makeComponent(f); },
+    cp33Detach: () => { const l = curL(); isInst(l) && detach(l); },
+    cp33Reset: () => { const l = curL(), def = l && defOf(l.comp); if (!isInst(l) || !def) return; const T = T0(); mutate(() => { [l, ...descendantsT(T, l.id)].forEach((x) => delete x.ovr); updateInstance(P(), l, def); }); toast('Overrides reset'); },
+    cp33Main: () => {
+      const l = curL(); if (!l) return;
+      for (const [pi, pg] of ED.d.pages.entries()) { const m = pg.layers.find((x) => isMain(x) && x.comp === l.comp); if (m) { ED.pi = pi; ED.sel = m.id; ED.ms = []; return edAll(); } }
+      let where = null; (S.designs || []).forEach((d) => (d.pages || []).forEach((pg) => { if (!where && pg.layers.some((x) => isMain(x) && x.comp === l.comp)) where = d.name; }));
+      toast(where ? `The main component is in “${where}”` : 'The main component was deleted; this copy still follows the library');
+    },
+    st33Color: (a) => { const l = curL(), c = (brand().colors || []).find((x) => x.id === a.dataset.id); if (!l || !c) return; mutate(() => { l[l.type === 'text' ? 'color' : 'fill'] = c.hex; l.fs = c.id; l.fsv = c.hex; }); },
+    st33Unlink: (a) => { const l = curL(); l && mutate(() => { if (a.dataset.k === 'fs') { delete l.fs; delete l.fsv; } else { delete l.ts; delete l.tsv; } }); },
+    st33Text: (a) => { const l = curL(), t = (brand().textStyles || []).find((x) => x.id === a.dataset.id); if (!l || !t) return; mutate(() => { Object.assign(l, { font: t.font, weight: t.weight, size: t.size, lh: t.lh, ls: t.ls, ts: t.id }); l.tsv = tsig(l); delete l.runs; }, () => { edAll(); fitText(l); drawSel(); }); },
+    st33New: () => { ED.st33New = true; edProps(); const i = $('#edProps .st33-in'); i && i.focus(); },
+  });
+  function newTextStyle(name) {
+    const l = curL(); ED.st33New = false; if (!l || l.type !== 'text' || !name) return edProps();
+    const b = brand(), t = { id: 't' + uid(), name: name.slice(0, 40), font: l.font, weight: l.weight, size: l.size, lh: l.lh, ls: l.ls || 0 };
+    (b.textStyles = b.textStyles || []).push(t);
+    mutate(() => { l.ts = t.id; l.tsv = tsig(l); }); toast(`Text style “${t.name}” saved to ${b.name}`);
+  }
+  document.addEventListener('keydown', (e) => { const i = e.target.closest && e.target.closest('.st33-in'); if (!i) return; e.stopPropagation(); if (e.key === 'Enter') newTextStyle(i.value.trim()); if (e.key === 'Escape') { ED.st33New = false; edProps(); } }, true);
+  // a text style's own values: every text using it changes (brand-wide, saved with the brand kit)
+  document.addEventListener('input', (e) => {
+    const t = e.target; if (!t.dataset || !t.dataset.tsx || !t.closest('#edProps')) return;
+    const l = curL(), st = l && (brand().textStyles || []).find((x) => x.id === l.ts); if (!st) return;
+    st[t.dataset.tsx] = t.dataset.tsx === 'font' ? t.value : +t.value;
+    P().layers.forEach((x) => { if (x.ts === st.id) delete x.tsv; }); // re-applied, not detached
+    edStage(); fitLinked(st.id); save();
+  });
+
+  /* ---------- properties: Component, color styles, text styles ---------- */
+  const sec = (key, title, body) => `<section class="ps9" data-sec="${key}"><div class="ps9-h"><button type="button" class="ps9-t" data-act="psTog" data-k="${key}" aria-expanded="true">${title}${ic('chevD', 14)}</button><span class="ps9-a"></span></div><div class="ps9-b">${body}</div></section>`;
+  const _ep33 = edProps;
+  edProps = function () {
+    const r = _ep33.apply(this, arguments), l = curL(), b = $('#edProps .body');
+    if (ED.rtab === 'layers' && b) { // the tree: components and their copies get their own marks
+      const T = T0(); b.querySelectorAll('.lr31').forEach((row) => { const x = T.byId.get(row.dataset.id); if (isMain(x) || isInst(x)) { row.classList.add(isMain(x) ? 'cm33' : 'ci33'); const ic0 = row.querySelector('svg.ic'); ic0 && (ic0.outerHTML = ic(isMain(x) ? 'comp33' : 'inst33', 15)); } });
+      return r;
+    }
+    if (!b || ED.rtab !== 'design' || !b.querySelector('.ps9')) return r;
+    if (!l) return r;
+    const T = T0(), ir = instRoot(T, l), mr = mainRoot(T, l), parts = [];
+    if (isMain(l)) { let n = 0; eachInstance(l.comp, () => n++); parts.push(sec('cp', 'Main component', `<p class="xs-t muted">${n} cop${n === 1 ? 'y' : 'ies'} in ${esc(brand().name)}. Changes here update them, except what was changed on a copy.</p>`)); }
+    else if (isInst(l)) { const d = defOf(l.comp), nov = [l, ...descendantsT(T, l.id)].filter((x) => x.ovr && x.ovr.length).length;
+      parts.push(sec('cp', 'Instance', `<p class="xs-t muted">Copy of “${esc(d ? d.name : 'a removed component')}”${nov ? ` · ${nov} layer${nov === 1 ? '' : 's'} changed on this copy` : ''}.</p><div class="row" style="gap:6px;flex-wrap:wrap"><button class="btn secondary sm" data-act="cp33Main">Go to main</button>${nov ? '<button class="btn secondary sm" data-act="cp33Reset">Reset changes</button>' : ''}<button class="btn secondary sm" data-act="cp33Detach">Detach</button></div>`)); }
+    else if (ir || mr) parts.push(sec('cp', ir ? 'In an instance' : 'In a main component', `<p class="xs-t muted">${ir ? `Changes here stay on this copy (an override).${(l.ovr || []).length ? ` Changed: ${l.ovr.join(', ')}.` : ''}` : 'Changes here update every copy.'}</p>`));
+    else if (l.type === 'frame' || l.type === 'group' || (ED.ms && ED.ms.length)) parts.push(sec('cp', 'Component', `<button class="btn secondary sm" data-act="cp33Make">${ic('comp33', 16)}Create component<span class="kbd" style="margin-left:6px">Ctrl Alt K</span></button>`));
+    if (parts.length) { const tmp = document.createElement('div'); tmp.innerHTML = parts.join(''); const pos = b.querySelector('.ps9[data-sec=pos]'); pos ? pos.after(...tmp.children) : b.prepend(...tmp.children); }
+    // color styles: the brand's colors, linked
+    const fill = b.querySelector('.ps9[data-sec=fill] .ps9-b'), cols = brand().colors || [];
+    if (fill && cols.length && l.type !== 'group' && !(l.type === 'image' && /url\(/.test(l.fill))) {
+      fill.insertAdjacentHTML('afterbegin', `<div class="st33"><div class="row sp"><span class="label" style="margin:0">Color styles</span>${l.fs ? '<button class="btn link sm" data-act="st33Unlink" data-k="fs">Detach</button>' : ''}</div><div class="st33-l">${cols.map((c) => `<button type="button" class="st33-c${l.fs === c.id ? ' on' : ''}" data-act="st33Color" data-id="${c.id}" title="${esc(c.name)} · ${esc(c.hex)}"><i style="background:${c.hex}"></i><span>${esc(c.name)}</span></button>`).join('')}</div></div>`);
+    }
+    // text styles
+    const txt = b.querySelector('.ps9[data-sec=text] .ps9-b');
+    if (txt && l.type === 'text') {
+      const ts = brand().textStyles || [], cur = ts.find((t) => t.id === l.ts);
+      const ed = cur ? `<div class="st33-ed"><label class="lab">Font<select class="field sm" data-tsx="font">${[...new Set([...FONTS, cur.font])].map((f) => `<option ${f === cur.font ? 'selected' : ''}>${f}</option>`).join('')}</select></label><div class="q30">${[['size', 'Size', 1], ['weight', 'Weight', 100], ['lh', 'Line', 0.05], ['ls', 'Spacing', 0.5]].map(([k, n, st]) => `<label class="n30"><span>${n}</span><input class="field sm" type="number" step="${st}" data-tsx="${k}" value="${cur[k] ?? 0}"></label>`).join('')}</div><p class="xs-t muted">Editing the style changes every text that uses it.</p></div>` : '';
+      txt.insertAdjacentHTML('afterbegin', `<div class="st33"><div class="row sp"><span class="label" style="margin:0">Text style</span>${cur ? '<button class="btn link sm" data-act="st33Unlink" data-k="ts">Detach</button>' : ''}</div>`
+        + (ts.length ? `<div class="st33-t">${ts.map((t) => `<button type="button" class="st33-tr${l.ts === t.id ? ' on' : ''}" data-act="st33Text" data-id="${t.id}"><b style="font:${t.weight} 14px '${t.font}',sans-serif">${esc(t.name)}</b><small>${t.size} · ${t.font}</small></button>`).join('')}</div>` : '')
+        + (ED.st33New ? '<input class="field sm st33-in" placeholder="Style name, then Enter" aria-label="New text style name">' : `<button class="btn ghost sm" data-act="st33New">${ic('plus', 14)}Create style from this text</button>`) + ed + '</div>');
+    }
+    return r;
+  };
+  const _ds33 = drawSel;
+  drawSel = function () { _ds33.apply(this, arguments); const s = $('#sel'), l = curL(); if (s) { s.classList.toggle('cm33', isMain(l)); s.classList.toggle('ci33', isInst(l)); } };
+  addEventListener('keydown', (e) => {
+    if (!document.body.classList.contains('in-editor') || ED.editing || $('#cmdk')) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    if ((e.ctrlKey || e.metaKey) && e.altKey && e.code === 'KeyK') { e.preventDefault(); e.stopImmediatePropagation(); ACT.cp33Make(); }
+  }, true);
+})();
+
+/* ============ v34 · all slides on one canvas, export of a selection, export presets ============ */
+/* All slides: the current slide stays the editable one (#poster, page coordinates unchanged); the others are drawn beside it
+   in the same space (#others), and a click on one makes it current. Dropping layers on another slide moves them there. */
+(function () {
+  Object.assign(IC, { slides34: '<rect x="2" y="6" width="6" height="12" rx="1"/><rect x="9" y="4" width="6" height="16" rx="1"/><rect x="16" y="6" width="6" height="12" rx="1"/>' });
+  const GAP = 120; // between slides, page px
+  const ALL = { on: (() => { try { return localStorage.getItem('boga.allSlides') === '1'; } catch (e) { return false; } })() };
+  const many = () => ED.d && ED.d.pages.length > 1, on = () => ALL.on && many();
+  const off = (j) => { const [W] = dim(); return (j - ED.pi) * (W + GAP); }; // a slide's x in the current slide's coordinates
+  function drawOthers() {
+    const sca = $('#scaler'); if (!sca) return;
+    let box = $('#others'); if (!box) { sca.insertAdjacentHTML('afterbegin', '<div id="others"></div>'); box = $('#others'); }
+    if (!on()) { box.innerHTML = ''; return; }
+    const [W, H] = dim(), z = 1 / ED.zoom;
+    box.innerHTML = ED.d.pages.map((pg, j) => (j === ED.pi
+      ? `<span class="oth34-l on" style="left:0;top:${-28 * z}px;font-size:${13 * z}px">Slide ${j + 1}</span>`
+      : `<div class="oth34" data-i="${j}" style="left:${off(j)}px;width:${W}px;height:${H}px" title="Slide ${j + 1}: click to edit"><div class="poster" style="width:${W}px;height:${H}px;background:${pg.bg || '#ffffff'}">${posterHTML(pg)}</div><span class="oth34-l" style="top:${-28 * z}px;font-size:${13 * z}px">Slide ${j + 1}</span></div>`)).join('');
+  }
+  function place() { // the stage holds every slide; the current one sits at its place in the row
+    const cw = $('#cwrap'), sca = $('#scaler'); if (!cw || !sca) return;
+    if (!on()) { sca.style.left = ''; return; }
+    const [W, H] = dim(), n = ED.d.pages.length, z = ED.zoom;
+    cw.style.width = (n * W + (n - 1) * GAP) * z + 'px'; cw.style.height = H * z + 'px'; sca.style.left = ED.pi * (W + GAP) * z + 'px';
+  }
+  const _az34 = applyZoom; applyZoom = function () { _az34.apply(this, arguments); place(); drawOthers(); };
+  const _st34 = edStage; edStage = function () { const r = _st34.apply(this, arguments); place(); drawOthers(); return r; };
+  /** Makes slide j current. Every slide keeps its place in the row, so nothing scrolls. */
+  function goTo(j) { if (j === ED.pi) return; ED.pi = j; ED.sel = null; ED.ms = []; edAll(); }
+  function toggle() {
+    ALL.on = !ALL.on; try { localStorage.setItem('boga.allSlides', ALL.on ? '1' : '0'); } catch (e) {}
+    const b = $('#edAll34'); b && b.classList.toggle('on', ALL.on);
+    if (!many()) return toast(ALL.on ? 'All slides: shows every slide side by side once the design has more than one' : 'One slide at a time');
+    applyZoom(); const s = $('#edScroll'), [W] = dim(); if (s && on()) s.scrollLeft = Math.max(0, (ED.pi * (W + GAP) * ED.zoom) - (s.clientWidth - W * ED.zoom) / 2);
+    toast(ALL.on ? 'All slides side by side. Click a slide to edit it; drop layers on one to move them there.' : 'One slide at a time');
+  }
+  Object.assign(ACT, { all34: toggle });
+  // a click on another slide makes it current (before any layer handler: its layers aren't the current slide's)
+  addEventListener('pointerdown', (e) => {
+    const o = e.target.closest && e.target.closest('#others .oth34'); if (!o || e.button !== 0 || ED.space) return;
+    e.preventDefault(); e.stopImmediatePropagation(); goTo(+o.dataset.i);
+  }, true);
+  /** Layers dropped on another slide move there (one undo step with the move) */
+  const _c34 = commit;
+  commit = function () {
+    const pt = on() && RT.dragPt && RT.dragPt();
+    if (pt) {
+      const [W, H] = dim(), j = ED.d.pages.findIndex((pg, k) => k !== ED.pi && pt[0] >= off(k) && pt[0] <= off(k) + W && pt[1] >= 0 && pt[1] <= H);
+      if (j >= 0) {
+        const src = curP(), dst = ED.d.pages[j], T = treeOf(src), ids = RT.selUnits(src, ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []);
+        const moving = new Set(ids.flatMap((id) => [id, ...descendantsT(T, id).map((x) => x.id)])), dx = off(j);
+        const block = src.layers.filter((l) => moving.has(l.id) && !(l.locked && l.name === 'Background'));
+        if (block.length) {
+          src.layers = src.layers.filter((l) => !block.includes(l));
+          block.forEach((l) => { l.x -= dx; if (l._x != null) l._x -= dx; if (l.pid && !moving.has(l.pid)) delete l.pid; });
+          dst.layers.push(...block); RT.dragEnd(); ED.pi = j; ED.ms = []; ED.sel = ids.length === 1 ? ids[0] : null; if (ids.length > 1) ED.ms = ids;
+          const r = _c34.apply(this, arguments); edAll();
+          toast(`Moved to slide ${j + 1}`); return r;
+        }
+      }
+    }
+    return _c34.apply(this, arguments);
+  };
+  const _oe34 = openEditor;
+  openEditor = function () {
+    _oe34.apply(this, arguments);
+    const r = $('#edRulers') || $('#edGrid'); r && r.insertAdjacentHTML('afterend', `<button class="btn ghost icon sm${ALL.on ? ' on' : ''}" id="edAll34" data-act="all34" title="All slides side by side">${ic('slides34', 18)}</button>`);
+    if (on()) requestAnimationFrame(() => { const s = $('#edScroll'), [W] = dim(); if (s) s.scrollLeft = Math.max(0, ED.pi * (W + GAP) * ED.zoom - (s.clientWidth - W * ED.zoom) / 2); });
+  };
+
+  /* ---------- export of a selection: the selected layers alone, cropped to their box, transparent around ---------- */
+  const selIds = () => (ED.d ? RT.selUnits(curP(), ED.ms && ED.ms.length ? ED.ms : ED.sel ? [ED.sel] : []) : []);
+  RT.selCount = () => selIds().length;
+  function selectionPage() {
+    const pg = curP(), T = treeOf(pg), ids = selIds(); if (!ids.length) return null;
+    const set = new Set(ids.flatMap((id) => [id, ...descendantsT(T, id).map((x) => x.id)]));
+    const tops = ids.map((id) => T.byId.get(id)), bs = tops.map(aabb);
+    const x = Math.floor(Math.min(...bs.map((b) => b.x))), y = Math.floor(Math.min(...bs.map((b) => b.y))), w = Math.ceil(Math.max(...bs.map((b) => b.x + b.w)) - x), h = Math.ceil(Math.max(...bs.map((b) => b.y + b.h)) - y);
+    const layers = pg.layers.filter((l) => set.has(l.id)).map((l) => { const c = JSON.parse(JSON.stringify(l)); c.x -= x; c.y -= y; if (c._x != null) { c._x -= x; c._y -= y; } if (c.pid && !set.has(c.pid)) delete c.pid; return c; });
+    return { pg: { id: 'sel', bg: 'transparent', layers }, w: Math.max(1, w), h: Math.max(1, h), name: ids.length === 1 ? tops[0].name : ids.length + '-layers' };
+  }
+  RT.exportSelection = async (d, fmt, s) => {
+    const sp = selectionPage(); if (!sp) throw new Error('Nothing is selected');
+    const base = RT.fileBase(d) + '-' + String(sp.name || 'selection').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 40);
+    if (fmt === 'svg') return RT.download(new Blob([await RT.pageSVG(sp.pg, sp.w, sp.h)], { type: 'image/svg+xml' }), base + '.svg');
+    const f = fmt === 'jpeg' ? 'jpeg' : 'png', c = await RT.renderPage(sp.pg, sp.w, sp.h, s, f === 'jpeg'); // a PDF of a selection: a PNG
+    RT.download(await RT.toBlob(c, 'image/' + f, f === 'jpeg' ? 0.95 : undefined), base + (f === 'jpeg' ? '.jpg' : '.png'));
+  };
+
+  /* ---------- export presets: named format, size and slides, one click ---------- */
+  const presets = () => S.set.exportPresets || (S.set.exportPresets = []);
+  const _ox34 = openExport;
+  openExport = function () {
+    const r = _ox34.apply(this, arguments), F = $('#exF'); if (!F) return r;
+    const box = F.closest('.mb'), draw = () => {
+      let row = $('#ex34'); if (!row) { box.insertAdjacentHTML('afterbegin', '<div id="ex34" class="ex34"></div>'); row = $('#ex34'); }
+      row.innerHTML = `<span class="label" style="margin:0">Presets</span><div class="chips">${presets().map((p, i) => `<span class="chip ex34-p"><button type="button" data-ex34="${i}" title="${esc(p.f.toUpperCase())} · ${p.s}× · ${p.p === 'all' ? 'all slides' : p.p === 'sel' ? 'selection' : 'current slide'}">${esc(p.name)}</button><button type="button" class="ex34-x" data-ex34x="${i}" aria-label="Remove preset ${esc(p.name)}">×</button></span>`).join('')}<button type="button" class="chip" data-ex34new>${ic('plus', 14)}Save current as preset</button></div>`;
+    };
+    draw();
+    box.addEventListener('click', (e) => {
+      const use = e.target.closest('[data-ex34]'), del = e.target.closest('[data-ex34x]'), add = e.target.closest('[data-ex34new]');
+      if (use) {
+        const p = presets()[+use.dataset.ex34], set = (id, v) => { const el = $(id); if (el && [...el.options].some((o) => o.value === String(v))) { el.value = String(v); el.dispatchEvent(new Event('change', { bubbles: true })); } };
+        set('#exF', p.f); set('#exS', p.s); set('#exP', p.p); toast(`Preset “${p.name}”`);
+      }
+      if (del) { presets().splice(+del.dataset.ex34x, 1); save(); draw(); }
+      if (add) {
+        const row = $('#ex34'); row.insertAdjacentHTML('beforeend', '<input class="field sm ex34-in" placeholder="Preset name, then Enter" aria-label="Preset name">');
+        const inp = $('.ex34-in', row); inp.focus();
+        inp.addEventListener('keydown', (ev) => {
+          ev.stopPropagation();
+          if (ev.key === 'Enter' && inp.value.trim()) { presets().push({ name: inp.value.trim().slice(0, 30), f: $('#exF').value, s: +$('#exS').value, p: $('#exP').value }); save(); draw(); }
+          if (ev.key === 'Escape') draw();
+        });
+      }
+    });
+    return r;
+  };
+})();
+
+/* ============ v35 · version history: named versions, autosaves, preview and restore ============ */
+/* Versions are snapshots the API takes of the design as saved (the studio sends what's pending first), so a restore gives
+   back exactly that. Opening a design takes an autosave when it changed since the last version. Restoring is one undo step,
+   and the design as it was before is saved as a version first. */
+(function () {
+  const H = { list: null, for: null, loading: false, err: '', naming: false, renaming: null, del: null };
+  const vPath = (d = ED.d) => `/social/brands/${encodeURIComponent(S.active)}/designs/${encodeURIComponent(d.id)}/versions`;
+  const canEdit = () => !persist.readOnly;
+  const ago = (t) => {
+    const s = (Date.now() - new Date(t).getTime()) / 1000; if (s < 60) return 'Just now'; if (s < 3600) return Math.round(s / 60) + ' min ago'; if (s < 86400) return Math.round(s / 3600) + ' h ago';
+    const d = new Date(t); return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) + ', ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  };
+  const render = () => { if (ED.d && ED.rtab === 'history') edProps(); };
+  async function load(force) {
+    if (!ED.d || (!force && H.for === ED.d.id && H.list)) return;
+    H.for = ED.d.id; H.loading = true; H.err = ''; render();
+    try { H.list = await api(vPath()); } catch (e) { H.list = H.list || []; H.err = 'The history couldn’t be loaded. Check the connection and try again.'; }
+    H.loading = false; render();
+  }
+  /** Sends pending changes, then asks the API to snapshot the design */
+  async function saveVersion(name, auto, d = ED.d) { if (!canEdit() || !d) return null; await persist.flush(); return api(vPath(d), { method: 'POST', body: { name, auto: !!auto } }); }
+  async function restore(id) {
+    let v; try { v = await api(`${vPath()}/${id}`); } catch (e) { return toast('This version couldn’t be loaded'); }
+    if (!v.pages || !v.pages.length) return toast('This version has no slides to restore');
+    try { await saveVersion(`Before restoring “${v.name}”`, false); } catch (e) { /* restoring still works; undo also brings it back */ }
+    const ratioChanged = v.ratio && v.ratio !== ED.d.ratio;
+    mutate(() => { ED.d.pages = JSON.parse(JSON.stringify(v.pages)); if (ratioChanged) ED.d.ratio = ensureRatio(v.ratio); ED.pi = 0; ED.sel = null; ED.ms = []; }, () => { edAll(); if (ratioChanged) fitZoom(); });
+    toast(`Restored “${v.name}”. Undo brings back what you had.`); load(true);
+  }
+  async function preview(id) {
+    let v; try { v = await api(`${vPath()}/${id}`); } catch (e) { return toast('This version couldn’t be loaded'); }
+    const ratio = ensureRatio(v.ratio || ED.d.ratio);
+    modal(`<div class="mh"><h2>${esc(v.name)}</h2><button class="btn ghost icon sm" data-close aria-label="Close">${ic('x')}</button></div>
+      <div class="mb"><p class="xs-t muted">${ago(v.createdAt)}${v.createdByName ? ' · ' + esc(v.createdByName) : ''} · ${v.pages.length} slide${v.pages.length === 1 ? '' : 's'}</p>
+      <div class="hv35-pv">${v.pages.map((pg, i) => `<figure>${thumb(pg, ratio, 200, 250)}<figcaption>Slide ${i + 1}</figcaption></figure>`).join('')}</div></div>
+      <div class="mf"><button class="btn secondary" data-close>Close</button>${canEdit() ? `<button class="btn primary" id="hv35Go">${ic('history', 18)}Restore this version</button>` : ''}</div>`, {
+      onMount: (bg, close) => { const go = $('#hv35Go', bg); go && go.addEventListener('click', () => { close(); restore(id); }); },
+    });
+  }
+  Object.assign(ACT, {
+    hv35Save: () => { H.naming = true; render(); const i = $('#edProps .hv35-in'); i && i.focus(); },
+    hv35Preview: (a) => preview(a.dataset.id),
+    hv35Restore: (a) => restore(a.dataset.id),
+    hv35Rename: (a) => { H.renaming = a.dataset.id; render(); const i = $('#edProps .hv35-rn'); i && (i.focus(), i.select()); },
+    hv35Del: (a) => { H.del = a.dataset.id; render(); },
+    hv35DelNo: () => { H.del = null; render(); },
+    hv35DelYes: async (a) => { H.del = null; try { await api(`${vPath()}/${a.dataset.id}`, { method: 'DELETE' }); toast('Version deleted'); } catch (e) { toast('The version couldn’t be deleted'); } load(true); },
+    hv35Retry: () => load(true),
+  });
+  document.addEventListener('keydown', async (e) => {
+    const i = e.target.closest && e.target.closest('#edProps .hv35-in, #edProps .hv35-rn'); if (!i) return;
+    e.stopPropagation(); if (e.key === 'Escape') { H.naming = false; H.renaming = null; return render(); } if (e.key !== 'Enter') return;
+    const name = i.value.trim();
+    if (i.classList.contains('hv35-in')) {
+      H.naming = false; render();
+      try { const v = await saveVersion(name || 'Version', false); toast(`Saved “${(v && v.name) || name || 'Version'}”`); } catch (x) { toast('The version couldn’t be saved'); }
+    } else {
+      const id = H.renaming; H.renaming = null; render();
+      if (name) try { await api(`${vPath()}/${id}`, { method: 'PATCH', body: { name } }); } catch (x) { toast('The version couldn’t be renamed'); }
+    }
+    load(true);
+  }, true);
+
+  function historyHTML() {
+    const L = H.list || [], edit = canEdit();
+    const head = (edit ? (H.naming ? '<input class="field sm hv35-in" placeholder="Name this version, then Enter" aria-label="Version name">' : `<button class="btn primary sm" data-act="hv35Save">${ic('plus', 16)}Save version</button>`) : '')
+      + '<p class="xs-t muted">Saved versions of this design. One is taken automatically when you open it; give it a name to keep it.</p>';
+    if (H.loading && !H.list) return head + '<p class="sm-t muted">Loading…</p>';
+    if (H.err) return head + `<div class="note warn"><span>${H.err} <button class="btn link sm" data-act="hv35Retry">Try again</button></span></div>`;
+    if (!L.length) return head + '<p class="sm-t muted">No versions yet.</p>';
+    return head + `<div class="hv35-l">${L.map((v) => `<div class="hv35-i${v.auto ? ' auto' : ''}">`
+      + (H.renaming === v.id ? `<input class="field sm hv35-rn" value="${esc(v.name)}" aria-label="Version name">` : `<button type="button" class="hv35-n" data-act="hv35Preview" data-id="${v.id}"><b>${esc(v.name)}</b><small>${ago(v.createdAt)}${v.createdByName ? ' · ' + esc(v.createdByName) : ''}${v.auto ? ' · autosave' : ''}</small></button>`)
+      + (H.del === v.id ? `<div class="hv35-a"><span class="xs-t">Delete?</span><button class="btn link sm" data-act="hv35DelYes" data-id="${v.id}" style="color:var(--neg)">Delete</button><button class="btn link sm" data-act="hv35DelNo">Keep</button></div>`
+        : `<div class="hv35-a"><button class="btn ghost icon sm" data-act="hv35Preview" data-id="${v.id}" data-tip="Preview">${ic('eye', 15)}</button>${edit ? `<button class="btn ghost icon sm" data-act="hv35Restore" data-id="${v.id}" data-tip="Restore">${ic('history', 15)}</button><button class="btn ghost icon sm" data-act="hv35Rename" data-id="${v.id}" data-tip="${v.auto ? 'Name it to keep it' : 'Rename'}">${ic('type', 15)}</button><button class="btn ghost icon sm" data-act="hv35Del" data-id="${v.id}" data-tip="Delete">${ic('trash', 15)}</button>` : ''}</div>`)
+      + '</div>').join('')}</div>`;
+  }
+  const _ep35 = edProps;
+  edProps = function () {
+    const r = _ep35.apply(this, arguments), tabs = $('#edProps .tabs');
+    if (tabs && !tabs.querySelector('[data-k=history]')) tabs.insertAdjacentHTML('beforeend', `<button class="${ED.rtab === 'history' ? 'on' : ''}" data-act="edRTab" data-k="history">History</button>`);
+    if (ED.rtab === 'history') {
+      tabs && tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.k === 'history'));
+      const b = $('#edProps .body'); if (b) { b.className = 'body hv35'; b.innerHTML = historyHTML(); }
+      if (H.for !== (ED.d && ED.d.id)) setTimeout(() => load(), 0);
+    }
+    return r;
+  };
+  // opening a design: an autosave of it as it is now (skipped by the API when nothing changed since the last version)
+  const _oe35 = openEditor;
+  openEditor = function () {
+    _oe35.apply(this, arguments); H.list = null; H.for = null; H.naming = false; H.renaming = null; H.del = null;
+    const d = ED.d; if (!d || !canEdit()) return;
+    setTimeout(() => saveVersion('', true, d).then(() => { if (ED.d === d && ED.rtab === 'history') load(true); }).catch(() => {}), 1200);
+  };
+})();
+
+/* ============ v36 · comments pinned on the canvas (threads, replies, resolve) ============ */
+/* Comment mode (Shift C, or the toolbar button): click the canvas to start a thread there; the pin keeps to the layer it
+   was put on. Every signed-in member, viewers too, can comment, reply and resolve; the author or an admin deletes.
+   Other people's comments come in on a light poll while the editor is open. */
+(function () {
+  Object.assign(IC, { cm36: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' });
+  const C = { list: [], for: null, mode: false, open: null, draft: null, showDone: false, busy: false };
+  const cPath = () => `/social/brands/${encodeURIComponent(S.active)}/designs/${encodeURIComponent(ED.d.id)}/comments`;
+  const me = () => String(user._id || user.id || ''), isAdmin = () => user.role === 'admin';
+  const threads = () => C.list.filter((c) => !c.parentId), replies = (id) => C.list.filter((c) => c.parentId === id);
+  const num = (t) => threads().indexOf(t) + 1, openCount = () => threads().filter((t) => !t.resolved).length;
+  const ago = (t) => { const s = (Date.now() - new Date(t).getTime()) / 1000; if (s < 60) return 'Just now'; if (s < 3600) return Math.round(s / 60) + ' min'; if (s < 86400) return Math.round(s / 3600) + ' h'; return new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); };
+  const initials = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+  async function load(quiet) {
+    const d = ED.d; if (!d) return;
+    try {
+      const L = await api(cPath()); if (ED.d !== d) return;
+      const changed = C.for !== d.id || JSON.stringify(L) !== JSON.stringify(C.list); C.list = L; C.for = d.id;
+      if (changed || !quiet) refresh();
+    } catch (e) { if (!quiet) toast('Comments couldn’t be loaded'); }
+  }
+  function refresh() { drawPins(); badge(); if (ED.rtab === 'comments') edProps(); }
+  /** Where a thread's pin sits: on its layer (following it), or at its point once the layer is gone */
+  function pinAt(t) {
+    const pg = ED.d.pages.find((p) => p.id === t.pageId), l = pg && t.layerId && pg.layers.find((x) => x.id === t.layerId);
+    return l && t.lx != null ? [l.x + t.lx, l.y + t.ly] : [t.x, t.y];
+  }
+  const visible = () => C.mode || ED.rtab === 'comments';
+  function drawPins() {
+    const sca = $('#scaler'); if (!sca || !ED.d) return;
+    let box = $('#pins'); if (!box) { sca.insertAdjacentHTML('beforeend', '<div id="pins"></div>'); box = $('#pins'); }
+    const pid = curP().id;
+    const ts = visible() ? threads().filter((t) => t.pageId === pid && (!t.resolved || C.showDone || C.open === t.id)) : [];
+    box.innerHTML = ts.map((t) => { const [x, y] = pinAt(t); return `<button type="button" class="pin36${t.resolved ? ' done' : ''}${C.open === t.id ? ' on' : ''}" data-pin="${t.id}" style="left:${x}px;top:${y}px" title="${esc(t.authorName)}: ${esc(t.text.slice(0, 60))}">${num(t)}</button>`; }).join('')
+      + (C.draft && C.draft.pageId === pid ? `<span class="pin36 on draft" style="left:${C.draft.x}px;top:${C.draft.y}px">+</span>` : '');
+    popover();
+  }
+  function badge() { const b = $('#edCm36'); if (!b) return; b.classList.toggle('on', C.mode); const n = openCount(); b.querySelector('.n36') && b.querySelector('.n36').remove(); if (n) b.insertAdjacentHTML('beforeend', `<span class="n36">${n}</span>`); }
+  const msg = (c) => `<div class="m36"><span class="av36">${initials(c.authorName)}</span><div class="m36-b"><div class="m36-h"><b>${esc(c.authorName || 'Someone')}</b><small>${ago(c.createdAt)}${c.edited ? ' · edited' : ''}</small>${(c.authorId && c.authorId === me()) || isAdmin() ? `<button type="button" class="btn ghost icon sm" data-act="cm36Del" data-id="${c.id}" data-tip="Delete">${ic('trash', 13)}</button>` : ''}</div><p>${esc(c.text).replace(/\n/g, '<br>')}</p></div></div>`;
+  /** The thread (or the new comment) next to its pin, on top of the editor */
+  function popover() {
+    let pop = $('#pop36'); const open = C.open && C.list.find((c) => c.id === C.open), pin = open ? $(`#pins [data-pin="${open.id}"]`) : C.draft ? $('#pins .draft') : null;
+    if (!pin) { pop && pop.remove(); return; }
+    if (!pop) { // made with the runtime's createElement, so leaving the workspace removes it (runtime.js)
+      pop = document.createElement('div'); pop.id = 'pop36'; pop.className = 'pop36'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', 'Comment thread'); document.body.append(pop);
+    }
+    const key = open ? open.id + '|' + JSON.stringify(replies(open.id).map((r) => r.id)) + open.resolved : 'draft';
+    if (pop.dataset.k !== key) {
+      pop.dataset.k = key;
+      pop.innerHTML = open
+        ? `<div class="pop36-h"><b>Comment ${num(open)}</b>${open.resolved ? `<span class="xs-t muted">Resolved${open.resolvedByName ? ' by ' + esc(open.resolvedByName) : ''}</span>` : ''}<span class="grow"></span><button type="button" class="btn ghost sm" data-act="cm36Resolve">${open.resolved ? 'Reopen' : `${ic('check', 14)}Resolve`}</button><button type="button" class="btn ghost icon sm" data-act="cm36Close" aria-label="Close">${ic('x', 15)}</button></div>`
+          + `<div class="pop36-l">${[open, ...replies(open.id)].map(msg).join('')}</div><textarea class="field pop36-in" rows="2" placeholder="Reply… (Enter to send, Shift Enter for a new line)" aria-label="Reply"></textarea>`
+        : `<div class="pop36-h"><b>New comment</b><span class="grow"></span><button type="button" class="btn ghost icon sm" data-act="cm36Close" aria-label="Close">${ic('x', 15)}</button></div><textarea class="field pop36-in" rows="3" placeholder="Add a comment… (Enter to send)" aria-label="Comment"></textarea>`;
+      const i = $('.pop36-in', pop); i && setTimeout(() => i.focus(), 0);
+    }
+    const r = pin.getBoundingClientRect(), w = pop.offsetWidth || 300, h = pop.offsetHeight || 200;
+    pop.style.left = Math.max(8, Math.min(r.right + 10, innerWidth - w - 8)) + 'px'; pop.style.top = Math.max(8, Math.min(r.top - 10, innerHeight - h - 8)) + 'px';
+  }
+  async function send(text) {
+    text = text.trim(); if (!text || C.busy) return; C.busy = true;
+    try {
+      if (C.draft) { const c = await api(cPath(), { method: 'POST', body: { text, ...C.draft } }); C.list.push(c); C.draft = null; C.open = c.id; }
+      else if (C.open) { const c = await api(cPath(), { method: 'POST', body: { text, parentId: C.open } }); C.list.push(c); const t = C.list.find((x) => x.id === C.open); if (t) t.resolved = false; }
+    } catch (e) { toast('The comment couldn’t be sent'); }
+    C.busy = false; const p = $('#pop36'); p && (p.dataset.k = ''); refresh();
+  }
+  function setMode(on) {
+    C.mode = on; if (!on) { C.draft = null; C.open = null; }
+    const s = $('#edScroll'); s && s.classList.toggle('cm-on', on); refresh();
+    if (on) { ED.sel = null; ED.ms = []; drawSel(); toast('Comments: click anywhere on the slide to leave a comment. Esc to leave.'); }
+  }
+  Object.assign(ACT, {
+    cm36Mode: () => setMode(!C.mode),
+    cm36Close: () => { C.open = null; C.draft = null; refresh(); },
+    cm36Resolve: async () => {
+      const t = C.list.find((c) => c.id === C.open); if (!t) return;
+      try { const u = await api(`${cPath()}/${t.id}`, { method: 'PATCH', body: { resolved: !t.resolved } }); Object.assign(t, u); if (u.resolved && !C.showDone) C.open = null; } catch (e) { toast('Couldn’t update the comment'); }
+      refresh();
+    },
+    cm36Del: async (a) => {
+      const id = a.dataset.id, c = C.list.find((x) => x.id === id); if (!c) return;
+      try { await api(`${cPath()}/${id}`, { method: 'DELETE' }); C.list = C.list.filter((x) => x.id !== id && x.parentId !== id); if (C.open === id) C.open = null; } catch (e) { toast('Couldn’t delete the comment'); }
+      refresh();
+    },
+    cm36Go: (a) => { const t = C.list.find((c) => c.id === a.dataset.id); if (!t) return; const i = ED.d.pages.findIndex((p) => p.id === t.pageId); if (i >= 0 && i !== ED.pi) { ED.pi = i; edAll(); } C.open = t.id; if (!C.mode) setMode(true); else refresh(); },
+    cm36Done: () => { C.showDone = !C.showDone; refresh(); },
+  });
+  // in comment mode a click starts a thread (pins and the popover take theirs); before any layer handler
+  addEventListener('pointerdown', (e) => {
+    if (!C.mode || !document.body.classList.contains('in-editor') || e.button !== 0) return;
+    if (e.target.closest('#pop36')) return;
+    const pin = e.target.closest('#pins [data-pin]');
+    if (pin) { e.preventDefault(); e.stopImmediatePropagation(); C.open = C.open === pin.dataset.pin ? null : pin.dataset.pin; C.draft = null; return refresh(); }
+    const sca = $('#scaler'), sc = $('#edScroll'); if (!sca || !sc || !sc.contains(e.target)) return;
+    e.preventDefault(); e.stopImmediatePropagation();
+    const [W, H] = dim(), r = sca.getBoundingClientRect(), z = r.width / W || ED.zoom, x = (e.clientX - r.left) / z, y = (e.clientY - r.top) / z; // the scale on screen
+    if (x < 0 || y < 0 || x > W || y > H) { C.draft = null; C.open = null; return refresh(); } // off the slide: just closes
+    // the layer under the point (not the page background), so the pin follows it
+    const ly = document.elementsFromPoint(e.clientX, e.clientY).map((el) => el.closest && el.closest('#poster .ly')).find(Boolean), l = ly && curP().layers.find((q) => q.id === ly.dataset.id && !(q.locked && q.name === 'Background'));
+    C.open = null; C.draft = { pageId: curP().id, x: Math.round(x), y: Math.round(y), ...(l ? { layerId: l.id, lx: Math.round(x - l.x), ly: Math.round(y - l.y) } : {}) }; refresh();
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    const i = e.target.closest && e.target.closest('#pop36 .pop36-in');
+    if (i) { e.stopPropagation(); if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(i.value); } else if (e.key === 'Escape') ACT.cm36Close(); return; }
+    if (!document.body.classList.contains('in-editor') || ED.editing) return;
+    const tag = (e.target.tagName || '').toLowerCase(); if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && e.code === 'KeyC') { e.preventDefault(); e.stopImmediatePropagation(); setMode(!C.mode); }
+    else if (C.mode && e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); if (C.open || C.draft) ACT.cm36Close(); else setMode(false); }
+  }, true);
+
+  /* ---------- the Comments tab ---------- */
+  function listHTML() {
+    const ts = threads(), open = ts.filter((t) => !t.resolved), done = ts.filter((t) => t.resolved);
+    const row = (t) => { const pi = ED.d.pages.findIndex((p) => p.id === t.pageId), n = replies(t.id).length; return `<button type="button" class="c36${C.open === t.id ? ' on' : ''}${t.resolved ? ' done' : ''}" data-act="cm36Go" data-id="${t.id}"><span class="pin36 s">${num(t)}</span><span class="c36-b"><span class="c36-h"><b>${esc(t.authorName || 'Someone')}</b><small>${ago(t.createdAt)}${ED.d.pages.length > 1 && pi >= 0 ? ` · slide ${pi + 1}` : ''}</small></span><span class="c36-t">${esc(t.text)}</span>${n ? `<small>${n} repl${n === 1 ? 'y' : 'ies'}</small>` : ''}</span></button>`; };
+    return `<button class="btn ${C.mode ? 'secondary' : 'primary'} sm" data-act="cm36Mode">${ic('cm36', 16)}${C.mode ? 'Stop commenting' : 'Add a comment'}<span class="kbd" style="margin-left:6px">Shift C</span></button>`
+      + (open.length ? `<div class="c36-l">${open.map(row).join('')}</div>` : '<p class="sm-t muted">No open comments on this design.</p>')
+      + (done.length ? `<button class="btn link sm" data-act="cm36Done">${C.showDone ? 'Hide' : 'Show'} ${done.length} resolved</button>${C.showDone ? `<div class="c36-l">${done.map(row).join('')}</div>` : ''}` : '');
+  }
+  const _ep36 = edProps;
+  edProps = function () {
+    const r = _ep36.apply(this, arguments), tabs = $('#edProps .tabs');
+    if (tabs && !tabs.querySelector('[data-k=comments]')) tabs.insertAdjacentHTML('beforeend', `<button class="${ED.rtab === 'comments' ? 'on' : ''}" data-act="edRTab" data-k="comments">Comments</button>`);
+    if (ED.rtab === 'comments') {
+      tabs && tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.k === 'comments'));
+      const b = $('#edProps .body'); if (b) { b.className = 'body cm36b'; b.innerHTML = listHTML(); }
+      drawPins();
+    }
+    return r;
+  };
+  const _st36 = edStage; edStage = function () { const r = _st36.apply(this, arguments); drawPins(); return r; };
+  const _az36 = applyZoom; applyZoom = function () { _az36.apply(this, arguments); drawPins(); };
+  const _rl36 = refreshL; refreshL = function () { _rl36.apply(this, arguments); if (C.list.length && visible()) drawPins(); }; // pins follow layers being moved
+  const _oe36 = openEditor;
+  openEditor = function () {
+    Object.assign(C, { list: [], for: null, mode: false, open: null, draft: null });
+    _oe36.apply(this, arguments);
+    const at = $('#edSafe'); at && at.insertAdjacentHTML('beforebegin', `<button class="btn ghost icon sm cm36btn" id="edCm36" data-act="cm36Mode" title="Comments (Shift C)">${ic('cm36', 18)}</button>`);
+    const sc = $('#edScroll'); sc && sc.addEventListener('scroll', () => popover(), { passive: true });
+    load(true);
+  };
+  addEventListener('resize', () => popover());
+  setInterval(() => { if (ED.d && document.body.classList.contains('in-editor') && document.visibilityState === 'visible' && !C.busy && !$('#pop36 .pop36-in:focus')) load(true); }, 30000);
 })();
 
 /* ============ first paint, with every renderer installed ============ */
