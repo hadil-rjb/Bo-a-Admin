@@ -931,7 +931,8 @@ document.addEventListener('drop', (e) => {
 });
 
 /* ---------- Studio (design hub) ---------- */
-const ST = { tab: 0, q: '' };
+const ST = { tab: 0, q: '', page: 0 };
+const ST_PER = 12;
 PAGES.studio = {
   t: 'Studio', s: 'Design posts for every platform, or bring them in from Figma.',
   actions: () => `<button class="btn secondary" data-act="figma">${ic('figma')}<span class="hide-sm">Import from Figma</span></button><button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
@@ -944,10 +945,18 @@ PAGES.studio = {
     const none = (icon, title, text, cta) => `<div class="lib-empty">${ic(icon, 24)}<b>${title}</b><p>${text}</p>${cta || ''}</div>`;
     const miss = () => none('search', 'No results', `Nothing matches “${esc(ST.q.trim())}”.`, `<button class="btn secondary sm" data-act="stClear">Clear search</button>`);
     const tplCard = ({ t, b }) => `<div class="card tp"${allOn() ? ` data-brand="${b.id}"` : ''}><button class="pv" data-act="fromBTpl" data-id="${t.id}" aria-label="New design from ${esc(t.name)}">${allOn() ? `<span class="bmark" title="${esc(b.name)}">${brandAv(b, 'xs')}</span>` : ''}${btThumb(t, 190, 215)}</button><div class="meta"><b>${esc(t.name)}</b><small>${ratioLabel(t.ratio)}${allOn() ? ' · ' + esc(b.name) : ''}</small></div></div>`;
+    // one page of the active library, with a pager under it
+    const list = ST.tab === 1 ? ts : ds, pages = Math.max(1, Math.ceil(list.length / ST_PER));
+    ST.page = Math.min(Math.max(0, ST.page), pages - 1);
+    const from = ST.page * ST_PER, shown = list.slice(from, from + ST_PER);
+    const pager = pages < 2 ? '' : `<nav class="pager" aria-label="Pages"><span class="xs-t muted">${from + 1}–${from + shown.length} of ${list.length}</span><span class="grow"></span>
+      <button class="btn secondary icon sm" data-act="stPage" data-p="${ST.page - 1}" ${ST.page ? '' : 'disabled'} aria-label="Previous page">${ic('chevL', 16)}</button>
+      ${[...Array(pages)].map((_, i) => i).filter((i) => pages <= 7 || i === 0 || i === pages - 1 || Math.abs(i - ST.page) <= 1).reduce((a, i, k, arr) => a + (k && i - arr[k - 1] > 1 ? '<span class="st-gap">…</span>' : '') + `<button class="btn ${i === ST.page ? 'primary' : 'ghost'} sm st-pn" data-act="stPage" data-p="${i}" ${i === ST.page ? 'aria-current="page"' : ''}>${i + 1}</button>`, '')}
+      <button class="btn secondary icon sm" data-act="stPage" data-p="${ST.page + 1}" ${ST.page < pages - 1 ? '' : 'disabled'} aria-label="Next page">${ic('chevR', 16)}</button></nav>`;
     let body;
-    if (ST.tab === 1) body = ts.length ? `<div class="cards">${ts.map(tplCard).join('')}</div>` : q && tpls.length ? miss()
+    if (ST.tab === 1) body = ts.length ? `<div class="cards">${shown.map(tplCard).join('')}</div>${pager}` : q && tpls.length ? miss()
       : none('layout', 'No templates yet', 'Open a design and choose “Save slide as brand template” to reuse its layout here.', S.designs.length ? '' : `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
-    else body = ds.length ? `<div class="cards">${ds.map((d) => designCard(d)).join('')}</div>` : q && S.designs.length ? miss()
+    else body = ds.length ? `<div class="cards">${shown.map((d) => designCard(d)).join('')}</div>${pager}` : q && S.designs.length ? miss()
       : none('image', 'No designs yet', 'Pick a format above to start, or import frames from Figma.', `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
     const tab = (i, l, n) => `<button class="${ST.tab === i ? 'on' : ''}" data-act="stab" data-i="${i}" role="tab" aria-selected="${ST.tab === i}">${l}<span class="lib-n">${n}</span></button>`;
     return `<div class="tiles">${tile('1:1', 'Square post', '1080 × 1080', 26, 26)}${tile('4:5', 'Portrait post', '1080 × 1350', 22, 28)}${tile('9:16', 'Story / Reel', '1080 × 1920', 18, 32)}${tile('4:5', 'Carousel', '3 slides · 4:5', 22, 28, 3)}</div>
@@ -955,9 +964,10 @@ PAGES.studio = {
       <label class="lib-q">${ic('search', 16)}<input id="stq" type="search" placeholder="Search ${ST.tab === 1 ? 'templates' : 'designs'}" value="${esc(ST.q)}" aria-label="Search ${ST.tab === 1 ? 'templates' : 'designs'}"></label></div>${body}`;
   },
 };
-ACT.stab = (a) => { ST.tab = +a.dataset.i; route(); };
-ACT.stClear = () => { ST.q = ''; route(); $('#stq') && $('#stq').focus(); };
-document.addEventListener('input', (e) => { if (e.target.id === 'stq') { ST.q = e.target.value; const p = e.target.selectionStart; route(); const n = $('#stq'); n.focus(); n.setSelectionRange(p, p); } });
+ACT.stab = (a) => { ST.tab = +a.dataset.i; ST.page = 0; route(); };
+ACT.stPage = (a) => { ST.page = +a.dataset.p; route(); const b = $('.lib-bar'); b && b.scrollIntoView({ block: 'start', behavior: 'smooth' }); };
+ACT.stClear = () => { ST.q = ''; ST.page = 0; route(); $('#stq') && $('#stq').focus(); };
+document.addEventListener('input', (e) => { if (e.target.id === 'stq') { ST.q = e.target.value; ST.page = 0; const p = e.target.selectionStart; route(); const n = $('#stq'); n.focus(); n.setSelectionRange(p, p); } });
 
 /* ---------- Brand kit (one per brand workspace) ---------- */
 const BK = { tab: 'info' };
@@ -1053,8 +1063,6 @@ function openBrands() {
       ${S.brands.length > 1 ? `<button class="btn ghost icon sm" data-act="delBrand" data-id="${b.id}" title="Delete brand" aria-label="Delete ${esc(b.name)}">${ic('trash', 16)}</button>` : ''}</div>`; };
   const view = () => `<div class="mh"><h2>Your brands</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
     <div class="mb" style="gap:12px">
-      <div class="br-tools"><span class="xs-t muted">Sort</span><div class="seg br-sort">${[['az', 'A–Z'], ['recent', 'Recently used'], ['busy', 'Most scheduled']].map(([k, l]) => `<button data-act="brSort" data-k="${k}">${l}</button>`).join('')}</div></div>
-      <p class="xs-t muted">Drag a brand to change the order of the switcher. Click a photo to change it.</p>
       <div class="br-list">${S.brands.map(row).join('')}</div>
       ${S.brands.length > 1 ? `<button class="br-all ${allOn() ? 'on' : ''}" data-act="allBrands">${allAv('md')}<span class="grow"><b>All brands in one workspace</b><small>Overview, planner and designs of every brand together</small></span>${allOn() ? '<span class="badge b-Published">On</span>' : ic('chevR', 16)}</button>` : ''}
     </div>
@@ -1333,11 +1341,6 @@ Object.assign(ACT, {
   allBrands: () => { closeModals(); closeDrawer(); S.set.allBrands = true; save(); renderSide(); if (/^#\/(brand|settings|profile|editor)/.test(location.hash)) location.hash = '#/overview'; else route(); toast('All brands in one workspace'); },
   brandPhoto: (a) => { const b = S.brands.find((x) => x.id === (a.dataset.id || S.active)); if (b && canEdit()) openBrandPhoto(b); },
   brMove: (a) => { const i = S.brands.findIndex((x) => x.id === a.dataset.id), j = i + +a.dataset.n; if (i < 0 || j < 0 || j >= S.brands.length) return; const [m] = S.brands.splice(i, 1); S.brands.splice(j, 0, m); save(); renderSide(); BR.paint && BR.paint(); },
-  brSort: (a) => {
-    const k = a.dataset.k, sch = (b) => ((S.data[b.id] || { posts: [] }).posts.filter((p) => p.status === 'Scheduled').length);
-    S.brands.sort(k === 'az' ? (x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: 'base' }) : k === 'recent' ? (x, y) => (y.lastUsed || 0) - (x.lastUsed || 0) : (x, y) => sch(y) - sch(x));
-    save(); renderSide(); BR.paint && BR.paint(); toast(k === 'az' ? 'Sorted A–Z' : k === 'recent' ? 'Sorted by last used' : 'Sorted by scheduled posts');
-  },
   manageBrands: () => { closeModals(); closeDrawer(); openBrands(); },
   bkTab: (a) => { BK.tab = a.dataset.k; rerender(); },
   bkGo: (a) => { if (a.dataset.tab) { BK.tab = a.dataset.tab; location.hash === '#/brand' ? route() : (location.hash = '#/brand'); } else location.hash = a.dataset.href; },
@@ -2027,16 +2030,17 @@ function aabb(l) {
 /* ---------- history ---------- */
 function touch() { ED.d.upd = 'Just now', ED.d.at = Date.now(); const s = $('#savetxt'); if (s) s.innerHTML = '<i></i>Saved'; autoName(ED.d); }
 /** Automatic name: while a design still has the default name (or the last automatic one), it takes its
-    biggest headline on the first slide, e.g. "Economic Calendar". Naming it by hand turns this off. */
+    biggest headline on the first slide, e.g. "Economic Calendar". It happens once: after that the name
+    stays as it is until someone changes it by hand. */
 function autoName(d) {
   if (!d || d.named || !(/^Untitled design/.test(d.name || '') || (d.auto && d.name === d.auto))) return false;
   const pg = d.pages && d.pages[0]; if (!pg) return false;
-  const big = pg.layers.filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim().length > 1).sort((a, b) => (b.size || 0) - (a.size || 0) || a.y - b.y)[0];
+  const big = pg.layers.filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim().length > 1 && !/^(your (heading|subheading)|write something short)/i.test(String(l.text).trim())).sort((a, b) => (b.size || 0) - (a.size || 0) || a.y - b.y)[0];
   if (!big) return false;
   let n = String(big.text).replace(/\s+/g, ' ').trim();
   if (n.length > 48) n = n.slice(0, 48).replace(/\s+\S*$/, '') + '…';
   if (!n || n === d.name) return false;
-  d.name = d.auto = n;
+  d.name = d.auto = n; d.named = true;
   const f = document.getElementById('edName'); if (f && ED.d === d && document.activeElement !== f) f.value = n;
   return true;
 }
@@ -6029,7 +6033,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       const mon = addDay(start, r * 7); if (r === 5 && mon.slice(0, 7) !== ym) break;
       const on = wk && selW[0] === mon;
       rows.push(`<div class="lv-cal-w ${wk ? 'wk' : ''} ${on ? 'on' : ''}">${[0, 1, 2, 3, 4, 5, 6].map((i) => {
-        const dd = addDay(mon, i), cls = [dd.slice(0, 7) !== ym && 'out', dd === today && 'today', i > 4 && 'we', !wk && dd === shownDate && 'sel', wk && on && i < 5 && 'in'].filter(Boolean).join(' ');
+        const dd = addDay(mon, i), cls = [dd.slice(0, 7) !== ym && 'out', dd === today && 'today', i > 4 && 'we', !wk && dd === shownDate && 'picked', wk && on && i < 5 && 'in'].filter(Boolean).join(' ');
         return `<button class="${cls}" data-act="lvCalPick" data-d="${wk ? mon : dd}" aria-label="${esc(fmt(new Date(dd + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))}">${+dd.slice(8)}</button>`;
       }).join('')}</div>`);
     }
@@ -9839,6 +9843,13 @@ function clipCss(l, frames) {
    (mixed text runs, text effects, image adjustments, Google Fonts…). Draw it again so the canvas,
    thumbnails and exports all use the same renderer, also when the editor is opened from a link or a reload. */
 renderSide(); route();
+
+/* While a text is being edited, a press anywhere else ends the edit first, so that press can select or
+   move another layer (the canvas handlers cancel the default, so the text would never lose focus). */
+document.addEventListener('pointerdown', (e) => {
+  if (!ED.editing) return; const el = elOf(ED.editing);
+  if (el && !el.contains(e.target) && !(e.target.closest && e.target.closest('#edProps, #ftb'))) el.blur();
+}, true);
 
 /* designs still called "Untitled design" pick up their headline when opened */
 { const _oeName = openEditor; openEditor = function (id) { const r = _oeName.apply(this, arguments); if (ED.d && autoName(ED.d)) save(); return r; }; }

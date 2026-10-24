@@ -1804,7 +1804,7 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .lv-cal-w button.out{color:var(--text-3);opacity:.55}
 .lv-cal-w button.we{color:var(--text-3)}
 .lv-cal-w button.today{box-shadow:inset 0 0 0 1px var(--accent);font-weight:600}
-.lv-cal-w button.sel{background:var(--accent);color:#fff;font-weight:600}
+.lv-cal-w button.picked{background:var(--accent);color:#fff;font-weight:600}
 /* weekly: the whole row is one choice */
 .lv-cal-w.wk{cursor:pointer}
 .lv-cal-w.wk:hover{background:var(--pill)}
@@ -2701,4 +2701,14 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
   .ed-rail button:hover{background:var(--pill);color:var(--text-1)}.ed-rail button:hover .ic{color:var(--text-1)}
   .ed-rail button.on{background:rgba(253,14,53,.08);color:var(--text-1);font-weight:600}.ed-rail button.on .ic{color:var(--accent)}
 }
+}}
+/* shortcut chips inside filled buttons (e.g. "Add a comment  Shift C") */
+@layer components{:where([data-ws="social"]){
+.btn.primary .kbd{border-color:rgba(255,255,255,.35);background:rgba(255,255,255,.16);color:#fff;font-weight:500;line-height:16px}
+#edProps .btn[data-act=cm36Mode]{width:100%;height:36px;gap:8px}
+#edProps .btn[data-act=cm36Mode] .kbd{margin-left:auto!important}
+/* Studio library pager */
+.pager{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-top:4px}
+.pager .st-pn{min-width:32px;padding:0 8px}
+.pager .st-gap{padding:0 2px;color:var(--text-3)}
 }}
