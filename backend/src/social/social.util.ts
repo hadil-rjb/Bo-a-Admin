@@ -10,6 +10,10 @@ export const strip = <T extends Record<string, any>>(doc: T | null | undefined):
   return out;
 };
 
+/** Design "last edited" time sent to the client (from the database's updatedAt). Read-only: dropped from saves. */
+export const withAt = (doc: Record<string, any>): Record<string, any> => ({ ...strip(doc), at: doc.updatedAt ? new Date(doc.updatedAt).getTime() : undefined });
+export const dropAt = <T extends Record<string, any>>({ at: _at, ...item }: T) => item;
+
 export const hashOf = (v: unknown) => createHash("sha1").update(JSON.stringify(v)).digest("hex");
 
 /** Same id style as the client (uid()) */

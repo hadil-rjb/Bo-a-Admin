@@ -7,7 +7,7 @@ import { SocialDesign } from "./schemas/design.schema";
 import { SocialPost } from "./schemas/post.schema";
 import { SocialTemplate } from "./schemas/template.schema";
 import { SocialWorkspace, WORKSPACE_ID } from "./schemas/workspace.schema";
-import { hashOf, strip } from "./social.util";
+import { dropAt, hashOf, strip, withAt } from "./social.util";
 import { mergePost } from "./publishing/post-state";
 import { ConnectionsService } from "./publishing/connections.service";
 import { NotionService } from "./notion/notion.service";
@@ -54,7 +54,7 @@ export class WorkspaceService {
       // Brand templates have their own collection (see BrandsService)
       return { id: b._id, ...strip(kit), templates: templates.filter((t) => t.brandId === b._id).map(strip) };
     });
-    designs.forEach((d) => data[d.brandId]?.designs.push(strip(d)));
+    designs.forEach((d) => data[d.brandId]?.designs.push(withAt(d)));
     posts.forEach((p) => data[p.brandId]?.posts.push(strip(p)));
 
     const active = ws && kits.some((b) => b.id === ws.active) ? ws.active : kits[0].id;
@@ -173,7 +173,7 @@ export class WorkspaceService {
   private async applyDesigns(upserts: { brandId: string; item: Item; rev?: number }[] = []) {
     const revs: Record<string, number> = {};
     const conflicts: { brandId: string; item: Item; rev: number }[] = [];
-    const list = upserts.filter((u) => u.item && u.item.id);
+    const list = upserts.filter((u) => u.item && u.item.id).map((u) => ({ ...u, item: dropAt(u.item) as Item }));
     if (!list.length) return { revs, conflicts };
     type Row = { brandId: string; id: string; order: number; hash?: string; rev?: number };
     const stored = new Map(
@@ -183,7 +183,7 @@ export class WorkspaceService {
     const conflict = async (brandId: string, id: string) => {
       const d = await this.designs.findOne({ brandId, id }).lean<Record<string, any>>();
       if (!d) return;
-      const { rev = 0, ...item } = strip(d)!;
+      const { rev = 0, ...item } = withAt(d);
       conflicts.push({ brandId, item: item as Item, rev });
     };
 
@@ -214,7 +214,7 @@ export class WorkspaceService {
     deleted: { brandId: string; id: string }[] = [],
   ) {
     const pos = (brandId: string, id: string) => order[brandId]?.indexOf(id) ?? -1;
-    const list = upserts.filter((u) => u.item && u.item.id);
+    const list = upserts.filter((u) => u.item && u.item.id).map((u) => ({ ...u, item: dropAt(u.item) as Item }));
     const owned = await this.serverOwned(model, list);
     // An edit without a new order (rename, status…) keeps the item where it was
     const unplaced = list.filter(({ brandId, item }) => pos(brandId, item.id) < 0);
@@ -246,7 +246,7 @@ export class WorkspaceService {
   }
 
   private async syncItems(model: Model<any>, brandId: string, items: Item[]) {
-    const list = items.filter((i) => i && i.id);
+    const list = items.filter((i) => i && i.id).map((i) => dropAt(i) as Item);
     const existing = new Map(
       (await model.find({ brandId }, { id: 1, hash: 1, order: 1, rev: 1 }).lean<{ id: string; hash?: string; order: number; rev?: number }[]>()).map((e) => [e.id, e]),
     );

@@ -601,11 +601,19 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawe
 addEventListener('resize', () => { if (innerWidth > 1024) closeDrawer(); const b = $('#top [data-act=menu]'); if (b) b.style.display = innerWidth > 1024 ? 'none' : 'inline-flex'; });
 
 /* ---------- Shared helpers ---------- */
+/** When a design was last edited: real time from `at` (the server's updatedAt), else the stored label */
+function agoOf(d) {
+  if (!d.at) return d.upd || '';
+  const m = Math.floor((Date.now() - d.at) / 60000), h = Math.floor(m / 60), days = Math.floor(h / 24), t = new Date(d.at);
+  if (m < 1) return 'Just now'; if (m < 60) return m + ' min ago'; if (h < 24) return h + ' h ago';
+  if (days === 1) return 'Yesterday'; if (days < 7) return days + ' days ago';
+  return fmt(t, { day: 'numeric', month: 'short', ...(t.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
+}
 function designCard(d, extra = '') {
   const dd = getD(d.id), [w, h] = RATIOS[d.ratio];
   return `<div class="card dc" data-id="${d.id}">
     <button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}">${thumb(dd.pages[0], d.ratio, 190, 215)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>
-    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${ratioLabel(d.ratio)} · ${dd.pages.length > 1 ? dd.pages.length + ' slides' : w + '×' + h} · ${d.upd}</small>${extra}</div></div>`;
+    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${ratioLabel(d.ratio)} · ${dd.pages.length > 1 ? dd.pages.length + ' slides' : w + '×' + h} · <time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time></small>${extra}</div></div>`;
 }
 
 /* ---------- Designs: create / open / rename / duplicate / status / delete ----------
@@ -637,7 +645,7 @@ Object.assign(ACT, {
     <div class="mb"><label class="lab">Design name<input class="field" id="drN" value="${esc(d.name)}" maxlength="80" autocomplete="off"></label></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="drGo">Save</button></div>`, {
       onMount: (bg, close) => {
-        const i = $('#drN', bg), go = () => { const n = i.value.trim(); if (!n) { i.focus(); return toast('Give the design a name'); } d.name = n; d.upd = 'Just now'; save(); close(); synced('Design renamed'); };
+        const i = $('#drN', bg), go = () => { const n = i.value.trim(); if (!n) { i.focus(); return toast('Give the design a name'); } d.name = n; d.named = true; d.upd = 'Just now', d.at = Date.now(); save(); close(); synced('Design renamed'); };
         $('#drGo', bg).addEventListener('click', go); i.addEventListener('keydown', (e) => e.key === 'Enter' && go());
         setTimeout(() => { i.focus(); i.select(); }, 30);
       },
@@ -646,13 +654,13 @@ Object.assign(ACT, {
   dDup: (a) => {
     const d = getD(a.dataset.id); if (!d || !canEdit()) return;
     const c = JSON.parse(JSON.stringify(d));
-    c.id = 'd' + uid(); c.name = (d.name + ' (copy)').slice(0, 80); c.status = 'Draft'; c.upd = 'Just now';
+    c.id = 'd' + uid(); c.name = (d.name + ' (copy)').slice(0, 80); c.status = 'Draft'; c.upd = 'Just now', c.at = Date.now();
     // the copy is a design of its own: it is not linked to the Figma frame of the original
     if (c.source === 'Figma') { c.source = 'Template'; delete c.figma; }
     (c.pages || []).forEach((pg) => { pg.id = uid(); reIdPage(pg); });
     S.designs.splice(Math.max(0, S.designs.indexOf(d)), 0, c); save(); synced('Design duplicated');
   },
-  dStatus: (a) => { const d = getD(a.dataset.id); if (!d || !canEdit() || d.status === a.dataset.s) return; d.status = a.dataset.s; d.upd = 'Just now'; save(); synced('Marked as ' + d.status); },
+  dStatus: (a) => { const d = getD(a.dataset.id); if (!d || !canEdit() || d.status === a.dataset.s) return; d.status = a.dataset.s; d.upd = 'Just now', d.at = Date.now(); save(); synced('Marked as ' + d.status); },
   dDel: (a) => {
     const d = getD(a.dataset.id); if (!d || !canEdit()) return;
     const n = S.posts.filter((p) => p.d === d.id).length;
@@ -667,12 +675,12 @@ Object.assign(ACT, {
   },
 });
 function createDesign({ name, tpl = 'blank', ratio = '4:5', slides = 1, source = 'Template', mutate }) {
-  const d = { id: 'd' + uid(), name, tpl, ratio, status: 'Draft', source, upd: 'Just now' };
+  const d = { id: 'd' + uid(), name, tpl, ratio, status: 'Draft', source, upd: 'Just now', at: Date.now() };
   if (!RATIOS[ensureRatio(ratio)]) d.ratio = ratio = '4:5'; // unknown size: fall back to the default canvas
   const [w, h] = RATIOS[ratio];
   d.pages = Array.from({ length: slides }, () => ({ id: uid(), bg: '#0b1220', layers: brandize(TPL[tpl].fn(w, h)) }));
   if (FEEDS) d.pages.forEach((pg) => FEEDS.attach(pg, tpl));
-  mutate && mutate(d); S.designs.unshift(d); return d;
+  mutate && mutate(d); autoName(d); S.designs.unshift(d); return d;
 }
 ACT.open = (a) => { location.hash = '#/editor/' + a.dataset.id; };
 ACT.newDesign = (a) => { const d = createDesign({ name: 'Untitled design', ratio: a.dataset.ratio, slides: +a.dataset.slides || 1 }); location.hash = '#/editor/' + d.id; };
@@ -688,7 +696,6 @@ ACT.fromArticle = (a) => {
    schedule (day strip, search, Next up / Ideas / Blog) on the right, recent designs under both.
    Each widget has an id and re-renders on its own, so filters and the search keep their focus. */
 const OV = { day: null, start: null, tab: 'next', q: '', st: 'all', pf: 'all', period: 'last', top: 'week' };
-const OV_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const ovPill = (t, tone = 'n') => `<span class="ov-pill ${tone}">${t}</span>`;
 const ovTone = (s) => (s === 'Published' ? 'g' : s === 'Draft' ? 'n' : 'r');
 const ovSwap = (id, html) => { const el = document.getElementById(id); if (el) el.outerHTML = html; };
@@ -720,25 +727,36 @@ const ovEmpty = (t, s, act = '') => `<div class="ov-empty">${OV_ART}<p><span>${t
 const ovNewBtn = (label = 'New design') => `<a class="btn secondary sm" href="#/studio" data-act="goStudio">${ic('plus', 16)}${label}</a>`;
 
 function ovScheduled() {
-  const ws = monday(new Date()), today = iso(new Date()), on = (p) => OV.pf === 'all' || p.pf.includes(OV.pf);
+  const t0 = new Date(), on = (p) => OV.pf === 'all' || p.pf.includes(OV.pf);
   const n = S.posts.filter((p) => p.status === 'Scheduled' && on(p)).length;
-  const week = OV_DAYS.map((_, i) => { const k = iso(addD(ws, i)); return S.posts.filter((p) => p.date === k && p.status !== 'Draft' && on(p)).length; });
+  // the next 7 days, today first: scheduled posts going out each day
+  const days = [...Array(7)].map((_, i) => addD(t0, i)), vals = days.map((d) => { const k = iso(d); return S.posts.filter((p) => p.date === k && p.status === 'Scheduled' && on(p)).length; });
+  const max = Math.max(...vals, 1), H = 44, nP = (v) => (v ? v + ' post' + (v > 1 ? 's' : '') : 'No posts');
+  const dots = days.map((d, i) => `<b class="ov-dot ${vals[i] ? 'on' : ''}" style="left:${(i / 6 * 100).toFixed(2)}%;top:${((H - 3 - vals[i] / max * (H - 6)) / H * 100).toFixed(2)}%" tabindex="0" aria-label="${fmt(d, { weekday: 'long', day: 'numeric', month: 'long' })}: ${nP(vals[i])}"><em>${i ? fmt(d, { weekday: 'short', day: 'numeric', month: 'short' }) : 'Today'} · ${nP(vals[i])}</em></b>`).join('');
   const nets = Object.keys(PLATFORMS).filter((k) => S.platforms[k] || S.posts.some((p) => p.pf.includes(k)));
   if (OV.pf !== 'all' && !nets.includes(OV.pf)) OV.pf = 'all';
   const face = OV.pf === 'all' ? `<span class="ov-net all">${ic('globe', 13)}</span>` : `<span class="ov-net" style="background:${PLATFORMS[OV.pf].c}">${ic('net_' + OV.pf, 12)}</span>`;
   return `<section class="widget ov-kpi" id="ovKpiS">
     <div class="ov-kh"><div class="grow"><span class="ov-lab">Scheduled posts</span><div class="ov-num"><b>${n}</b>${ovPill(n ? 'in the planner' : 'nothing planned', n ? 'g' : 'n')}</div></div>
       ${ovSel('pf', [['all', 'All networks'], ...nets.map((k) => [k, PLATFORMS[k].n])], face, 'Network')}</div>
-    <div class="ov-week" title="Posts going out this week">${ovSpark(week, 300, 44, week.some(Boolean) ? '' : 'flat')}${OV_DAYS.map((d, i) => `<span class="${iso(addD(ws, i)) === today ? 'on' : ''}">${d}</span>`).join('')}</div>
+    <div class="ov-week"><div class="ov-plot">${ovSpark(vals, 300, H, vals.some(Boolean) ? '' : 'flat')}${dots}</div>${days.map((d, i) => `<span class="${i ? '' : 'on'}">${i ? fmt(d, { weekday: 'short' }) : 'Today'}</span>`).join('')}</div>
   </section>`;
 }
 
-function ovDesigns() {
-  const n = S.designs.length, drafts = S.designs.filter((d) => d.status === 'Draft').length;
-  const slides = S.designs.slice(0, 8).reverse().map((d) => (d.pages ? d.pages.length : d.slides || 1) + 1);
+/** Posts this month: how many go out (scheduled or published) this month, against last month.
+    The curve is the running total across the month, sampled every 4 days. */
+function ovMonthCard() {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth(), mk = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  const cur = mk(now), prevD = new Date(y, m - 1, 1), prev = mk(prevD), out = (p) => p.status !== 'Draft';
+  const ps = S.posts.filter((p) => out(p) && p.date.slice(0, 7) === cur), n = ps.length, before = S.posts.filter((p) => out(p) && p.date.slice(0, 7) === prev).length;
+  const len = new Date(y, m + 1, 0).getDate(), byDay = [0, 4, 8, 12, 16, 20, 24, len].map((day) => ps.filter((p) => +p.date.slice(8, 10) <= day).length);
+  const diff = n - before, pub = ps.filter((p) => p.status === 'Published').length, pm = fmt(prevD, { month: 'short' });
+  const pill = !n && !before ? ovPill('nothing yet', 'n') : ovPill((diff > 0 ? '+' : '') + diff + ' vs ' + pm, diff > 0 ? 'g' : diff < 0 ? 'r' : 'n');
   return `<section class="widget ov-kpi ov-kpi-d" id="ovKpiD">
-    <span class="ov-ico">${ic('studio', 20)}</span>${n > 1 ? ovSpark(slides, 120, 40, 'mini') : ''}
-    <div><span class="ov-lab">Designs</span><div class="ov-num lg"><b>${n}</b>${n ? ovPill(drafts + ' in draft', drafts ? 'r' : 'g') : `<a class="ov-link" href="#/studio">Create the first one</a>`}</div></div>
+    <a class="ov-ico" href="#/planner" title="Open the planner" aria-label="Open the planner">${ic('send', 20)}</a>
+    <span class="ov-mini-c" title="Running total of posts in ${fmt(now, { month: 'long' })}">${ovSpark(byDay, 120, 40, n ? 'mini' : 'mini flat')}</span>
+    <div><span class="ov-lab">Posts in ${fmt(now, { month: 'long' })}</span><div class="ov-num lg"><b>${n}</b>${pill}</div>
+      <span class="ov-cap2">${n ? `${pub} published · ${n - pub} still to go out` : `Nothing planned for ${fmt(now, { month: 'long' })} yet. <a class="ov-link" href="#/planner">Plan a post</a>`}</span></div>
   </section>`;
 }
 
@@ -749,7 +767,7 @@ function ovPublishing() {
     const k = m.getFullYear() + '-' + String(m.getMonth() + 1).padStart(2, '0'), ps = S.posts.filter((p) => p.date.slice(0, 7) === k), c = (s) => ps.filter((p) => p.status === s).length;
     return { m, pub: c('Published'), sch: c('Scheduled'), dr: c('Draft') };
   });
-  const top = Math.max(...rows.map((r) => r.pub + r.sch + r.dr)), step = Math.max(1, Math.ceil(top / 4)), max = step * 4, pc = (v) => (v / max * 100).toFixed(2) + '%';
+  const top = Math.max(...rows.map((r) => r.pub + r.sch + r.dr)), step = Math.max(1, Math.ceil((top + 1) / 4)), max = step * 4, pc = (v) => (v / max * 100).toFixed(2) + '%';
   const pub = S.posts.filter((p) => p.status === 'Published').length, sch = S.posts.filter((p) => p.status === 'Scheduled').length;
   const drafts = S.designs.filter((d) => d.status === 'Draft').length, appr = S.designs.filter((d) => d.status === 'Approved').length;
   const sum = (icon, cls, l, v, pill = '') => `<div class="ov-sum"><span class="ov-ico ${cls}">${ic(icon, 20)}</span><div><span class="ov-cap">${l}</span><div class="ov-num sm"><b>${v}</b>${pill}</div></div></div>`;
@@ -759,7 +777,7 @@ function ovPublishing() {
       ${ovSel('period', [['last', 'Last 12 months'], ['year', 'This year']], `<span>${OV.period === 'year' ? 'This year' : 'Last year'}</span>`, 'Period')}</div>
     <div class="ov-sums">${sum('check', 'c1', 'Published', pub, ovPill('all time', 'g'))}${sum('cal', 'c2', 'Scheduled', sch)}${sum('doc', 'c3', 'Drafts', drafts, ovPill(appr + ' approved', 'r'))}</div>
     <div class="ov-chart"><div class="ov-y">${[4, 3, 2, 1, 0].map((i) => `<span>${i * step}</span>`).join('')}</div>
-      <div class="ov-bars">${rows.map((r) => `<div class="ov-bar" title="${fmt(r.m, { month: 'long', year: 'numeric' })}: ${r.pub} published, ${r.sch} scheduled, ${r.dr} drafts"><span class="ov-stack">${r.pub ? `<i class="c1" style="height:${pc(r.pub)}"></i>` : ''}${r.sch ? `<i class="c2" style="height:${pc(r.sch)}"></i>` : ''}${r.dr ? `<i class="c3" style="height:${pc(r.dr)}"></i>` : ''}</span><span class="ov-m">${fmt(r.m, { month: 'narrow' })}</span></div>`).join('')}
+      <div class="ov-bars">${rows.map((r) => `<div class="ov-bar" tabindex="0" aria-label="${fmt(r.m, { month: 'long', year: 'numeric' })}: ${r.pub} published, ${r.sch} scheduled, ${r.dr} drafts"><em><b>${fmt(r.m, { month: 'long', year: 'numeric' })}</b><span><i class="c1"></i>${r.pub} published</span><span><i class="c2"></i>${r.sch} scheduled</span><span><i class="c3"></i>${r.dr} drafts</span></em><span class="ov-stack">${r.pub ? `<i class="c1" style="height:${pc(r.pub)}"></i>` : ''}${r.sch ? `<i class="c2" style="height:${pc(r.sch)}"></i>` : ''}${r.dr ? `<i class="c3" style="height:${pc(r.dr)}"></i>` : ''}</span><span class="ov-m">${fmt(r.m, { month: 'narrow' })}</span></div>`).join('')}
       ${top ? '' : `<div class="ov-over"><b>No posts in this period</b><span>Schedule a design in the planner to see it here.</span><a class="btn secondary sm" href="#/planner">Open planner</a></div>`}</div></div>
   </section>`;
 }
@@ -800,9 +818,16 @@ function ovList() {
     if (!L.length) return q ? miss : ovEmpty('No blog articles yet.', 'Live articles from Blog Admin show up here.');
     return L.map(({ a, i }) => `<div class="ov-it"><b>${esc(a.t)}</b><div class="ov-itf"><span>${esc(a.c)}</span></div><button class="btn secondary sm" data-act="fromArticle" data-i="${i}">${ic('studio', 16)}Make post</button></div>`).join('');
   }
-  const L = S.posts.filter((p) => p.date >= OV.day && (OV.st === 'all' ? p.status !== 'Published' : p.status === OV.st))
+  // The selected day's posts, then the next ones after it (published posts only on their own day)
+  const L = S.posts.filter((p) => p.date >= OV.day && (OV.st === 'all' || p.status === OV.st))
     .map((p) => ({ p, d: getD(p.d) })).filter(({ d }) => d && hit(d.name)).sort((a, b) => (a.p.date + a.p.time).localeCompare(b.p.date + b.p.time));
-  if (!L.length) return q ? miss : ovEmpty(`No ${OV.st === 'all' ? 'posts' : OV.st.toLowerCase() + ' posts'} yet.`, 'Add new design', ovNewBtn());
+  const day = L.filter(({ p }) => p.date === OV.day), later = L.filter(({ p }) => p.date > OV.day && (OV.st !== 'all' || p.status !== 'Published')).slice(0, 4);
+  const dl = OV.day === iso(new Date()) ? 'Today' : fmt(new Date(OV.day + 'T00:00'), { weekday: 'long', day: 'numeric', month: 'short' });
+  if (!day.length && !later.length) return q ? miss : ovEmpty(`No ${OV.st === 'all' ? 'posts' : OV.st.toLowerCase() + ' posts'} from ${dl === 'Today' ? 'today' : dl} on.`, 'Add new design', ovNewBtn());
+  const grp = (t, n) => `<div class="ov-grp"><span>${t}</span>${n ? `<b>${n}</b>` : ''}</div>`;
+  return grp(dl, day.length) + (day.length ? ovPosts(day) : `<p class="ov-nil">Nothing planned for this day. <a href="#/planner">Plan a post</a></p>`) + (later.length ? grp('Coming next') + ovPosts(later) : '');
+}
+function ovPosts(L) {
   return L.map(({ p, d }) => `<details class="ov-it ov-post"><summary><div class="ov-ith"><div class="grow"><b>${esc(d.name)}</b><span class="ov-when">${fmt(new Date(p.date + 'T00:00'), { weekday: 'short', month: 'short', day: '2-digit' })} · ${p.time}</span></div><span class="ov-chev">${ic('chevD', 16)}</span></div>
     <div class="ov-itf"><span>On ${p.pf.map((k) => (PLATFORMS[k] || { n: k }).n).join(', ')}</span>${ovPill(p.status, ovTone(p.status))}</div></summary>
     <div class="ov-itx"><div class="thumbbox">${thumb(d.pages[0], d.ratio, 64, 64)}</div><div class="grow"><span>${ratioLabel(d.ratio)}${d.pages.length > 1 ? ' · ' + d.pages.length + ' slides' : ''}</span><div class="row" style="gap:6px"><button class="btn secondary sm" data-act="open" data-id="${d.id}">Edit design</button><a class="btn ghost sm" href="#/planner">Planner</a></div></div></div></details>`).join('');
@@ -831,7 +856,7 @@ PAGES.overview = {
     const who = esc(allOn() ? 'your brands' : brand().name);
     return `<div class="ov-wrap"><div class="ov">
       <div class="ov-main">
-        <div class="ov-kpis">${ovScheduled()}${ovDesigns()}</div>
+        <div class="ov-kpis">${ovScheduled()}${ovMonthCard()}</div>
         ${ovPublishing()}
         <div class="ov-duo">${ovHealth()}${ovPlatforms()}</div>
       </div>
@@ -2000,7 +2025,21 @@ function aabb(l) {
 }
 
 /* ---------- history ---------- */
-function touch() { ED.d.upd = 'Just now'; const s = $('#savetxt'); if (s) s.innerHTML = '<i></i>Saved'; }
+function touch() { ED.d.upd = 'Just now', ED.d.at = Date.now(); const s = $('#savetxt'); if (s) s.innerHTML = '<i></i>Saved'; autoName(ED.d); }
+/** Automatic name: while a design still has the default name (or the last automatic one), it takes its
+    biggest headline on the first slide, e.g. "Economic Calendar". Naming it by hand turns this off. */
+function autoName(d) {
+  if (!d || d.named || !(/^Untitled design/.test(d.name || '') || (d.auto && d.name === d.auto))) return false;
+  const pg = d.pages && d.pages[0]; if (!pg) return false;
+  const big = pg.layers.filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim().length > 1).sort((a, b) => (b.size || 0) - (a.size || 0) || a.y - b.y)[0];
+  if (!big) return false;
+  let n = String(big.text).replace(/\s+/g, ' ').trim();
+  if (n.length > 48) n = n.slice(0, 48).replace(/\s+\S*$/, '') + '…';
+  if (!n || n === d.name) return false;
+  d.name = d.auto = n;
+  const f = document.getElementById('edName'); if (f && ED.d === d && document.activeElement !== f) f.value = n;
+  return true;
+}
 function commit(pre) { if (pre && snap() !== pre) { ED.undo.push(pre); if (ED.undo.length > 60) ED.undo.shift(); ED.redo = []; touch(); edTop(); } }
 function mutate(fn, redraw = edAll) { const pre = snap(); fn(); commit(pre); redraw(); }
 function doUndo() { if (!ED.undo.length) return; ED.redo.push(snap()); const ch = restore(ED.undo.pop()); fixSel(); edAll(); if (ch) fitZoom(); }
@@ -2236,7 +2275,7 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'edRatio') return magicResize(t.value);
-  if (t.id === 'edName') { ED.d.name = t.value || 'Untitled design'; touch(); return; }
+  if (t.id === 'edName') { ED.d.name = t.value || 'Untitled design'; ED.d.named = !!t.value.trim(); touch(); return; }
   if (t.id === 'upl' && t.files[0]) { const f = t.files[0], r = new FileReader(); r.onload = () => { const im = new Image(); im.onload = () => { const [W] = dim(), w = Math.min(W * 0.7, im.width), h = w * (im.height / im.width); addLayer(Im(Math.round((W - w) / 2), 200, Math.round(w), Math.round(h), `url(${r.result}) center/cover`, { name: f.name.slice(0, 20), r: 24 })); }; im.src = r.result; }; r.readAsDataURL(f); return; }
   if (t.closest && t.closest('#edProps') && ED.pre) { commit(ED.pre); ED.pre = null; edProps(); edPages(); }
 });
@@ -3925,7 +3964,7 @@ persist.onConflict((list) => {
   list.forEach(({ brandId, item }) => {
     const D = S.data[brandId], i = D ? D.designs.findIndex((x) => x.id === item.id) : -1; if (i < 0) return;
     const mine = D.designs[i], copy = JSON.parse(JSON.stringify(mine)), saved = JSON.parse(JSON.stringify(item));
-    copy.id = 'd' + uid(); copy.name = ((mine.name || 'Untitled design') + ' (conflicted copy)').slice(0, 80); copy.status = 'Draft'; copy.upd = 'Just now';
+    copy.id = 'd' + uid(); copy.name = ((mine.name || 'Untitled design') + ' (conflicted copy)').slice(0, 80); copy.status = 'Draft'; copy.upd = 'Just now', copy.at = Date.now();
     if (copy.source === 'Figma') { copy.source = 'Template'; delete copy.figma; }
     ensureRatio(saved.ratio); (saved.pages || []).forEach((pg) => (pg.layers || []).forEach(migrateLayer));
     // same object, the saved content: posts and the planner keep pointing at it
@@ -5836,7 +5875,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = applyPage(pg, r.events, date, r.byDay) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; pg.live.err = e.message; }
     }
-    if (changed) { d.upd = 'Just now'; save(); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
     if (ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data') edPanel(); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -6788,7 +6827,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = apply(pg, items, cfg) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; cfg.err = e.message; if (!cfg.at) cfg.events = cfg.events || []; } finally { busyPages.delete(cfg); }
     }
-    if (changed) { d.upd = 'Just now'; save(); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
     if (ran && ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data' && curP().live && curP().live.kind) panel($('#edPanel')); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -7329,7 +7368,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       if (!['1:1', '4:5', '9:16'].includes(a.ratio)) throw new Error('Use 1:1, 4:5 or 9:16'); if (ED.d.ratio === a.ratio) return `Already ${a.ratio}.`;
       magicResize(a.ratio); fitZoom(); return `Resized every slide to ${a.ratio} (${dim().join('×')}).`;
     },
-    async rename_design(a) { const n = String(a.name || '').trim().slice(0, 80); if (!n) throw new Error('Give a name'); ED.d.name = n; touch(); save(); const f = $('#edName'); if (f) f.value = n; return `Renamed to “${n}”.`; },
+    async rename_design(a) { const n = String(a.name || '').trim().slice(0, 80); if (!n) throw new Error('Give a name'); ED.d.name = n; ED.d.named = true; touch(); save(); const f = $('#edName'); if (f) f.value = n; return `Renamed to “${n}”.`; },
     async apply_brand_template(a) { const t = (brand().templates || []).find((x) => x.id === a.id); if (!t) throw new Error('No such template'); ACT.edBTpl({ dataset: { id: t.id } }); return `Applied the template “${t.name}”.`; },
     async build_live_slide(a) {
       const st = ['dark', 'light', 'brand'].includes(a.style) ? a.style : 'dark', lang = a.lang === 'ar' ? 'ar' : 'en';
@@ -9800,6 +9839,9 @@ function clipCss(l, frames) {
    (mixed text runs, text effects, image adjustments, Google Fonts…). Draw it again so the canvas,
    thumbnails and exports all use the same renderer, also when the editor is opened from a link or a reload. */
 renderSide(); route();
+
+/* designs still called "Untitled design" pick up their headline when opened */
+{ const _oeName = openEditor; openEditor = function (id) { const r = _oeName.apply(this, arguments); if (ED.d && autoName(ED.d)) save(); return r; }; }
 
 /* ============ unmount ============ */
 const destroy = () => {

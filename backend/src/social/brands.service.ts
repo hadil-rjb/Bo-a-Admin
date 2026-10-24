@@ -7,7 +7,7 @@ import { SocialDesign } from "./schemas/design.schema";
 import { SocialPost } from "./schemas/post.schema";
 import { SocialTemplate } from "./schemas/template.schema";
 import { SocialWorkspace, WORKSPACE_ID } from "./schemas/workspace.schema";
-import { hashOf, newId, strip } from "./social.util";
+import { dropAt, hashOf, newId, strip, withAt } from "./social.util";
 import { ConnectionsService } from "./publishing/connections.service";
 import { PublisherService } from "./publishing/publisher.service";
 import { VersionsService } from "./versions.service";
@@ -134,13 +134,13 @@ export class BrandsService implements OnModuleInit {
     await this.mustBrand(brandId);
     const filter: Record<string, unknown> = { brandId };
     if (q) filter.name = { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), $options: "i" };
-    return (await this.designs.find(filter).sort({ order: 1 }).lean()).map(strip);
+    return (await this.designs.find(filter).sort({ order: 1 }).lean()).map(withAt);
   }
 
   async getDesign(brandId: string, id: string) {
     const d = await this.designs.findOne({ brandId, id }).lean();
     if (!d) throw new NotFoundException(`Design "${id}" not found`);
-    return strip(d);
+    return withAt(d);
   }
 
   async createDesign(brandId: string, dto: CreateDesignDto) {
@@ -149,13 +149,13 @@ export class BrandsService implements OnModuleInit {
     // New designs go first in the library, like in the studio
     await this.designs.updateMany({ brandId }, { $inc: { order: 1 } });
     const doc = await this.designs.create({ ...item, brandId, order: 0, hash: hashOf(item), rev: 1 });
-    return strip(doc.toObject());
+    return withAt(doc.toObject());
   }
 
   async updateDesign(brandId: string, id: string, body: Record<string, unknown>) {
-    const d = await this.designs.findOneAndUpdate({ brandId, id }, { $set: { ...editable(body), hash: "" }, $inc: { rev: 1 } }, { new: true }).lean();
+    const d = await this.designs.findOneAndUpdate({ brandId, id }, { $set: { ...dropAt(editable(body)), hash: "" }, $inc: { rev: 1 } }, { new: true }).lean();
     if (!d) throw new NotFoundException(`Design "${id}" not found`);
-    return strip(d);
+    return withAt(d);
   }
 
   async deleteDesign(brandId: string, id: string) {
