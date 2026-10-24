@@ -2178,6 +2178,9 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 /* ---------- Posts in the calendar: colored by status, brand mark inline ---------- */
 .mc7,.cal-post{--sc:#94a3b8}
 .mc7.Scheduled,.cal-post.Scheduled{--sc:#3b82f6}.mc7.Draft,.cal-post.Draft{--sc:#94a3b8}.mc7.Approved,.cal-post.Approved{--sc:#8b5cf6}.mc7.Published,.cal-post.Published{--sc:#16a34a}.mc7.Failed,.cal-post.Failed{--sc:#ef4444}
+/* runs waiting for approval in Notion (dashed) and rejected ones (struck through) */
+.mc7.InReview,.cal-post.InReview{--sc:#f59e0b}.mc7.Rejected,.cal-post.Rejected{--sc:#e11d48}
+.cal-post.InReview{border-style:dashed}.cal-post.Rejected{opacity:.75}.cal-post.Rejected .cp-t{text-decoration:line-through}
 @media (min-width:701px){
   .pcal .mc7{position:relative;display:flex;align-items:center;gap:6px;height:26px;padding:0 8px 0 10px;border:0;border-radius:7px;background:color-mix(in srgb,var(--sc) 10%,var(--surface));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--sc) 22%,transparent);font-size:12px;color:var(--text-1);transition:box-shadow .12s,transform .12s}
   .pcal .mc7::before{content:"";position:absolute;left:0;top:4px;bottom:4px;width:3px;border-radius:0 3px 3px 0;background:var(--sc)}
@@ -2711,4 +2714,28 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .pager{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-top:4px}
 .pager .st-pn{min-width:32px;padding:0 8px}
 .pager .st-gap{padding:0 2px;color:var(--text-3)}
+
+/* Approval in Notion: runs waiting "In Review" (amber) and "Rejected" (rose) */
+.b-InReview{background:rgba(245,158,11,.14);color:#b45309}.b-Rejected{background:rgba(225,29,72,.1);color:#e11d48}
+.pc7.InReview{background:rgba(245,158,11,.1)}.pc7.Rejected{background:rgba(225,29,72,.07);opacity:.8}
+.sd7.InReview{background:#f59e0b}.sd7.Rejected{background:#e11d48}
+.mc7.InReview{border-left-color:#f59e0b;background:rgba(245,158,11,.1)}.mc7.Rejected{border-left-color:#e11d48;background:rgba(225,29,72,.07)}
+@media (max-width:700px){.mc7.InReview{background:#f59e0b}.mc7.Rejected{background:#e11d48}}
+.au-bw{display:inline-flex;align-self:flex-start;gap:3px}.au-bw .au-b,.au-bw .au-rv{margin-left:0}
+.au-rv{display:inline-grid;place-items:center;width:16px;height:16px;margin-left:3px;border-radius:5px;vertical-align:-3px}
+.au-rv.rv{background:rgba(245,158,11,.16);color:#b45309}.au-rv.ok{background:var(--pos-bg);color:var(--pos)}.au-rv.no{background:rgba(225,29,72,.12);color:#e11d48}
+.au-st.rv{background:rgba(245,158,11,.14);color:#b45309}.au-st.rej{background:rgba(225,29,72,.1);color:#e11d48}
+.au-ap{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:600;background:rgba(245,158,11,.14);color:#b45309}
+.au-ap em{font-style:normal;font-weight:700;padding-left:5px;margin-left:1px;border-left:1px solid currentColor}
+.au-api{display:grid;place-items:center;width:24px;height:24px;flex:none;border-radius:7px;background:rgba(245,158,11,.16);color:#b45309}
+.au-ntsw.locked .sw{opacity:.55;cursor:not-allowed}
+.au-rvbox{display:flex;gap:10px;align-items:flex-start;margin-top:14px;padding:12px;border-radius:12px;border:1px solid var(--border-soft)}
+.au-rvbox>svg{flex:none;margin-top:2px}.au-rvbox b{font-size:13.5px}.au-rvbox p{margin:3px 0 0;font-size:12.5px;color:var(--text-2)}
+.au-rvbox.pending{background:rgba(245,158,11,.08)}.au-rvbox.pending>svg{color:#b45309}
+.au-rvbox.approved{background:var(--pos-bg)}.au-rvbox.approved>svg{color:var(--pos)}
+.au-rvbox.rejected{background:rgba(225,29,72,.06)}.au-rvbox.rejected>svg{color:#e11d48}
+.ov-rv{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:12px;font-weight:600;color:var(--text-2);text-decoration:none}
+.ov-rv span{display:inline-flex;align-items:center;gap:5px}.ov-rv i{width:7px;height:7px;border-radius:50%}
+.ov-rv .rv-in i{background:#f59e0b}.ov-rv .rv-no i{background:#e11d48}.ov-rv:hover span{text-decoration:underline}
+&[data-theme="dark"] :is(.b-InReview,.au-rv.rv,.au-st.rv,.au-ap,.au-api,.au-rvbox.pending>svg){color:#fbbf24}
 }}

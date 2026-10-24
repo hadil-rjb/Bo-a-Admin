@@ -241,7 +241,7 @@ export class WorkspaceService {
   /** Posts carry fields only the publisher writes (publish, media): load them so upserts keep them. */
   private async serverOwned(model: Model<any>, list: { brandId: string; item: Item }[]) {
     if (model !== (this.posts as Model<any>) || !list.length) return null;
-    const rows = await model.find({ $or: list.map(({ brandId, item }) => ({ brandId, id: item.id })) }).select("brandId id status date time publish media").lean<Record<string, any>[]>();
+    const rows = await model.find({ $or: list.map(({ brandId, item }) => ({ brandId, id: item.id })) }).select("brandId id status date time publish media review").lean<Record<string, any>[]>();
     return new Map(rows.map((r) => [`${r.brandId}|${r.id}`, r]));
   }
 

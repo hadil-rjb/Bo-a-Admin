@@ -1,11 +1,12 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectModel, Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
 import { createHash } from "crypto";
 import { Model } from "mongoose";
 import { decrypt, encrypt } from "../../common/crypto";
-import { validTz } from "../../framer/time";
+import { validTz, zonedToUtc } from "../../framer/time";
 import { SocialIntegration } from "../publishing/connection.schema";
+import { REVIEW_GRACE_MS, ReviewState } from "../publishing/post-state";
 import { PublisherService } from "../publishing/publisher.service";
 import { SocialAutomation } from "../schemas/automation.schema";
 import { SocialBrand } from "../schemas/brand.schema";
@@ -25,13 +26,23 @@ export class SocialNotionPage {
   /** The pictures it shows in its body ("v2|" once the page has no cover), and the image blocks this sync added to the page */
   @Prop() imgHash?: string;
   @Prop({ type: [String], default: [] }) blocks?: string[];
+  /** The Status this sync last wrote (or read back): it's only written again when the post's own status changes, so a decision taken in Notion is never overwritten */
+  @Prop() status?: string;
+  /** The page was deleted in Notion: it isn't recreated or updated again */
+  @Prop() gone?: boolean;
 }
 export const SocialNotionPageSchema = SchemaFactory.createForClass(SocialNotionPage);
 SocialNotionPageSchema.index({ brandId: 1, postId: 1 }, { unique: true });
 
 const ID = "notion";
 const NETS: Record<string, [string, string]> = { ig: ["Instagram", "pink"], li: ["LinkedIn", "blue"], x: ["X", "gray"], fb: ["Facebook", "blue"], tt: ["TikTok", "default"], tg: ["Telegram", "blue"] };
-const STATUSES: [string, string][] = [["Scheduled", "blue"], ["Ready", "yellow"], ["Published", "green"], ["Failed", "red"]];
+const STATUSES: [string, string][] = [["Scheduled", "blue"], ["Ready", "yellow"], ["Published", "green"], ["Failed", "red"], ["In Review", "orange"], ["Approved", "purple"], ["Rejected", "pink"]];
+/** What a Status set by the team in Notion means for a run waiting for approval */
+const DECISIONS: Record<string, ReviewState> = { "In Review": "pending", Approved: "approved", Rejected: "rejected" };
+/** How often the decisions are read back (internal integrations get no webhooks) */
+const POLL_MS = Number(process.env.NOTION_POLL_MS) || 60_000;
+const DONE = ["publishing", "published", "partial"];
+const bare = (id: string) => String(id || "").replace(/-/g, "");
 /** The properties the calendar database needs (a title and a date are found or added separately) */
 const PROPS: Record<string, any> = {
   Status: { select: { options: STATUSES.map(([name, color]) => ({ name, color })) } },
@@ -52,11 +63,15 @@ const opt = (s: string) => s.replace(/,/g, " ").trim().slice(0, 100) || "—";
  * Notion Calendar shows like any calendar. Uses an internal integration token (Settings → Notion
  * Calendar). Automation runs are synced (and, if chosen, every scheduled post): created, updated when
  * their time, status or caption change, archived when they're skipped or removed.
+ *
+ * Approval: runs of an automation that needs it are created "In Review"; the team sets the page's Status
+ * to Approved or Rejected, and the database is read back every minute (pollReviews) to schedule or stop them.
  */
 @Injectable()
-export class NotionService {
+export class NotionService implements OnModuleInit, OnModuleDestroy {
   private log = new Logger("Notion");
   private running = false;
+  private timer?: NodeJS.Timeout;
   private again = false;
   private soon?: NodeJS.Timeout;
 
@@ -71,6 +86,9 @@ export class NotionService {
     private cfg: ConfigService,
     private publisher: PublisherService,
   ) {}
+
+  onModuleInit() { this.timer = setInterval(() => void this.pollReviews().catch((e) => this.log.warn(`Reading approvals: ${e?.message || e}`)), POLL_MS); }
+  onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
 
   private get secret() { return this.cfg.getOrThrow<string>("JWT_SECRET"); }
   private get base() { return (this.cfg.get<string>("NOTION_API_URL") || "https://api.notion.com/v1").replace(/\/+$/, ""); }
@@ -142,14 +160,23 @@ export class NotionService {
       for (const [k, v] of Object.entries(PROPS)) if (!have[k]) missing[k] = v;
       if (!Object.values(have).some((p: any) => p?.type === "date")) missing.When = { date: {} };
       if (Object.keys(missing).length) db = await c.call("PATCH", `/databases/${o.databaseId}`, { properties: missing });
+      db = await this.ensureStatuses(c, db);
     } else throw new BadRequestException("Choose a database, or a page to create one in");
     const props = db.properties || {};
     const titleProp = Object.keys(props).find((k) => props[k].type === "title")!;
     const dateProp = props.When?.type === "date" ? "When" : Object.keys(props).find((k) => props[k].type === "date")!;
     await this.links.deleteMany({}); // the pages of another database aren't this one's
-    await this.setInfo({ database: { id: db.id, title: plain(db.title) || "Social calendar", url: db.url, titleProp, dateProp }, error: "", synced: 0 });
+    await this.setInfo({ database: { id: db.id, title: plain(db.title) || "Social calendar", url: db.url, titleProp, dateProp, statuses: STATUSES.length }, error: "", synced: 0 });
     this.reconcileSoon(100);
     return this.status();
+  }
+
+  /** Adds the Status options the database lacks (In Review, Approved, Rejected came later), keeping its own */
+  private async ensureStatuses(c: NotionClient, db: any) {
+    const have: any[] = db.properties?.Status?.select?.options || [], names = new Set(have.map((o) => o.name));
+    const add = STATUSES.filter(([n]) => !names.has(n));
+    if (!add.length) return db;
+    return c.call("PATCH", `/databases/${db.id}`, { properties: { Status: { select: { options: [...have.map(({ name, color }) => ({ name, color })), ...add.map(([name, color]) => ({ name, color }))] } } } });
   }
 
   async options(o: { scope?: "auto" | "all" }) {
@@ -165,7 +192,7 @@ export class NotionService {
     this.soon = setTimeout(() => void this.reconcile().catch((e) => this.log.warn(e?.message || e)), ms);
   }
 
-  async syncNow() { await this.reconcile(); return this.status(); }
+  async syncNow() { await this.pollReviews(); await this.reconcile(); return this.status(); }
 
   private async reconcile() {
     const d = await this.doc(), db = d?.info?.database;
@@ -174,12 +201,15 @@ export class NotionService {
     this.running = true;
     try {
       const c = this.client(d), scope = d.info?.scope === "all" ? "all" : "auto";
+      // databases set up before approvals: add their Status options once
+      if ((db.statuses || 0) < STATUSES.length) { await this.ensureStatuses(c, await c.call("GET", `/databases/${db.id}`)); await this.setInfo({ "database.statuses": STATUSES.length }); }
       const from = new Date(Date.now() - PAST_DAYS * 864e5).toISOString().slice(0, 10);
       const autos = new Map((await this.autos.find({}).select("brandId id name notion preview").lean<Record<string, any>[]>()).map((a) => [`${a.brandId}|${a.id}`, a]));
       const ws = await this.workspaces.findById(WORKSPACE_ID).lean(), wsTz = String(((ws?.set || {}) as any).tz || "");
-      const all = await this.posts.find({ date: { $gte: from }, status: { $in: ["Scheduled", "Published", "Failed"] } }).lean<Record<string, any>[]>();
+      const all = await this.posts.find({ date: { $gte: from }, status: { $in: ["Scheduled", "Published", "Failed", "In Review", "Rejected"] } }).lean<Record<string, any>[]>();
       const want = all.filter((p) => {
-        if (p.auto) { const a = autos.get(`${p.brandId}|${p.auto.id}`); return !!a && a.notion !== false; }
+        // a run that needs approval is always in Notion: that's where it's approved
+        if (p.auto) { const a = autos.get(`${p.brandId}|${p.auto.id}`); return !!a && (a.notion !== false || !!p.review); }
         return scope === "all";
       });
       const links = new Map((await this.links.find({}).lean<Record<string, any>[]>()).map((l) => [`${l.brandId}|${l.postId}`, l]));
@@ -190,7 +220,8 @@ export class NotionService {
       let made = 0, changed = 0, archived = 0;
       for (const p of want) {
         const k = `${p.brandId}|${p.id}`; seen.add(k);
-        const props = this.props(p, db, await nameOf(p.brandId), p.auto?.name || (await designOf(p.brandId, p.d)), validTz(p.tz || "") ? p.tz : validTz(wsTz) ? wsTz : "UTC");
+        if (links.get(k)?.gone) continue; // deleted in Notion: left deleted
+        const props: Record<string, any> = this.props(p, db, await nameOf(p.brandId), p.auto?.name || (await designOf(p.brandId, p.d)), validTz(p.tz || "") ? p.tz : validTz(wsTz) ? wsTz : "UTC");
         const hash = createHash("sha1").update(JSON.stringify(props)).digest("hex"), link = links.get(k);
         // the design: the post's own slides once it has them, the automation's preview before
         // pages carry no cover: the pictures only go in the body ("v2|" makes pages synced with a cover drop it once)
@@ -198,17 +229,26 @@ export class NotionService {
         if (!link) {
           const page: any = await c.call("POST", "/pages", { parent: { database_id: db.id }, icon: { type: "emoji", emoji: p.auto ? "🔁" : "📣" }, properties: props, children: imgs.map(imageBlock) });
           const blocks = imgs.length ? ((await c.call("GET", `/blocks/${page.id}/children?page_size=50`)).results || []).filter((b: any) => b.type === "image").map((b: any) => b.id) : [];
-          await this.links.updateOne({ brandId: p.brandId, postId: p.id }, { $set: { pageId: page.id, date: p.date, hash, imgHash, blocks } }, { upsert: true }); made++;
+          await this.links.updateOne({ brandId: p.brandId, postId: p.id }, { $set: { pageId: page.id, date: p.date, hash, imgHash, blocks, status: props.Status.select.name } }, { upsert: true }); made++;
         } else if (link.hash !== hash || (link.imgHash || "") !== imgHash) {
-          const imgChanged = (link.imgHash || "") !== imgHash;
-          await c.call("PATCH", `/pages/${link.pageId}`, { properties: props, archived: false, ...(imgChanged ? { cover: null } : {}) });
+          const imgChanged = (link.imgHash || "") !== imgHash, status = props.Status.select.name;
+          // the Status is written only when ours changed: the team may have just set Approved or Rejected
+          const { Status, ...rest } = props;
+          // a run under review whose page was deleted isn't restored: pollReviews sees it as rejected
+          try {
+            await c.call("PATCH", `/pages/${link.pageId}`, { properties: link.status === status ? rest : props, ...(p.review ? {} : { archived: false }), ...(imgChanged ? { cover: null } : {}) });
+          } catch (e: any) {
+            if (!/can't see it/.test(e?.message || "")) throw e;
+            if (p.review) continue;
+            await this.links.deleteOne({ _id: link._id }); this.reconcileSoon(); continue; // deleted for good in Notion: made again
+          }
           let blocks: string[] = link.blocks || [];
           if (imgChanged) {
             // only the image blocks this sync added are replaced: notes written in the page stay
             for (const b of blocks) await c.call("DELETE", `/blocks/${b}`).catch(() => undefined);
             blocks = imgs.length ? ((await c.call("PATCH", `/blocks/${link.pageId}/children`, { children: imgs.map(imageBlock) })).results || []).map((b: any) => b.id) : [];
           }
-          await this.links.updateOne({ _id: link._id }, { $set: { hash, date: p.date, imgHash, blocks } }); changed++;
+          await this.links.updateOne({ _id: link._id }, { $set: { hash, date: p.date, imgHash, blocks, status } }); changed++;
         }
       }
       // posts that were skipped, re-planned, deleted or left the sync: their pages are archived
@@ -228,6 +268,95 @@ export class NotionService {
     }
   }
 
+  /* ---------- approval ---------- */
+  /**
+   * Reads the decisions taken in Notion for the runs waiting for approval (or approved / rejected but not
+   * published yet: a decision can be changed until the post goes out). Pages of the database whose Status is
+   * In Review, Approved or Rejected are listed in one query; a run whose page isn't listed is looked up on its
+   * own: deleted in Notion counts as rejected.
+   */
+  async pollReviews() {
+    const d = await this.doc(), db = d?.info?.database;
+    if (!d?.secret || !db?.id || this.running) return;
+    const open = await this.posts.find({ review: { $exists: true }, status: { $in: ["In Review", "Scheduled", "Rejected"] }, "publish.state": { $nin: DONE } })
+      .select("brandId id date time tz status review publish").lean<Record<string, any>[]>();
+    if (!open.length) return;
+    this.running = true;
+    let decided = 0;
+    try {
+      const c = this.client(d);
+      const links = new Map((await this.links.find({ $or: open.map((p) => ({ brandId: p.brandId, postId: p.id })) }).lean<Record<string, any>[]>()).map((l) => [`${l.brandId}|${l.postId}`, l]));
+      if (!links.size) return;
+      const status = new Map<string, string>();
+      let cursor: string | undefined;
+      do {
+        const r: any = await c.call("POST", `/databases/${db.id}/query`, {
+          filter: { or: Object.keys(DECISIONS).map((name) => ({ property: "Status", select: { equals: name } })) }, page_size: 100, ...(cursor ? { start_cursor: cursor } : {}),
+        });
+        for (const pg of r.results || []) if (!pg.archived && !pg.in_trash) status.set(bare(pg.id), pg.properties?.Status?.select?.name || "");
+        cursor = r.has_more ? r.next_cursor : undefined;
+      } while (cursor);
+      for (const p of open) {
+        const link = links.get(`${p.brandId}|${p.id}`);
+        if (!link || link.gone) continue; // not in Notion yet (or deleted there)
+        let st = status.get(bare(link.pageId)), gone = false;
+        if (st === undefined) {
+          try { const pg: any = await c.call("GET", `/pages/${link.pageId}`); gone = !!(pg.archived || pg.in_trash); st = pg.properties?.Status?.select?.name || ""; }
+          catch (e: any) { if (!/can't see it/.test(e?.message || "")) throw e; gone = true; }
+        }
+        if (gone) {
+          await this.links.updateOne({ _id: link._id }, { $set: { gone: true } });
+          if (await this.decide(p, "rejected", "Its page was deleted in Notion.")) decided++;
+          continue;
+        }
+        const want = DECISIONS[st || ""];
+        if (!want) continue; // another status (Scheduled, empty…): not a decision
+        if (link.status !== st) await this.links.updateOne({ _id: link._id }, { $set: { status: st } });
+        if (await this.decide(p, want)) decided++;
+      }
+      await this.setInfo({ reviewedAt: new Date() });
+    } finally {
+      this.running = false;
+      if (this.again) { this.again = false; this.reconcileSoon(500); }
+    }
+    if (decided) { this.log.log(`Notion approvals: ${decided} decision${decided > 1 ? "s" : ""} applied`); this.reconcileSoon(500); }
+  }
+
+  /** Approve or reject from the studio (when Notion can't be used, e.g. it was disconnected) */
+  async review(brandId: string, postId: string, decision: "approved" | "rejected", by?: string) {
+    const p = await this.posts.findOne({ brandId, id: postId }).select("brandId id date time tz status review publish").lean<Record<string, any>>();
+    if (!p) throw new NotFoundException("Post not found");
+    if (!p.review) throw new BadRequestException("This post doesn't need approval");
+    if (DONE.includes(p.publish?.state) || ["Published", "Failed"].includes(p.status)) throw new BadRequestException("This post can't be changed any more");
+    await this.decide(p, decision, undefined, by || "studio");
+    this.reconcileSoon(500);
+    return this.posts.findOne({ brandId, id: postId }).select("id status review publish").lean();
+  }
+
+  /**
+   * Applies a decision to a run. Approved: "Scheduled" at its planned time (the automation arms it and the
+   * publish scheduler sends it), or right away if its time has passed, unless that was more than
+   * REVIEW_GRACE_MS ago. Rejected / back in review: never published (disarmed if it was armed). Applying the
+   * same decision again changes nothing, and a run being published is left alone.
+   */
+  private async decide(p: Record<string, any>, state: ReviewState, note?: string, by = "notion") {
+    if (p.review?.state === state && (state !== "rejected" || p.status === "Rejected")) return false;
+    const now = new Date(), q = { brandId: p.brandId, id: p.id, status: p.status, "publish.state": { $nin: DONE } };
+    const review = { state, at: now, by, ...(note ? { note } : {}) };
+    const disarm = p.publish?.state === "pending" ? { "publish.state": "idle" } : {};
+    let set: Record<string, any>;
+    if (state === "approved") {
+      const at = zonedToUtc(p.date, p.time || "09:00", validTz(p.tz || "") ? p.tz : "UTC").getTime();
+      if (now.getTime() - at > REVIEW_GRACE_MS) {
+        const error = "Approved too late: its time had passed, so it wasn't published.";
+        set = { status: "Failed", review, autoError: error, publish: { ...(p.publish || {}), state: "failed", results: p.publish?.results || {}, attempts: 0, lastError: error, at: now } };
+      } else set = { status: "Scheduled", review, autoTries: 0, autoError: "" };
+    } else set = { status: state === "rejected" ? "Rejected" : "In Review", review, ...disarm };
+    const r = await this.posts.updateOne(q, { $set: set });
+    if (r.modifiedCount) this.log.log(`Run ${p.id} (${p.brandId}): ${set.status === "Failed" ? "approved too late" : state} in ${by === "notion" ? "Notion" : "the studio"}`);
+    return r.modifiedCount > 0;
+  }
+
   /** Public links of the pictures a post's page shows (at most 4) */
   private images(p: Record<string, any>, a: Record<string, any> | null | undefined) {
     const ids: string[] = p.media?.ids?.length ? p.media.ids : a?.preview?.ids || [];
@@ -240,7 +369,9 @@ export class NotionService {
     const endDate = endMin >= 1440 ? new Date(Date.parse(p.date + "T12:00:00Z") + 864e5).toISOString().slice(0, 10) : p.date;
     const two = (n: number) => String(n).padStart(2, "0"), em = endMin % 1440;
     const results = p.publish?.results || {}, url = (Object.values(results).find((r: any) => r?.url) as any)?.url || `${this.front}/social-media#/planner`;
-    const status = p.status === "Published" ? "Published" : p.status === "Failed" || p.publish?.state === "failed" ? "Failed" : p.publish?.state === "pending" ? "Ready" : "Scheduled";
+    const review = p.review?.state, status = p.status === "Published" ? "Published" : p.status === "Failed" || p.publish?.state === "failed" ? "Failed"
+      : p.status === "Rejected" || review === "rejected" ? "Rejected" : p.status === "In Review" || review === "pending" ? "In Review"
+      : review === "approved" ? "Approved" : p.publish?.state === "pending" ? "Ready" : "Scheduled";
     return {
       [db.titleProp]: { title: text(name) },
       [db.dateProp]: { date: { start: `${p.date}T${two(h)}:${two(m)}:00`, end: `${endDate}T${two(Math.floor(em / 60))}:${two(em % 60)}:00`, time_zone: tz } },

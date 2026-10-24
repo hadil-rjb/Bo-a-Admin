@@ -21,6 +21,7 @@ class AutomationDto {
   @IsString() @MaxLength(60) d!: string;
   @IsOptional() @IsBoolean() active?: boolean;
   @IsOptional() @IsBoolean() notion?: boolean;
+  @IsOptional() @IsBoolean() approval?: boolean;
   @ValidateNested() @Type(() => CadenceDto) cadence!: CadenceDto;
   @IsOptional() @IsString() @MaxLength(60) tz?: string;
   @IsArray() @IsIn(PLATFORM_KEYS, { each: true }) pf!: string[];

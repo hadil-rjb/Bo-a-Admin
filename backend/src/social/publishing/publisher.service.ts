@@ -106,8 +106,8 @@ export class PublisherService {
 
   /** Publish state of every post of a brand that went through the publisher (the studio polls this). */
   async states(brandId: string) {
-    const rows = await this.posts.find({ brandId, publish: { $exists: true } }).select("id status publish media").lean<Record<string, any>[]>();
-    return rows.map((p) => ({ id: p.id, status: p.status, publish: p.publish, media: p.media ?? null }));
+    const rows = await this.posts.find({ brandId, $or: [{ publish: { $exists: true } }, { review: { $exists: true } }] }).select("id status publish media review").lean<Record<string, any>[]>();
+    return rows.map((p) => ({ id: p.id, status: p.status, publish: p.publish ?? null, media: p.media ?? null, review: p.review ?? null }));
   }
 
   /** Images that aren't a post's slides (an automation's design preview), stored like slides and served at the public media URL */
@@ -131,6 +131,8 @@ export class PublisherService {
    */
   async publish(brandId: string, postId: string, { manual = false } = {}) {
     const now = new Date();
+    const cur = await this.posts.findOne({ brandId, id: postId }).select("review").lean<Record<string, any>>();
+    if (cur?.review && cur.review.state !== "approved") throw new BadRequestException(cur.review.state === "rejected" ? "This post was rejected in Notion" : "This post is waiting for approval in Notion");
     const claimed = await this.posts.findOneAndUpdate(
       { brandId, id: postId, $or: [{ "publish.state": { $ne: "publishing" } }, { "publish.lockedAt": { $lt: new Date(now.getTime() - LOCK_MS) } }] },
       { $set: { "publish.state": "publishing", "publish.lockedAt": now } },
