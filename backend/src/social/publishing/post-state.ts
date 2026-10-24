@@ -7,10 +7,23 @@ export type PublishState = "idle" | "pending" | "publishing" | "published" | "pa
 
 const DONE: PublishState[] = ["published", "partial", "publishing"];
 
+/**
+ * Approval in Notion: automation runs that need it carry `review` ({ state: pending | approved | rejected,
+ * at, by, note }) and wait as "In Review". Approved runs become "Scheduled"; rejected ones "Rejected".
+ * An approval that comes this long after the planned time is too late: the run is not published.
+ */
+export type ReviewState = "pending" | "approved" | "rejected";
+export const REVIEW_GRACE_MS = 6 * 3600_000;
+
 export function mergePost(existing: Record<string, any> | null | undefined, item: Record<string, any>) {
-  const { publish: _p, media: _m, ...rest } = item;
+  const { publish: _p, media: _m, review: _r, ...rest } = item;
   const out: Record<string, any> = { ...rest };
   if (existing?.media) out.media = existing.media;
+  // the review decision comes from Notion: the studio can't approve a run by sending it back as "Scheduled"
+  if (existing?.review) {
+    out.review = existing.review;
+    if (!DONE.includes(existing.publish?.state)) out.status = existing.status;
+  }
   let pub = existing?.publish;
   if (pub) {
     if (DONE.includes(pub.state)) {

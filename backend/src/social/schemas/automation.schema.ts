@@ -27,6 +27,8 @@ export class SocialAutomation {
   @Prop({ type: [String], default: [] }) skip!: string[];
   /** Also shown in Notion Calendar (when Notion is connected) */
   @Prop({ default: true }) notion!: boolean;
+  /** Each run waits "In Review" in Notion and is published only once it's set to Approved there */
+  @Prop({ default: false }) approval!: boolean;
   /** A picture of the design (media ids), rendered for Notion Calendar until each post has its own slides */
   @Prop({ type: MongooseSchema.Types.Mixed }) preview?: { ids: string[]; at: Date; d: string; hash?: string };
   /** Why it stopped by itself (e.g. its design was deleted) */

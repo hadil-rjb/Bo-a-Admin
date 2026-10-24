@@ -512,7 +512,9 @@ const addD = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); retu
 const monday = (d) => { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
 const fmt = (d, o) => d.toLocaleDateString('en', o);
 const pfDots = (a) => `<span class="pfs">${a.map((k) => `<span class="pf" title="${PLATFORMS[k].n}" style="background:${PLATFORMS[k].c}">${ic('net_'+k,12)}</span>`).join('')}</span>`;
-const badge = (s) => `<span class="badge b-${s}">${s}</span>`;
+/** A status as a class name ("In Review" → InReview) */
+const stK = (s) => String(s || '').replace(/\s+/g, '');
+const badge = (s) => `<span class="badge b-${stK(s)}">${s}</span>`;
 const ACT = {};
 
 /** Short notice; longer messages stay longer, a click dismisses it, and a new one replaces the previous */
@@ -601,11 +603,19 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawe
 addEventListener('resize', () => { if (innerWidth > 1024) closeDrawer(); const b = $('#top [data-act=menu]'); if (b) b.style.display = innerWidth > 1024 ? 'none' : 'inline-flex'; });
 
 /* ---------- Shared helpers ---------- */
+/** When a design was last edited: real time from `at` (the server's updatedAt), else the stored label */
+function agoOf(d) {
+  if (!d.at) return d.upd || '';
+  const m = Math.floor((Date.now() - d.at) / 60000), h = Math.floor(m / 60), days = Math.floor(h / 24), t = new Date(d.at);
+  if (m < 1) return 'Just now'; if (m < 60) return m + ' min ago'; if (h < 24) return h + ' h ago';
+  if (days === 1) return 'Yesterday'; if (days < 7) return days + ' days ago';
+  return fmt(t, { day: 'numeric', month: 'short', ...(t.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
+}
 function designCard(d, extra = '') {
   const dd = getD(d.id), [w, h] = RATIOS[d.ratio];
   return `<div class="card dc" data-id="${d.id}">
     <button class="pv" data-act="open" data-id="${d.id}" aria-label="Open ${esc(d.name)}">${thumb(dd.pages[0], d.ratio, 190, 215)}${d.source === 'Figma' ? `<span class="badge b-figma">${ic('figma', 12)}Figma</span>` : ''}<span class="st">${badge(d.status)}</span></button>
-    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${ratioLabel(d.ratio)} · ${dd.pages.length > 1 ? dd.pages.length + ' slides' : w + '×' + h} · ${d.upd}</small>${extra}</div></div>`;
+    <div class="meta"><div class="dc-h"><b>${esc(d.name)}</b>${persist.readOnly ? '' : `<button class="btn ghost icon sm dc-more" data-act="dMore" data-id="${d.id}" title="More actions" aria-label="More actions for ${esc(d.name)}" aria-haspopup="menu">${ic('more', 16)}</button>`}</div><small>${ratioLabel(d.ratio)} · ${dd.pages.length > 1 ? dd.pages.length + ' slides' : w + '×' + h} · <time${d.at ? ` datetime="${new Date(d.at).toISOString()}" title="Edited ${new Date(d.at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}"` : ''}>${agoOf(d)}</time></small>${extra}</div></div>`;
 }
 
 /* ---------- Designs: create / open / rename / duplicate / status / delete ----------
@@ -637,7 +647,7 @@ Object.assign(ACT, {
     <div class="mb"><label class="lab">Design name<input class="field" id="drN" value="${esc(d.name)}" maxlength="80" autocomplete="off"></label></div>
     <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="drGo">Save</button></div>`, {
       onMount: (bg, close) => {
-        const i = $('#drN', bg), go = () => { const n = i.value.trim(); if (!n) { i.focus(); return toast('Give the design a name'); } d.name = n; d.upd = 'Just now'; save(); close(); synced('Design renamed'); };
+        const i = $('#drN', bg), go = () => { const n = i.value.trim(); if (!n) { i.focus(); return toast('Give the design a name'); } d.name = n; d.named = true; d.upd = 'Just now', d.at = Date.now(); save(); close(); synced('Design renamed'); };
         $('#drGo', bg).addEventListener('click', go); i.addEventListener('keydown', (e) => e.key === 'Enter' && go());
         setTimeout(() => { i.focus(); i.select(); }, 30);
       },
@@ -646,13 +656,13 @@ Object.assign(ACT, {
   dDup: (a) => {
     const d = getD(a.dataset.id); if (!d || !canEdit()) return;
     const c = JSON.parse(JSON.stringify(d));
-    c.id = 'd' + uid(); c.name = (d.name + ' (copy)').slice(0, 80); c.status = 'Draft'; c.upd = 'Just now';
+    c.id = 'd' + uid(); c.name = (d.name + ' (copy)').slice(0, 80); c.status = 'Draft'; c.upd = 'Just now', c.at = Date.now();
     // the copy is a design of its own: it is not linked to the Figma frame of the original
     if (c.source === 'Figma') { c.source = 'Template'; delete c.figma; }
     (c.pages || []).forEach((pg) => { pg.id = uid(); reIdPage(pg); });
     S.designs.splice(Math.max(0, S.designs.indexOf(d)), 0, c); save(); synced('Design duplicated');
   },
-  dStatus: (a) => { const d = getD(a.dataset.id); if (!d || !canEdit() || d.status === a.dataset.s) return; d.status = a.dataset.s; d.upd = 'Just now'; save(); synced('Marked as ' + d.status); },
+  dStatus: (a) => { const d = getD(a.dataset.id); if (!d || !canEdit() || d.status === a.dataset.s) return; d.status = a.dataset.s; d.upd = 'Just now', d.at = Date.now(); save(); synced('Marked as ' + d.status); },
   dDel: (a) => {
     const d = getD(a.dataset.id); if (!d || !canEdit()) return;
     const n = S.posts.filter((p) => p.d === d.id).length;
@@ -667,12 +677,12 @@ Object.assign(ACT, {
   },
 });
 function createDesign({ name, tpl = 'blank', ratio = '4:5', slides = 1, source = 'Template', mutate }) {
-  const d = { id: 'd' + uid(), name, tpl, ratio, status: 'Draft', source, upd: 'Just now' };
+  const d = { id: 'd' + uid(), name, tpl, ratio, status: 'Draft', source, upd: 'Just now', at: Date.now() };
   if (!RATIOS[ensureRatio(ratio)]) d.ratio = ratio = '4:5'; // unknown size: fall back to the default canvas
   const [w, h] = RATIOS[ratio];
   d.pages = Array.from({ length: slides }, () => ({ id: uid(), bg: '#0b1220', layers: brandize(TPL[tpl].fn(w, h)) }));
   if (FEEDS) d.pages.forEach((pg) => FEEDS.attach(pg, tpl));
-  mutate && mutate(d); S.designs.unshift(d); return d;
+  mutate && mutate(d); autoName(d); S.designs.unshift(d); return d;
 }
 ACT.open = (a) => { location.hash = '#/editor/' + a.dataset.id; };
 ACT.newDesign = (a) => { const d = createDesign({ name: 'Untitled design', ratio: a.dataset.ratio, slides: +a.dataset.slides || 1 }); location.hash = '#/editor/' + d.id; };
@@ -688,7 +698,6 @@ ACT.fromArticle = (a) => {
    schedule (day strip, search, Next up / Ideas / Blog) on the right, recent designs under both.
    Each widget has an id and re-renders on its own, so filters and the search keep their focus. */
 const OV = { day: null, start: null, tab: 'next', q: '', st: 'all', pf: 'all', period: 'last', top: 'week' };
-const OV_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const ovPill = (t, tone = 'n') => `<span class="ov-pill ${tone}">${t}</span>`;
 const ovTone = (s) => (s === 'Published' ? 'g' : s === 'Draft' ? 'n' : 'r');
 const ovSwap = (id, html) => { const el = document.getElementById(id); if (el) el.outerHTML = html; };
@@ -720,25 +729,39 @@ const ovEmpty = (t, s, act = '') => `<div class="ov-empty">${OV_ART}<p><span>${t
 const ovNewBtn = (label = 'New design') => `<a class="btn secondary sm" href="#/studio" data-act="goStudio">${ic('plus', 16)}${label}</a>`;
 
 function ovScheduled() {
-  const ws = monday(new Date()), today = iso(new Date()), on = (p) => OV.pf === 'all' || p.pf.includes(OV.pf);
+  const t0 = new Date(), on = (p) => OV.pf === 'all' || p.pf.includes(OV.pf);
   const n = S.posts.filter((p) => p.status === 'Scheduled' && on(p)).length;
-  const week = OV_DAYS.map((_, i) => { const k = iso(addD(ws, i)); return S.posts.filter((p) => p.date === k && p.status !== 'Draft' && on(p)).length; });
+  // the next 7 days, today first: scheduled posts going out each day
+  const days = [...Array(7)].map((_, i) => addD(t0, i)), vals = days.map((d) => { const k = iso(d); return S.posts.filter((p) => p.date === k && p.status === 'Scheduled' && on(p)).length; });
+  const max = Math.max(...vals, 1), H = 44, nP = (v) => (v ? v + ' post' + (v > 1 ? 's' : '') : 'No posts');
+  // automation runs waiting for a decision in Notion, and the upcoming ones the team rejected
+  const today = iso(t0), rv = S.posts.filter((p) => p.status === 'In Review' && p.date >= today && on(p)).length, rj = S.posts.filter((p) => p.status === 'Rejected' && p.date >= today && on(p)).length;
+  const review = rv || rj ? `<a class="ov-rv" href="#/planner" data-act="ovReview">${rv ? `<span class="rv-in"><i></i>${rv} waiting for approval</span>` : ''}${rj ? `<span class="rv-no"><i></i>${rj} rejected</span>` : ''}</a>` : '';
+  const dots = days.map((d, i) => `<b class="ov-dot ${vals[i] ? 'on' : ''}" style="left:${(i / 6 * 100).toFixed(2)}%;top:${((H - 3 - vals[i] / max * (H - 6)) / H * 100).toFixed(2)}%" tabindex="0" aria-label="${fmt(d, { weekday: 'long', day: 'numeric', month: 'long' })}: ${nP(vals[i])}"><em>${i ? fmt(d, { weekday: 'short', day: 'numeric', month: 'short' }) : 'Today'} · ${nP(vals[i])}</em></b>`).join('');
   const nets = Object.keys(PLATFORMS).filter((k) => S.platforms[k] || S.posts.some((p) => p.pf.includes(k)));
   if (OV.pf !== 'all' && !nets.includes(OV.pf)) OV.pf = 'all';
   const face = OV.pf === 'all' ? `<span class="ov-net all">${ic('globe', 13)}</span>` : `<span class="ov-net" style="background:${PLATFORMS[OV.pf].c}">${ic('net_' + OV.pf, 12)}</span>`;
   return `<section class="widget ov-kpi" id="ovKpiS">
-    <div class="ov-kh"><div class="grow"><span class="ov-lab">Scheduled posts</span><div class="ov-num"><b>${n}</b>${ovPill(n ? 'in the planner' : 'nothing planned', n ? 'g' : 'n')}</div></div>
+    <div class="ov-kh"><div class="grow"><span class="ov-lab">Scheduled posts</span><div class="ov-num"><b>${n}</b>${ovPill(n ? 'in the planner' : 'nothing planned', n ? 'g' : 'n')}</div>${review}</div>
       ${ovSel('pf', [['all', 'All networks'], ...nets.map((k) => [k, PLATFORMS[k].n])], face, 'Network')}</div>
-    <div class="ov-week" title="Posts going out this week">${ovSpark(week, 300, 44, week.some(Boolean) ? '' : 'flat')}${OV_DAYS.map((d, i) => `<span class="${iso(addD(ws, i)) === today ? 'on' : ''}">${d}</span>`).join('')}</div>
+    <div class="ov-week"><div class="ov-plot">${ovSpark(vals, 300, H, vals.some(Boolean) ? '' : 'flat')}${dots}</div>${days.map((d, i) => `<span class="${i ? '' : 'on'}">${i ? fmt(d, { weekday: 'short' }) : 'Today'}</span>`).join('')}</div>
   </section>`;
 }
 
-function ovDesigns() {
-  const n = S.designs.length, drafts = S.designs.filter((d) => d.status === 'Draft').length;
-  const slides = S.designs.slice(0, 8).reverse().map((d) => (d.pages ? d.pages.length : d.slides || 1) + 1);
+/** Posts this month: how many go out (scheduled or published) this month, against last month.
+    The curve is the running total across the month, sampled every 4 days. */
+function ovMonthCard() {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth(), mk = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  const cur = mk(now), prevD = new Date(y, m - 1, 1), prev = mk(prevD), out = (p) => p.status !== 'Draft' && p.status !== 'Rejected';
+  const ps = S.posts.filter((p) => out(p) && p.date.slice(0, 7) === cur), n = ps.length, before = S.posts.filter((p) => out(p) && p.date.slice(0, 7) === prev).length;
+  const len = new Date(y, m + 1, 0).getDate(), byDay = [0, 4, 8, 12, 16, 20, 24, len].map((day) => ps.filter((p) => +p.date.slice(8, 10) <= day).length);
+  const diff = n - before, pub = ps.filter((p) => p.status === 'Published').length, pm = fmt(prevD, { month: 'short' });
+  const pill = !n && !before ? ovPill('nothing yet', 'n') : ovPill((diff > 0 ? '+' : '') + diff + ' vs ' + pm, diff > 0 ? 'g' : diff < 0 ? 'r' : 'n');
   return `<section class="widget ov-kpi ov-kpi-d" id="ovKpiD">
-    <span class="ov-ico">${ic('studio', 20)}</span>${n > 1 ? ovSpark(slides, 120, 40, 'mini') : ''}
-    <div><span class="ov-lab">Designs</span><div class="ov-num lg"><b>${n}</b>${n ? ovPill(drafts + ' in draft', drafts ? 'r' : 'g') : `<a class="ov-link" href="#/studio">Create the first one</a>`}</div></div>
+    <span class="ov-ico" aria-hidden="true">${ic('send', 20)}</span>
+    <span class="ov-mini-c" title="Running total of posts in ${fmt(now, { month: 'long' })}">${ovSpark(byDay, 120, 40, n ? 'mini' : 'mini flat')}</span>
+    <div><span class="ov-lab">Posts in ${fmt(now, { month: 'long' })}</span><div class="ov-num lg"><b>${n}</b>${pill}</div>
+      <span class="ov-cap2">${n ? `${pub} published · ${n - pub} still to go out${ps.some((p) => p.status === 'In Review') ? ` (${ps.filter((p) => p.status === 'In Review').length} in review)` : ''}` : `Nothing planned for ${fmt(now, { month: 'long' })} yet. <a class="ov-link" href="#/planner">Plan a post</a>`}</span></div>
   </section>`;
 }
 
@@ -749,7 +772,7 @@ function ovPublishing() {
     const k = m.getFullYear() + '-' + String(m.getMonth() + 1).padStart(2, '0'), ps = S.posts.filter((p) => p.date.slice(0, 7) === k), c = (s) => ps.filter((p) => p.status === s).length;
     return { m, pub: c('Published'), sch: c('Scheduled'), dr: c('Draft') };
   });
-  const top = Math.max(...rows.map((r) => r.pub + r.sch + r.dr)), step = Math.max(1, Math.ceil(top / 4)), max = step * 4, pc = (v) => (v / max * 100).toFixed(2) + '%';
+  const top = Math.max(...rows.map((r) => r.pub + r.sch + r.dr)), step = Math.max(1, Math.ceil((top + 1) / 4)), max = step * 4, pc = (v) => (v / max * 100).toFixed(2) + '%';
   const pub = S.posts.filter((p) => p.status === 'Published').length, sch = S.posts.filter((p) => p.status === 'Scheduled').length;
   const drafts = S.designs.filter((d) => d.status === 'Draft').length, appr = S.designs.filter((d) => d.status === 'Approved').length;
   const sum = (icon, cls, l, v, pill = '') => `<div class="ov-sum"><span class="ov-ico ${cls}">${ic(icon, 20)}</span><div><span class="ov-cap">${l}</span><div class="ov-num sm"><b>${v}</b>${pill}</div></div></div>`;
@@ -759,7 +782,7 @@ function ovPublishing() {
       ${ovSel('period', [['last', 'Last 12 months'], ['year', 'This year']], `<span>${OV.period === 'year' ? 'This year' : 'Last year'}</span>`, 'Period')}</div>
     <div class="ov-sums">${sum('check', 'c1', 'Published', pub, ovPill('all time', 'g'))}${sum('cal', 'c2', 'Scheduled', sch)}${sum('doc', 'c3', 'Drafts', drafts, ovPill(appr + ' approved', 'r'))}</div>
     <div class="ov-chart"><div class="ov-y">${[4, 3, 2, 1, 0].map((i) => `<span>${i * step}</span>`).join('')}</div>
-      <div class="ov-bars">${rows.map((r) => `<div class="ov-bar" title="${fmt(r.m, { month: 'long', year: 'numeric' })}: ${r.pub} published, ${r.sch} scheduled, ${r.dr} drafts"><span class="ov-stack">${r.pub ? `<i class="c1" style="height:${pc(r.pub)}"></i>` : ''}${r.sch ? `<i class="c2" style="height:${pc(r.sch)}"></i>` : ''}${r.dr ? `<i class="c3" style="height:${pc(r.dr)}"></i>` : ''}</span><span class="ov-m">${fmt(r.m, { month: 'narrow' })}</span></div>`).join('')}
+      <div class="ov-bars">${rows.map((r) => `<div class="ov-bar" tabindex="0" aria-label="${fmt(r.m, { month: 'long', year: 'numeric' })}: ${r.pub} published, ${r.sch} scheduled, ${r.dr} drafts"><em><b>${fmt(r.m, { month: 'long', year: 'numeric' })}</b><span><i class="c1"></i>${r.pub} published</span><span><i class="c2"></i>${r.sch} scheduled</span><span><i class="c3"></i>${r.dr} drafts</span></em><span class="ov-stack">${r.pub ? `<i class="c1" style="height:${pc(r.pub)}"></i>` : ''}${r.sch ? `<i class="c2" style="height:${pc(r.sch)}"></i>` : ''}${r.dr ? `<i class="c3" style="height:${pc(r.dr)}"></i>` : ''}</span><span class="ov-m">${fmt(r.m, { month: 'narrow' })}</span></div>`).join('')}
       ${top ? '' : `<div class="ov-over"><b>No posts in this period</b><span>Schedule a design in the planner to see it here.</span><a class="btn secondary sm" href="#/planner">Open planner</a></div>`}</div></div>
   </section>`;
 }
@@ -778,11 +801,11 @@ function ovHealth() {
 function ovPlatforms() {
   const now = new Date(), from = OV.top === 'week' ? iso(monday(now)) : OV.top === 'month' ? iso(new Date(now.getFullYear(), now.getMonth(), 1)) : '', to = OV.top === 'week' ? iso(addD(monday(now), 6)) : OV.top === 'month' ? iso(new Date(now.getFullYear(), now.getMonth() + 1, 0)) : '9999';
   const ps = S.posts.filter((p) => p.date >= from && p.date <= to);
-  const rows = Object.keys(PLATFORMS).map((k) => ({ k, n: ps.filter((p) => p.pf.includes(k)).length })).filter((r) => r.n).sort((a, b) => b.n - a.n).slice(0, 4);
-  const step = Math.max(1, Math.ceil((rows[0] ? rows[0].n : 0) / 5)), max = step * 5, when = { week: 'this week', month: 'this month', all: 'yet' }[OV.top];
+  const all = Object.keys(PLATFORMS).map((k) => ({ k, n: ps.filter((p) => p.pf.includes(k)).length })).filter((r) => r.n).sort((a, b) => b.n - a.n), rows = all.slice(0, 4), total = all.reduce((t, r) => t + r.n, 0);
+  const step = Math.max(1, Math.ceil(((rows[0] ? rows[0].n : 0) + 1) / 5)), max = step * 5, when = { week: 'this week', month: 'this month', all: 'yet' }[OV.top];
   return `<section class="widget ov-mini" id="ovTop">
     <div class="ov-wh"><h2 class="wtitle">${ic('users', 24)}Top Platforms</h2>${ovSel('top', [['week', 'Weekly'], ['month', 'Monthly'], ['all', 'All time']], `<span>${{ week: 'Weekly', month: 'Monthly', all: 'All time' }[OV.top]}</span>`, 'Period')}</div>
-    ${rows.length ? `<div class="ov-plat"><div class="ov-pgrid" aria-hidden="true" style="grid-row:1/${rows.length + 1}"></div>${rows.map((r, i) => `<span class="ov-pn" style="grid-row:${i + 1}">${PLATFORMS[r.k].n}</span><span class="ov-pt" style="grid-row:${i + 1}"><i class="c${i + 1}" style="width:${(r.n / max * 100).toFixed(2)}%" tabindex="0" aria-label="${PLATFORMS[r.k].n}: ${r.n} post${r.n > 1 ? 's' : ''}"><em>${r.n} post${r.n > 1 ? 's' : ''}</em></i></span>`).join('')}
+    ${rows.length ? `<div class="ov-plat"><div class="ov-pgrid" aria-hidden="true" style="grid-row:1/${rows.length + 1}"></div>${rows.map((r, i) => `<span class="ov-pn" style="grid-row:${i + 1}"><span class="ov-net" style="background:${PLATFORMS[r.k].c}">${ic('net_' + r.k, 12)}</span>${PLATFORMS[r.k].n}</span><span class="ov-pt" style="grid-row:${i + 1}"><i class="c${i + 1}" style="width:${(r.n / max * 100).toFixed(2)}%" tabindex="0" aria-label="${PLATFORMS[r.k].n}: ${r.n} post${r.n > 1 ? 's' : ''}"><em>${Math.round(r.n / total * 100)}% of posts</em></i><span class="ov-pv">${r.n}</span></span>`).join('')}
       <span class="ov-px" style="grid-row:${rows.length + 1}">${[...Array(6)].map((_, i) => `<span>${i * step}</span>`).join('')}</span></div>`
       : `<div class="ov-none">${ic('send', 20)}<span>No posts ${when}. Planned posts show up here by network.</span></div>`}
   </section>`;
@@ -800,9 +823,16 @@ function ovList() {
     if (!L.length) return q ? miss : ovEmpty('No blog articles yet.', 'Live articles from Blog Admin show up here.');
     return L.map(({ a, i }) => `<div class="ov-it"><b>${esc(a.t)}</b><div class="ov-itf"><span>${esc(a.c)}</span></div><button class="btn secondary sm" data-act="fromArticle" data-i="${i}">${ic('studio', 16)}Make post</button></div>`).join('');
   }
-  const L = S.posts.filter((p) => p.date >= OV.day && (OV.st === 'all' ? p.status !== 'Published' : p.status === OV.st))
+  // The selected day's posts, then the next ones after it (published posts only on their own day)
+  const L = S.posts.filter((p) => p.date >= OV.day && (OV.st === 'all' || p.status === OV.st))
     .map((p) => ({ p, d: getD(p.d) })).filter(({ d }) => d && hit(d.name)).sort((a, b) => (a.p.date + a.p.time).localeCompare(b.p.date + b.p.time));
-  if (!L.length) return q ? miss : ovEmpty(`No ${OV.st === 'all' ? 'posts' : OV.st.toLowerCase() + ' posts'} yet.`, 'Add new design', ovNewBtn());
+  const day = L.filter(({ p }) => p.date === OV.day), later = L.filter(({ p }) => p.date > OV.day && (OV.st !== 'all' || p.status !== 'Published')).slice(0, 4);
+  const dl = OV.day === iso(new Date()) ? 'Today' : fmt(new Date(OV.day + 'T00:00'), { weekday: 'long', day: 'numeric', month: 'short' });
+  if (!day.length && !later.length) return q ? miss : ovEmpty(`No ${OV.st === 'all' ? 'posts' : OV.st.toLowerCase() + ' posts'} from ${dl === 'Today' ? 'today' : dl} on.`, 'Add new design', ovNewBtn());
+  const grp = (t, n) => `<div class="ov-grp"><span>${t}</span>${n ? `<b>${n}</b>` : ''}</div>`;
+  return grp(dl, day.length) + (day.length ? ovPosts(day) : `<p class="ov-nil">Nothing planned for this day. <a href="#/planner">Plan a post</a></p>`) + (later.length ? grp('Coming next') + ovPosts(later) : '');
+}
+function ovPosts(L) {
   return L.map(({ p, d }) => `<details class="ov-it ov-post"><summary><div class="ov-ith"><div class="grow"><b>${esc(d.name)}</b><span class="ov-when">${fmt(new Date(p.date + 'T00:00'), { weekday: 'short', month: 'short', day: '2-digit' })} · ${p.time}</span></div><span class="ov-chev">${ic('chevD', 16)}</span></div>
     <div class="ov-itf"><span>On ${p.pf.map((k) => (PLATFORMS[k] || { n: k }).n).join(', ')}</span>${ovPill(p.status, ovTone(p.status))}</div></summary>
     <div class="ov-itx"><div class="thumbbox">${thumb(d.pages[0], d.ratio, 64, 64)}</div><div class="grow"><span>${ratioLabel(d.ratio)}${d.pages.length > 1 ? ' · ' + d.pages.length + ' slides' : ''}</span><div class="row" style="gap:6px"><button class="btn secondary sm" data-act="open" data-id="${d.id}">Edit design</button><a class="btn ghost sm" href="#/planner">Planner</a></div></div></div></details>`).join('');
@@ -831,7 +861,7 @@ PAGES.overview = {
     const who = esc(allOn() ? 'your brands' : brand().name);
     return `<div class="ov-wrap"><div class="ov">
       <div class="ov-main">
-        <div class="ov-kpis">${ovScheduled()}${ovDesigns()}</div>
+        <div class="ov-kpis">${ovScheduled()}${ovMonthCard()}</div>
         ${ovPublishing()}
         <div class="ov-duo">${ovHealth()}${ovPlatforms()}</div>
       </div>
@@ -906,7 +936,8 @@ document.addEventListener('drop', (e) => {
 });
 
 /* ---------- Studio (design hub) ---------- */
-const ST = { tab: 0, q: '' };
+const ST = { tab: 0, q: '', page: 0 };
+const ST_PER = 12;
 PAGES.studio = {
   t: 'Studio', s: 'Design posts for every platform, or bring them in from Figma.',
   actions: () => `<button class="btn secondary" data-act="figma">${ic('figma')}<span class="hide-sm">Import from Figma</span></button><button class="btn primary" data-act="newDesign" data-ratio="4:5">${ic('plus')}New design</button>`,
@@ -919,10 +950,18 @@ PAGES.studio = {
     const none = (icon, title, text, cta) => `<div class="lib-empty">${ic(icon, 24)}<b>${title}</b><p>${text}</p>${cta || ''}</div>`;
     const miss = () => none('search', 'No results', `Nothing matches “${esc(ST.q.trim())}”.`, `<button class="btn secondary sm" data-act="stClear">Clear search</button>`);
     const tplCard = ({ t, b }) => `<div class="card tp"${allOn() ? ` data-brand="${b.id}"` : ''}><button class="pv" data-act="fromBTpl" data-id="${t.id}" aria-label="New design from ${esc(t.name)}">${allOn() ? `<span class="bmark" title="${esc(b.name)}">${brandAv(b, 'xs')}</span>` : ''}${btThumb(t, 190, 215)}</button><div class="meta"><b>${esc(t.name)}</b><small>${ratioLabel(t.ratio)}${allOn() ? ' · ' + esc(b.name) : ''}</small></div></div>`;
+    // one page of the active library, with a pager under it
+    const list = ST.tab === 1 ? ts : ds, pages = Math.max(1, Math.ceil(list.length / ST_PER));
+    ST.page = Math.min(Math.max(0, ST.page), pages - 1);
+    const from = ST.page * ST_PER, shown = list.slice(from, from + ST_PER);
+    const pager = pages < 2 ? '' : `<nav class="pager" aria-label="Pages"><span class="xs-t muted">${from + 1}–${from + shown.length} of ${list.length}</span><span class="grow"></span>
+      <button class="btn secondary icon sm" data-act="stPage" data-p="${ST.page - 1}" ${ST.page ? '' : 'disabled'} aria-label="Previous page">${ic('chevL', 16)}</button>
+      ${[...Array(pages)].map((_, i) => i).filter((i) => pages <= 7 || i === 0 || i === pages - 1 || Math.abs(i - ST.page) <= 1).reduce((a, i, k, arr) => a + (k && i - arr[k - 1] > 1 ? '<span class="st-gap">…</span>' : '') + `<button class="btn ${i === ST.page ? 'primary' : 'ghost'} sm st-pn" data-act="stPage" data-p="${i}" ${i === ST.page ? 'aria-current="page"' : ''}>${i + 1}</button>`, '')}
+      <button class="btn secondary icon sm" data-act="stPage" data-p="${ST.page + 1}" ${ST.page < pages - 1 ? '' : 'disabled'} aria-label="Next page">${ic('chevR', 16)}</button></nav>`;
     let body;
-    if (ST.tab === 1) body = ts.length ? `<div class="cards">${ts.map(tplCard).join('')}</div>` : q && tpls.length ? miss()
+    if (ST.tab === 1) body = ts.length ? `<div class="cards">${shown.map(tplCard).join('')}</div>${pager}` : q && tpls.length ? miss()
       : none('layout', 'No templates yet', 'Open a design and choose “Save slide as brand template” to reuse its layout here.', S.designs.length ? '' : `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
-    else body = ds.length ? `<div class="cards">${ds.map((d) => designCard(d)).join('')}</div>` : q && S.designs.length ? miss()
+    else body = ds.length ? `<div class="cards">${shown.map((d) => designCard(d)).join('')}</div>${pager}` : q && S.designs.length ? miss()
       : none('image', 'No designs yet', 'Pick a format above to start, or import frames from Figma.', `<button class="btn primary sm" data-act="newDesign" data-ratio="4:5">${ic('plus', 16)}New design</button>`);
     const tab = (i, l, n) => `<button class="${ST.tab === i ? 'on' : ''}" data-act="stab" data-i="${i}" role="tab" aria-selected="${ST.tab === i}">${l}<span class="lib-n">${n}</span></button>`;
     return `<div class="tiles">${tile('1:1', 'Square post', '1080 × 1080', 26, 26)}${tile('4:5', 'Portrait post', '1080 × 1350', 22, 28)}${tile('9:16', 'Story / Reel', '1080 × 1920', 18, 32)}${tile('4:5', 'Carousel', '3 slides · 4:5', 22, 28, 3)}</div>
@@ -930,9 +969,10 @@ PAGES.studio = {
       <label class="lib-q">${ic('search', 16)}<input id="stq" type="search" placeholder="Search ${ST.tab === 1 ? 'templates' : 'designs'}" value="${esc(ST.q)}" aria-label="Search ${ST.tab === 1 ? 'templates' : 'designs'}"></label></div>${body}`;
   },
 };
-ACT.stab = (a) => { ST.tab = +a.dataset.i; route(); };
-ACT.stClear = () => { ST.q = ''; route(); $('#stq') && $('#stq').focus(); };
-document.addEventListener('input', (e) => { if (e.target.id === 'stq') { ST.q = e.target.value; const p = e.target.selectionStart; route(); const n = $('#stq'); n.focus(); n.setSelectionRange(p, p); } });
+ACT.stab = (a) => { ST.tab = +a.dataset.i; ST.page = 0; route(); };
+ACT.stPage = (a) => { ST.page = +a.dataset.p; route(); const b = $('.lib-bar'); b && b.scrollIntoView({ block: 'start', behavior: 'smooth' }); };
+ACT.stClear = () => { ST.q = ''; ST.page = 0; route(); $('#stq') && $('#stq').focus(); };
+document.addEventListener('input', (e) => { if (e.target.id === 'stq') { ST.q = e.target.value; ST.page = 0; const p = e.target.selectionStart; route(); const n = $('#stq'); n.focus(); n.setSelectionRange(p, p); } });
 
 /* ---------- Brand kit (one per brand workspace) ---------- */
 const BK = { tab: 'info' };
@@ -1028,8 +1068,6 @@ function openBrands() {
       ${S.brands.length > 1 ? `<button class="btn ghost icon sm" data-act="delBrand" data-id="${b.id}" title="Delete brand" aria-label="Delete ${esc(b.name)}">${ic('trash', 16)}</button>` : ''}</div>`; };
   const view = () => `<div class="mh"><h2>Your brands</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
     <div class="mb" style="gap:12px">
-      <div class="br-tools"><span class="xs-t muted">Sort</span><div class="seg br-sort">${[['az', 'A–Z'], ['recent', 'Recently used'], ['busy', 'Most scheduled']].map(([k, l]) => `<button data-act="brSort" data-k="${k}">${l}</button>`).join('')}</div></div>
-      <p class="xs-t muted">Drag a brand to change the order of the switcher. Click a photo to change it.</p>
       <div class="br-list">${S.brands.map(row).join('')}</div>
       ${S.brands.length > 1 ? `<button class="br-all ${allOn() ? 'on' : ''}" data-act="allBrands">${allAv('md')}<span class="grow"><b>All brands in one workspace</b><small>Overview, planner and designs of every brand together</small></span>${allOn() ? '<span class="badge b-Published">On</span>' : ic('chevR', 16)}</button>` : ''}
     </div>
@@ -1308,11 +1346,6 @@ Object.assign(ACT, {
   allBrands: () => { closeModals(); closeDrawer(); S.set.allBrands = true; save(); renderSide(); if (/^#\/(brand|settings|profile|editor)/.test(location.hash)) location.hash = '#/overview'; else route(); toast('All brands in one workspace'); },
   brandPhoto: (a) => { const b = S.brands.find((x) => x.id === (a.dataset.id || S.active)); if (b && canEdit()) openBrandPhoto(b); },
   brMove: (a) => { const i = S.brands.findIndex((x) => x.id === a.dataset.id), j = i + +a.dataset.n; if (i < 0 || j < 0 || j >= S.brands.length) return; const [m] = S.brands.splice(i, 1); S.brands.splice(j, 0, m); save(); renderSide(); BR.paint && BR.paint(); },
-  brSort: (a) => {
-    const k = a.dataset.k, sch = (b) => ((S.data[b.id] || { posts: [] }).posts.filter((p) => p.status === 'Scheduled').length);
-    S.brands.sort(k === 'az' ? (x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: 'base' }) : k === 'recent' ? (x, y) => (y.lastUsed || 0) - (x.lastUsed || 0) : (x, y) => sch(y) - sch(x));
-    save(); renderSide(); BR.paint && BR.paint(); toast(k === 'az' ? 'Sorted A–Z' : k === 'recent' ? 'Sorted by last used' : 'Sorted by scheduled posts');
-  },
   manageBrands: () => { closeModals(); closeDrawer(); openBrands(); },
   bkTab: (a) => { BK.tab = a.dataset.k; rerender(); },
   bkGo: (a) => { if (a.dataset.tab) { BK.tab = a.dataset.tab; location.hash === '#/brand' ? route() : (location.hash = '#/brand'); } else location.hash = a.dataset.href; },
@@ -2000,7 +2033,22 @@ function aabb(l) {
 }
 
 /* ---------- history ---------- */
-function touch() { ED.d.upd = 'Just now'; const s = $('#savetxt'); if (s) s.innerHTML = '<i></i>Saved'; }
+function touch() { ED.d.upd = 'Just now', ED.d.at = Date.now(); const s = $('#savetxt'); if (s) s.innerHTML = '<i></i>Saved'; autoName(ED.d); }
+/** Automatic name: while a design still has the default name (or the last automatic one), it takes its
+    biggest headline on the first slide, e.g. "Economic Calendar". It happens once: after that the name
+    stays as it is until someone changes it by hand. */
+function autoName(d) {
+  if (!d || d.named || !(/^Untitled design/.test(d.name || '') || (d.auto && d.name === d.auto))) return false;
+  const pg = d.pages && d.pages[0]; if (!pg) return false;
+  const big = pg.layers.filter((l) => l.type === 'text' && !l.hidden && String(l.text || '').trim().length > 1 && !/^(your (heading|subheading)|write something short)/i.test(String(l.text).trim())).sort((a, b) => (b.size || 0) - (a.size || 0) || a.y - b.y)[0];
+  if (!big) return false;
+  let n = String(big.text).replace(/\s+/g, ' ').trim();
+  if (n.length > 48) n = n.slice(0, 48).replace(/\s+\S*$/, '') + '…';
+  if (!n || n === d.name) return false;
+  d.name = d.auto = n; d.named = true;
+  const f = document.getElementById('edName'); if (f && ED.d === d && document.activeElement !== f) f.value = n;
+  return true;
+}
 function commit(pre) { if (pre && snap() !== pre) { ED.undo.push(pre); if (ED.undo.length > 60) ED.undo.shift(); ED.redo = []; touch(); edTop(); } }
 function mutate(fn, redraw = edAll) { const pre = snap(); fn(); commit(pre); redraw(); }
 function doUndo() { if (!ED.undo.length) return; ED.redo.push(snap()); const ch = restore(ED.undo.pop()); fixSel(); edAll(); if (ch) fitZoom(); }
@@ -2236,7 +2284,7 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'edRatio') return magicResize(t.value);
-  if (t.id === 'edName') { ED.d.name = t.value || 'Untitled design'; touch(); return; }
+  if (t.id === 'edName') { ED.d.name = t.value || 'Untitled design'; ED.d.named = !!t.value.trim(); touch(); return; }
   if (t.id === 'upl' && t.files[0]) { const f = t.files[0], r = new FileReader(); r.onload = () => { const im = new Image(); im.onload = () => { const [W] = dim(), w = Math.min(W * 0.7, im.width), h = w * (im.height / im.width); addLayer(Im(Math.round((W - w) / 2), 200, Math.round(w), Math.round(h), `url(${r.result}) center/cover`, { name: f.name.slice(0, 20), r: 24 })); }; im.src = r.result; }; r.readAsDataURL(f); return; }
   if (t.closest && t.closest('#edProps') && ED.pre) { commit(ED.pre); ED.pre = null; edProps(); edPages(); }
 });
@@ -3424,7 +3472,9 @@ Object.assign(IC, {
   Object.assign(P, { view: 'week', mo: new Date(), fPf: null, fSt: null, best: true, bn: null, q: '' }); // fSt: the statuses shown (a Set), null = all
   try { if (localStorage.getItem('uxb.pside') === '0') P.side = false; const bn = localStorage.getItem('uxb.pbest'); if (bn != null) P.bestNet = bn || null; P.pct = localStorage.getItem('uxb.ppct') === '1'; } catch (e) {}
   /** Toolbar dropdown in the studio's style: a label, the current choice with its color dot, and a menu of choices */
-  const ST_C = { Scheduled: '#3b82f6', Draft: '#94a3b8', Approved: '#8b5cf6', Published: '#16a34a', Failed: '#ef4444' };
+  // Overview → "waiting for approval": the planner's list of the runs in review or rejected
+  ACT.ovReview = () => { P.fSt = new Set(['In Review', 'Rejected']); P.fPf = null; P.view = 'list'; };
+  const ST_C = { Scheduled: '#3b82f6', Draft: '#94a3b8', Approved: '#8b5cf6', 'In Review': '#f59e0b', Published: '#16a34a', Rejected: '#e11d48', Failed: '#ef4444' };
   const pdd = (k, label, val, opts, head) => { const cur = opts.find((o) => o[0] === val) || opts[0], picked = val && val !== 'All';
     const item = ([v, l, c]) => `<button type="button" role="option" aria-selected="${v === val}" data-act="pddp" data-k="${k}" data-v="${esc(v)}" class="${v === val ? 'on' : ''}">${c ? `<i class="pdot" style="--c:${c}"></i>` : '<i class="pdot off"></i>'}<span class="grow">${esc(l)}</span>${v === val ? ic('check', 14) : ''}</button>`;
     const main = opts.filter((o) => o[0] !== '' && o[0] !== 'All'), extra = opts.filter((o) => o[0] === '' || o[0] === 'All');
@@ -3438,12 +3488,12 @@ Object.assign(IC, {
   const qhit = (p) => { const q = P.q.trim().toLowerCase(); if (!q) return true; const d = getD(p.d); return [p.cap, d && d.name, p.auto && p.auto.name].some((x) => String(x || '').toLowerCase().includes(q)); };
   const fvis = (p) => (!P.fSt || P.fSt.has(p.status)) && (!P.fPf || p.pf.some((k) => P.fPf.has(k))) && qhit(p);
   const fnets = () => (P.fPf ? [...P.fPf] : conn());
-  const stDot = (s) => `<i class="sd7 ${s}"></i>`;
-  const postCard = (p) => { const dd = getD(p.d); return `<div class="pc7 ${p.status}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}" aria-label="${esc(snip(p))}, ${p.time}, ${p.status}"${p.publish && p.publish.lastError ? ` title="${esc(p.publish.lastError)}"` : ''}>
+  const stDot = (s) => `<i class="sd7 ${stK(s)}"></i>`;
+  const postCard = (p) => { const dd = getD(p.d); return `<div class="pc7 ${stK(p.status)}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}" aria-label="${esc(snip(p))}, ${p.time}, ${p.status}"${p.publish && p.publish.lastError ? ` title="${esc(p.publish.lastError)}"` : ''}>
     <div class="pc7h"><b>${p.time}</b>${pfDots(p.pf)}</div>
     <div class="pc7b"><div class="thumbbox" style="width:36px;height:36px;background:transparent">${thumb(dd.pages[0], dd.ratio, 36, 36)}</div><p>${esc(snip(p))}</p></div>
     <div class="pc7f">${stDot(p.status)}<span>${p.status}</span><span class="qa7"><button data-act="pdup" data-id="${p.id}" title="Duplicate as draft" aria-label="Duplicate">${ic('copy', 13)}</button><button data-act="pdel" data-id="${p.id}" title="Delete" aria-label="Delete">${ic('trash', 13)}</button></span></div></div>`; };
-  const chip = (p) => { const dd = getD(p.d); return `<div class="mc7 ${p.status}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}" title="${esc(snip(p))} · ${p.time} · ${p.status}">${dd ? `<span class="mc7-th">${thumb(dd.pages[0], dd.ratio, 16, 16)}</span>` : ''}<span class="t">${p.time}</span><b>${esc(snip(p))}</b></div>`; };
+  const chip = (p) => { const dd = getD(p.d); return `<div class="mc7 ${stK(p.status)}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}" title="${esc(snip(p))} · ${p.time} · ${p.status}">${dd ? `<span class="mc7-th">${thumb(dd.pages[0], dd.ratio, 16, 16)}</span>` : ''}<span class="t">${p.time}</span><b>${esc(snip(p))}</b></div>`; };
   function ghosts(k, ps) {
     if (!P.best || k < iso(new Date()) || ps.length >= 3) return [];
     const nets = fnets(), now = new Date(), nowM = now.getHours() * 60 + now.getMinutes() + 30;
@@ -3463,7 +3513,7 @@ Object.assign(IC, {
   /** A new post in the hour going on starts now: the next 5-minute mark (HH:MM) */
   const nowSlot = () => { const n = new Date(), m = Math.min(23 * 60 + 59, Math.ceil((n.getHours() * 60 + n.getMinutes() + 1) / 5) * 5); return pad(Math.floor(m / 60)) + ':' + pad(m % 60); };
   /** A post on the week grid or in a month day: thumbnail, title, time and its networks, tinted by status */
-  const tile = (p, th, style = '') => { const dd = getD(p.d); return `<div class="cal-post ${p.status}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}"${style ? ` style="${style}"` : ''} aria-label="${esc(snip(p))}, ${p.time}, ${p.status}" title="${esc(snip(p))} · ${p.time}${p.publish && p.publish.lastError ? ' · ' + esc(p.publish.lastError) : ''}">
+  const tile = (p, th, style = '') => { const dd = getD(p.d); return `<div class="cal-post ${stK(p.status)}" role="button" tabindex="0" draggable="true" data-dragpost="${p.id}" data-act="pedit" data-id="${p.id}"${style ? ` style="${style}"` : ''} aria-label="${esc(snip(p))}, ${p.time}, ${p.status}" title="${esc(snip(p))} · ${p.time}${p.publish && p.publish.lastError ? ' · ' + esc(p.publish.lastError) : ''}">
     ${dd ? `<span class="cp-th">${thumb(dd.pages[0], dd.ratio, th, th)}</span>` : ''}<span class="cp-b"><span class="cp-t">${esc(snip(p))}</span><b>${p.time}</b></span><span class="cp-f">${p.pf.map((k) => `<span title="${PLATFORMS[k].n}">${ic('net_' + k, 15)}</span>`).join('')}</span></div>`; };
   /** The bar on top of the week and month grids: previous / next, the period and how many posts it holds */
   const calBar = (title, n, unit) => `<div class="cal-bar"><div class="cal-gut"><button data-act="pnav" data-n="-1" title="Previous ${unit}" aria-label="Previous ${unit}">${ic('chevL', 16)}</button><button data-act="pnav" data-n="1" title="Next ${unit}" aria-label="Next ${unit}">${ic('chevR', 16)}</button></div><b aria-live="polite">${title}</b><span>${n} post${n === 1 ? '' : 's'}</span></div>`;
@@ -3534,7 +3584,7 @@ Object.assign(IC, {
     ps.forEach((p) => {
       if (p.date !== last) { last = p.date; out += `<div class="l7d">${fmt(dparse(p.date), { weekday: 'long', day: 'numeric', month: 'long' })}${p.date === today ? '<small>Today</small>' : p.date === iso(addD(new Date(), 1)) ? '<small>Tomorrow</small>' : ''}</div>`; }
       const dd = getD(p.d);
-      out += `<div class="l7r" role="button" tabindex="0" data-act="pedit" data-id="${p.id}"><span class="tt">${p.time}</span><div class="thumbbox" style="width:40px;height:40px;background:transparent">${thumb(dd.pages[0], dd.ratio, 40, 40)}</div><div style="min-width:0"><p>${esc(snip(p))}</p><small>${esc(dd.name)}</small></div>${pfDots(p.pf)}${badge(p.status)}<span class="ra">${p.status !== 'Published' ? `<button data-act="pnow" data-id="${p.id}" title="Publish now" aria-label="Publish now">${ic('send', 16)}</button>` : ''}<button data-act="pdup" data-id="${p.id}" title="Duplicate as draft" aria-label="Duplicate">${ic('copy', 16)}</button><button data-act="pdel" data-id="${p.id}" title="Delete" aria-label="Delete">${ic('trash', 16)}</button></span></div>`;
+      out += `<div class="l7r" role="button" tabindex="0" data-act="pedit" data-id="${p.id}"><span class="tt">${p.time}</span><div class="thumbbox" style="width:40px;height:40px;background:transparent">${thumb(dd.pages[0], dd.ratio, 40, 40)}</div><div style="min-width:0"><p>${esc(snip(p))}</p><small>${esc(dd.name)}</small></div>${pfDots(p.pf)}${badge(p.status)}<span class="ra">${p.status !== 'Published' && (!p.review || p.review.state === 'approved') ? `<button data-act="pnow" data-id="${p.id}" title="Publish now" aria-label="Publish now">${ic('send', 16)}</button>` : ''}<button data-act="pdup" data-id="${p.id}" title="Duplicate as draft" aria-label="Duplicate">${ic('copy', 16)}</button><button data-act="pdel" data-id="${p.id}" title="Delete" aria-label="Delete">${ic('trash', 16)}</button></span></div>`;
     });
     return `<div class="l7">${out}</div>`;
   }
@@ -3560,7 +3610,7 @@ Object.assign(IC, {
       const fRow = (act, attrs, on, dot, label, multi) => `<button type="button" role="${multi ? 'menuitemcheckbox' : 'menuitemradio'}" aria-checked="${on}" data-act="${act}" ${attrs} class="pf-row ${on ? 'on' : ''}" style="--c:${dot || 'var(--accent)'}">${multi ? `<span class="pf-check ${on ? 'on' : ''}" aria-hidden="true"><svg viewBox="0 0 16 16" width="12" height="12"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>` : `<span class="pf-radio ${on ? 'on' : ''}" aria-hidden="true"></span>`}${dot ? '<i class="pdot"></i>' : ''}<span class="grow">${label}</span></button>`;
       const filter = `<div class="dd pdd pfilter ${active ? 'pdd-on' : ''}" data-k="flt"><button type="button" class="ddb" data-act="ddt" aria-haspopup="menu" aria-label="Filter posts${active ? `, ${active} active` : ''}">${ic('filter', 15)}<span>Filter</span>${active ? `<em class="pf-n">${active}</em>` : ''}</button>
         <div class="ddm ${openK === 'flt' ? 'noanim' : ''}" role="menu" ${openK === 'flt' ? '' : 'hidden'}>
-          <div class="pdd-h">Status</div>${[['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'Published', 'Failed'].map((x) => [x, x, ST_C[x]])].map(([v, l, c]) => fRow('pfst', `data-v="${v}"`, v === 'All' ? !P.fSt : !!P.fSt && P.fSt.has(v), c, l, true)).join('')}
+          <div class="pdd-h">Status</div>${[['All', 'All statuses', ''], ...['Scheduled', 'Draft', 'Approved', 'In Review', 'Published', 'Rejected', 'Failed'].filter((x) => !['In Review', 'Rejected'].includes(x) || S.posts.some((p) => p.status === x)).map((x) => [x, x, ST_C[x]])].map(([v, l, c]) => fRow('pfst', `data-v="${v}"`, v === 'All' ? !P.fSt : !!P.fSt && P.fSt.has(v), c, l, true)).join('')}
           ${active ? `<div class="pdd-sep"></div><button type="button" class="pf-reset" data-act="pfReset">Clear filters</button>` : ''}</div></div>`;
       // Best Times: the network whose hours tint the grid (or none), and whether each hour shows its %
       const best = P.view === 'week' ? (() => { const bn = bestNet(), o = openK === 'best';
@@ -3925,7 +3975,7 @@ persist.onConflict((list) => {
   list.forEach(({ brandId, item }) => {
     const D = S.data[brandId], i = D ? D.designs.findIndex((x) => x.id === item.id) : -1; if (i < 0) return;
     const mine = D.designs[i], copy = JSON.parse(JSON.stringify(mine)), saved = JSON.parse(JSON.stringify(item));
-    copy.id = 'd' + uid(); copy.name = ((mine.name || 'Untitled design') + ' (conflicted copy)').slice(0, 80); copy.status = 'Draft'; copy.upd = 'Just now';
+    copy.id = 'd' + uid(); copy.name = ((mine.name || 'Untitled design') + ' (conflicted copy)').slice(0, 80); copy.status = 'Draft'; copy.upd = 'Just now', copy.at = Date.now();
     if (copy.source === 'Figma') { copy.source = 'Template'; delete copy.figma; }
     ensureRatio(saved.ratio); (saved.pages || []).forEach((pg) => (pg.layers || []).forEach(migrateLayer));
     // same object, the saved content: posts and the planner keep pointing at it
@@ -5372,10 +5422,10 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   }
   function merge(st) {
     const p = S.posts.find((x) => x.id === st.id); if (!p) return false;
-    const before = JSON.stringify([p.status, p.publish, p.media]);
-    p.status = st.status; if (st.publish) p.publish = st.publish; if (st.media) p.media = st.media;
+    const before = JSON.stringify([p.status, p.publish, p.media, p.review]);
+    p.status = st.status; if (st.publish) p.publish = st.publish; if (st.media) p.media = st.media; if (st.review) p.review = st.review; else delete p.review;
     if (st.status === 'Published') { const d = S.designs.find((x) => x.id === p.d); if (d) d.status = 'Published'; }
-    return before !== JSON.stringify([p.status, p.publish, p.media]);
+    return before !== JSON.stringify([p.status, p.publish, p.media, p.review]);
   }
   const summary = (st) => {
     const r = Object.entries((st.publish && st.publish.results) || {}), ok = r.filter(([, x]) => x.ok).map(([k]) => net(k)), bad = r.filter(([, x]) => !x.ok).map(([k]) => net(k));
@@ -5836,7 +5886,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = applyPage(pg, r.events, date, r.byDay) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; pg.live.err = e.message; }
     }
-    if (changed) { d.upd = 'Just now'; save(); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
     if (ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data') edPanel(); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -5990,7 +6040,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       const mon = addDay(start, r * 7); if (r === 5 && mon.slice(0, 7) !== ym) break;
       const on = wk && selW[0] === mon;
       rows.push(`<div class="lv-cal-w ${wk ? 'wk' : ''} ${on ? 'on' : ''}">${[0, 1, 2, 3, 4, 5, 6].map((i) => {
-        const dd = addDay(mon, i), cls = [dd.slice(0, 7) !== ym && 'out', dd === today && 'today', i > 4 && 'we', !wk && dd === shownDate && 'sel', wk && on && i < 5 && 'in'].filter(Boolean).join(' ');
+        const dd = addDay(mon, i), cls = [dd.slice(0, 7) !== ym && 'out', dd === today && 'today', i > 4 && 'we', !wk && dd === shownDate && 'picked', wk && on && i < 5 && 'in'].filter(Boolean).join(' ');
         return `<button class="${cls}" data-act="lvCalPick" data-d="${wk ? mon : dd}" aria-label="${esc(fmt(new Date(dd + 'T12:00'), { weekday: 'long', day: 'numeric', month: 'long' }))}">${+dd.slice(8)}</button>`;
       }).join('')}</div>`);
     }
@@ -6788,7 +6838,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         changed = apply(pg, items, cfg) || changed; cfg.at = Date.now(); cfg.err = '';
       } catch (e) { err = e; cfg.err = e.message; if (!cfg.at) cfg.events = cfg.events || []; } finally { busyPages.delete(cfg); }
     }
-    if (changed) { d.upd = 'Just now'; save(); }
+    if (changed) { d.upd = 'Just now', d.at = Date.now(); save(); }
     if (ran && ED.d === d && $('.ed')) { if (changed && !ED.editing) { edStage(); edPages(); } if (ED.tab === 'data' && curP().live && curP().live.kind) panel($('#edPanel')); }
     if (err && !silent) toast('Live data: ' + err.message);
     return changed;
@@ -7329,7 +7379,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       if (!['1:1', '4:5', '9:16'].includes(a.ratio)) throw new Error('Use 1:1, 4:5 or 9:16'); if (ED.d.ratio === a.ratio) return `Already ${a.ratio}.`;
       magicResize(a.ratio); fitZoom(); return `Resized every slide to ${a.ratio} (${dim().join('×')}).`;
     },
-    async rename_design(a) { const n = String(a.name || '').trim().slice(0, 80); if (!n) throw new Error('Give a name'); ED.d.name = n; touch(); save(); const f = $('#edName'); if (f) f.value = n; return `Renamed to “${n}”.`; },
+    async rename_design(a) { const n = String(a.name || '').trim().slice(0, 80); if (!n) throw new Error('Give a name'); ED.d.name = n; ED.d.named = true; touch(); save(); const f = $('#edName'); if (f) f.value = n; return `Renamed to “${n}”.`; },
     async apply_brand_template(a) { const t = (brand().templates || []).find((x) => x.id === a.id); if (!t) throw new Error('No such template'); ACT.edBTpl({ dataset: { id: t.id } }); return `Applied the template “${t.name}”.`; },
     async build_live_slide(a) {
       const st = ['dark', 'light', 'brand'].includes(a.style) ? a.style : 'dark', lang = a.lang === 'ar' ? 'ar' : 'en';
@@ -7521,6 +7571,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     if (!L) return `<span class="au-st">${ic('clock', 12)}No post yet</span>`;
     if (L.status === 'Published') return `<span class="au-st ok" title="${esc(whenLabel(L.date, L.time))}">${ic('check', 12)}Published ${esc(fmt(new Date(L.date + 'T12:00'), { day: 'numeric', month: 'short' }))}</span>`;
     if (L.status === 'Failed' || L.state === 'failed') return `<span class="au-st bad" title="${esc(L.error || 'Failed')}">${ic('alert', 12)}Last post failed</span>`;
+    if (L.status === 'Rejected') return `<span class="au-st rej">${ic('x', 12)}Last post rejected</span>`;
+    if (L.status === 'In Review') return `<span class="au-st rv">${ic('clock', 12)}Waiting for approval</span>`;
     return `<span class="au-st">${ic('clock', 12)}Publishing…</span>`;
   }
   function card(a) {
@@ -7530,8 +7582,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       <div class="au-main">
         <div class="au-top"><b class="au-name">${esc(a.name)}</b>${sw(a.active, 'auToggle', `data-id="${esc(a.id)}"`, a.active ? 'Pause this automation' : 'Turn this automation on')}</div>
         <p class="au-rh">${ic('refresh', 14)}<span>${esc(rhythm(a.cadence))}</span></p>
-        <div class="au-nets">${(a.pf || []).map((k) => `<span class="au-net ${S.platforms[k] ? '' : 'off'}" title="${esc((PLATFORMS[k] || {}).n || k)}${S.platforms[k] ? '' : ' · not connected'}" style="--c:${(PLATFORMS[k] || {}).c}">${ic('net_' + k, 14)}</span>`).join('')}${liveOf(d).length ? `<span class="au-live">${ic('chart', 12)}${esc(KIND[liveOf(d)[0]] || 'Live data')}</span>` : ''}${NOTION && NOTION.ready() && a.notion !== false ? '<span class="au-nt" title="Shown in Notion Calendar"><i>N</i>Notion Calendar</span>' : ''}</div>
-        ${a.note ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(a.note)}</span></p>` : off.length ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(listWords(off.map((k) => PLATFORMS[k].n)))} ${off.length > 1 ? 'aren’t' : 'isn’t'} connected. <a href="#/settings" data-act="goAccounts">Connect</a></span></p>` : ''}
+        <div class="au-nets">${(a.pf || []).map((k) => `<span class="au-net ${S.platforms[k] ? '' : 'off'}" title="${esc((PLATFORMS[k] || {}).n || k)}${S.platforms[k] ? '' : ' · not connected'}" style="--c:${(PLATFORMS[k] || {}).c}">${ic('net_' + k, 14)}</span>`).join('')}${liveOf(d).length ? `<span class="au-live">${ic('chart', 12)}${esc(KIND[liveOf(d)[0]] || 'Live data')}</span>` : ''}${NOTION && NOTION.ready() && (a.notion !== false || a.approval) ? '<span class="au-nt" title="Shown in Notion Calendar"><i>N</i>Notion Calendar</span>' : ''}${a.approval ? `<span class="au-ap" title="Each post waits “In Review” in Notion and goes out only once it’s set to Approved">${ic('check', 12)}Approval in Notion${a.inReview ? `<em>${a.inReview} waiting</em>` : ''}</span>` : ''}</div>
+        ${a.note ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(a.note)}</span></p>` : a.approval && NOTION && NOTION.state() && !NOTION.ready() ? `<p class="au-warn">${ic('alert', 13)}<span>Its posts need approval in Notion, and Notion isn’t connected: they wait and won’t be published. <a href="#/settings" data-act="ntGo">Connect Notion</a></span></p>` : off.length ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(listWords(off.map((k) => PLATFORMS[k].n)))} ${off.length > 1 ? 'aren’t' : 'isn’t'} connected. <a href="#/settings" data-act="goAccounts">Connect</a></span></p>` : ''}
         <div class="au-foot">
           <span class="au-next">${a.active && next ? `<em>Next</em>${esc(whenLabel(next.date, next.time))}` : a.active ? 'No upcoming post' : 'Paused'}</span>${stateBadge(a)}
           <span class="grow"></span>
@@ -7573,9 +7625,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   /* ---------- editor ---------- */
   function openAuto(a, preset) {
     const tz = schedTz(), b = brand();
-    const st = a ? { id: a.id, name: a.name, d: a.d, build: null, cadence: { ...a.cadence, days: [...(a.cadence.days || [])] }, pf: new Set(a.pf || []), caption: { ...a.caption }, startDate: a.startDate || '', endDate: a.endDate || '', active: a.active, tz: a.tz || tz, notion: a.notion !== false }
+    const st = a ? { id: a.id, name: a.name, d: a.d, build: null, cadence: { ...a.cadence, days: [...(a.cadence.days || [])] }, pf: new Set(a.pf || []), caption: { ...a.caption }, startDate: a.startDate || '', endDate: a.endDate || '', active: a.active, tz: a.tz || tz, notion: a.notion !== false, approval: !!a.approval }
       : { id: null, name: preset ? preset.t : '', d: null, build: preset ? preset.build : null, cadence: preset ? { ...preset.cadence, days: [...preset.cadence.days] } : { kind: 'weekly', days: [1], time: '09:00' },
-          pf: new Set(Object.keys(PLATFORMS).filter((k) => S.platforms[k]).slice(0, 2)), caption: preset ? { ...preset.caption, mode: preset.caption.mode === 'ai' && !aiReady() ? 'fixed' : preset.caption.mode } : { mode: 'fixed', text: '' }, startDate: '', endDate: '', active: true, tz, notion: true };
+          pf: new Set(Object.keys(PLATFORMS).filter((k) => S.platforms[k]).slice(0, 2)), caption: preset ? { ...preset.caption, mode: preset.caption.mode === 'ai' && !aiReady() ? 'fixed' : preset.caption.mode } : { mode: 'fixed', text: '' }, startDate: '', endDate: '', active: true, tz, notion: true, approval: false };
     const designs = () => [...S.designs].sort((x, y) => (liveOf(y).length ? 1 : 0) - (liveOf(x).length ? 1 : 0)).slice(0, 12);
     const FIELDS = [['{date}', 'Date'], ['{weekday}', 'Weekday'], ['{week}', 'Week'], ['{headline}', 'Headline'], ['{price}', 'Price'], ['{website}', 'Website'], ['{hashtags}', 'Hashtags']];
     let close = () => {}, root = null;
@@ -7594,7 +7646,9 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
         <label class="au-f"><span>Ends</span><input type="date" class="field" id="auEnd" value="${esc(st.endDate)}"></label></div>
       <p class="au-hint">${ic('globe', 13)}Times are in ${esc(tzLabel(st.tz))}. Change it in Settings → Export &amp; publishing.</p>`;
     const nets = () => `<div class="au-nw">${Object.entries(PLATFORMS).map(([k, v]) => { const on = st.pf.has(k), c = S.platforms[k]; return `<button class="au-nb ${on ? 'on' : ''} ${c ? '' : 'off'}" style="--c:${v.c}" data-c="net" data-k="${k}" aria-pressed="${on}" title="${esc(v.n)}${c ? '' : ' · not connected yet'}">${ic('net_' + k, 18)}<span>${esc(v.n)}</span>${on ? ic('check', 13) : ''}</button>`; }).join('')}</div>
-      ${NOTION && NOTION.ready() ? `<div class="lv-swr au-ntsw"><span class="nt-logo sm">N</span><div class="grow"><b>Show in Notion Calendar</b><p>Each post appears in “${esc(NOTION.state().database.title)}” with its time, caption and status.</p></div>${sw(st.notion, '', 'data-c="notion"', 'Show in Notion Calendar')}</div>` : ''}
+      ${NOTION && NOTION.ready() ? `<div class="lv-swr au-ntsw ${st.approval ? 'locked' : ''}"><span class="nt-logo sm">N</span><div class="grow"><b>Show in Notion Calendar</b><p>${st.approval ? 'Always on while posts need approval: Notion is where they’re approved.' : `Each post appears in “${esc(NOTION.state().database.title)}” with its time, caption and status.`}</p></div>${sw(st.notion || st.approval, '', `data-c="notion"${st.approval ? ' disabled' : ''}`, 'Show in Notion Calendar')}</div>
+      <div class="lv-swr au-ntsw au-apsw"><span class="au-api">${ic('check', 15)}</span><div class="grow"><b>Require approval in Notion</b><p>Each post is sent to Notion as “In Review”. It’s published at its time only once your team sets its Status to “Approved”; “Rejected” posts never go out.</p></div>${sw(st.approval, '', 'data-c="approval"', 'Require approval in Notion')}</div>`
+      : st.approval ? `<p class="au-hint warn">${ic('alert', 13)}Posts of this automation need approval in Notion, which isn’t connected: they wait and won’t be published. <a href="#/settings" data-act="ntGo">Connect Notion</a></p>` : ''}
       ${[...st.pf].some((k) => !S.platforms[k]) ? `<p class="au-hint warn">${ic('alert', 13)}Connect ${esc(listWords([...st.pf].filter((k) => !S.platforms[k]).map((k) => PLATFORMS[k].n)))} in Settings before the first post, or it will be skipped there.</p>` : ''}`;
     const cap = () => `<div class="seg au-seg">${[['fixed', 'My caption'], ['ai', 'Written by AI']].map(([k, l]) => `<button class="${st.caption.mode === k ? 'on' : ''}" data-c="mode" data-k="${k}" aria-pressed="${st.caption.mode === k}" ${k === 'ai' && !aiReady() ? 'title="Add a Claude or Groq key in Settings → AI to use this"' : ''}>${k === 'ai' ? ic('wand', 14) : ''}${l}</button>`).join('')}</div>
       ${st.caption.mode === 'ai' ? `<p class="au-hint">${ic('wand', 13)}${aiReady() ? `AI writes a fresh caption for every post, from what the slide shows, in ${esc(b.name)}’s voice. If it can’t, the caption below is used.` : 'No AI key yet (Settings → AI): the caption below is used until you add one.'}</p>` : ''}
@@ -7634,7 +7688,8 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
           else if (k === 'day') { const n = +el.dataset.n, ds = st.cadence.days; st.cadence.days = ds.includes(n) ? ds.filter((x) => x !== n) : [...ds, n].sort(); draw('auWhen', when); }
           else if (k === 'net') { const n = el.dataset.k; st.pf.has(n) ? st.pf.delete(n) : st.pf.add(n); draw('auNets', nets); }
           else if (k === 'mode') { st.caption.mode = el.dataset.k; draw('auCap0', cap); }
-          else if (k === 'notion') { st.notion = !st.notion; draw('auNets', nets); }
+          else if (k === 'notion') { if (!st.approval) { st.notion = !st.notion; draw('auNets', nets); } }
+          else if (k === 'approval') { st.approval = !st.approval; draw('auNets', nets); }
           else if (k === 'field') { const ta = R('auCap'), f = el.dataset.f, s0 = ta.selectionStart ?? ta.value.length, s1 = ta.selectionEnd ?? s0; ta.value = ta.value.slice(0, s0) + f + ta.value.slice(s1); st.caption.text = ta.value; ta.focus(); ta.setSelectionRange(s0 + f.length, s0 + f.length); }
           else if (k === 'del') { c(); confirmDelete(a); return; }
           else if (k === 'save') { await submit(el); return; }
@@ -7647,7 +7702,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
       busy(btn, true, a ? 'Saving…' : 'Creating…');
       try {
         if (st.build) { const d = await makeDesign(st.build); st.d = d.id; st.build = null; }
-        const body = { name: (st.name || '').trim() || getD(st.d).name, d: st.d, cadence: { kind: st.cadence.kind, days: st.cadence.kind === 'weekly' ? st.cadence.days : [], time: st.cadence.time }, pf: [...st.pf], caption: { mode: st.caption.mode, text: st.caption.text || '' }, startDate: st.startDate || '', endDate: st.endDate || '', notion: st.notion };
+        const body = { name: (st.name || '').trim() || getD(st.d).name, d: st.d, cadence: { kind: st.cadence.kind, days: st.cadence.kind === 'weekly' ? st.cadence.days : [], time: st.cadence.time }, pf: [...st.pf], caption: { mode: st.caption.mode, text: st.caption.text || '' }, startDate: st.startDate || '', endDate: st.endDate || '', notion: st.notion, approval: st.approval };
         const r = a ? await api(path() + '/' + encodeURIComponent(a.id), { method: 'PATCH', body }) : await api(path(), { method: 'POST', body: { ...body, tz: st.tz } });
         close(); await load(true); pull();
         const n = r && r.next && r.next[0];
@@ -7679,11 +7734,11 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     auRun: (el) => {
       const a = byId(el.dataset.id); if (!a || !canEdit()) return;
       modal(`<div class="mh"><h2>Post “${esc(a.name)}” now?</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
-        <div class="mb"><p class="sm-t">One post is prepared with fresh data and published to ${esc(listWords(netNames(a.pf)))} within a minute. The schedule doesn’t change.</p></div>
+        <div class="mb"><p class="sm-t">${a.approval ? `One post is sent to Notion for approval, and published to ${esc(listWords(netNames(a.pf)))} with fresh data as soon as it’s approved.` : `One post is prepared with fresh data and published to ${esc(listWords(netNames(a.pf)))} within a minute.`} The schedule doesn’t change.</p></div>
         <div class="mf"><button class="btn secondary" data-close>Cancel</button><button class="btn primary" id="auRunGo">${ic('send', 15)}Post now</button></div>`, {
         onMount: (bg, close) => bg.querySelector('#auRunGo').addEventListener('click', async (e) => {
           busy(e.currentTarget, true, 'Preparing…');
-          try { await api(path() + '/' + encodeURIComponent(a.id) + '/run', { method: 'POST' }); close(); toast('Prepared: it goes out within a minute'); pull(); setTimeout(() => load(true), 60_000); }
+          try { const r = await api(path() + '/' + encodeURIComponent(a.id) + '/run', { method: 'POST' }); close(); toast(r && r.review ? 'Sent to Notion for approval: it goes out as soon as it’s approved' : 'Prepared: it goes out within a minute'); pull(); setTimeout(() => load(true), 60_000); }
           catch (err) { busy(e.currentTarget, false); toast('Couldn’t post it: ' + err.message); }
         }),
       });
@@ -7701,7 +7756,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     runs.forEach((sp) => {
       const lp = S.posts.find((x) => x.id === sp.id);
       if (!lp) { S.posts.push(sp); changed = true; return; }
-      ['d', 'date', 'time', 'tz', 'pf', 'cap', 'fc', 'status', 'auto', 'publish', 'media', 'autoError'].forEach((k) => { if (JSON.stringify(lp[k]) !== JSON.stringify(sp[k])) { lp[k] = sp[k]; changed = true; } });
+      ['d', 'date', 'time', 'tz', 'pf', 'cap', 'fc', 'status', 'auto', 'publish', 'media', 'autoError', 'review'].forEach((k) => { if (JSON.stringify(lp[k]) !== JSON.stringify(sp[k])) { lp[k] = sp[k]; changed = true; } });
     });
     for (let i = S.posts.length - 1; i >= 0; i--) { const p = S.posts[i]; if (p.auto && p.date >= from && !ids.has(p.id)) { S.posts.splice(i, 1); changed = true; } }
     if (changed) { save(); rerender(); }
@@ -7710,7 +7765,10 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
   const r0 = route;
   route = function () { if (onPage() && AU.brand !== S.active) { AU.list = null; load(true); } return r0.apply(this, arguments); };
   // the repeat badge on planner cards
-  const badge = (p) => (p.auto ? `<span class="au-b" title="From the automation “${esc(p.auto.name || '')}”">${ic('refresh', 11)}</span>` : '');
+  /** Approval in Notion: waiting, approved or rejected */
+  const RV = { pending: ['rv', 'clock', 'Waiting for approval in Notion'], approved: ['ok', 'check', 'Approved in Notion'], rejected: ['no', 'x', 'Rejected in Notion'] };
+  const rvMark = (p) => { const r = p.review && p.status !== 'Published' && p.status !== 'Failed' && RV[p.review.state]; return r ? `<span class="au-rv ${r[0]}" title="${esc(p.review.note || r[2])}">${ic(r[1], 10)}</span>` : ''; };
+  const badge = (p) => { if (!p.auto) return ''; const b = `<span class="au-b" title="From the automation “${esc(p.auto.name || '')}”">${ic('refresh', 11)}</span>`, rv = rvMark(p); return rv ? `<span class="au-bw">${b}${rv}</span>` : b; };
   const _pv = PAGES.planner.view;
   PAGES.planner.view = function () {
     const html = _pv.apply(this, arguments);
@@ -7718,15 +7776,27 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     return html;
   };
   // an automation's post: open its automation, or skip this one
-  const _edit = ACT.pedit, _del = ACT.pdel;
+  const _edit = ACT.pedit, _del = ACT.pdel, OPEN = ['Scheduled', 'In Review', 'Rejected'];
   ACT.pedit = (el) => {
     const p = S.posts.find((x) => x.id === el.dataset.id);
-    if (!p || !p.auto || p.status !== 'Scheduled') return _edit(el);
-    const d = getD(p.d);
+    if (!p || !p.auto || !OPEN.includes(p.status)) return _edit(el);
+    const d = getD(p.d), rv = p.review && p.review.state, nt = NOTION && NOTION.ready(), db = nt ? NOTION.state().database.title : '';
+    // where the post stands with its approval, and (when Notion can't be used) approve or reject it here
+    const review = !rv ? '' : `<div class="au-rvbox ${rv}">${ic(RV[rv][1], 15)}<div><b>${rv === 'pending' ? 'Waiting for approval' : rv === 'approved' ? 'Approved' : 'Rejected'}${p.review.by && p.review.by !== 'notion' ? ` by ${esc(p.review.by)}` : rv !== 'pending' ? ' in Notion' : ''}</b>
+      <p>${p.review.note ? esc(p.review.note) : rv === 'pending' ? `${nt ? `Set its Status to <b>Approved</b> or <b>Rejected</b> in “${esc(db)}”. ` : ''}It goes out only once it’s approved.` : rv === 'approved' ? 'It goes out at its time.' : 'It won’t be published.'}</p>
+      ${!nt ? `<p class="au-warn">${ic('alert', 13)}<span>Notion isn’t connected, so the decision can’t come from there. Approve or reject it here instead.</span></p>` : ''}</div></div>`;
     modal(`<div class="mh"><h2>${esc(p.auto.name || 'Automation')}</h2><button class="btn ghost icon sm" data-close>${ic('x')}</button></div>
-      <div class="mb"><div class="au-run">${d ? thumb(d.pages[0], d.ratio, 84, 100) : ''}<div><p class="sm-t"><b>${esc(whenLabel(p.date, p.time))}</b></p><p class="sm-t muted">This post comes from an automation. It’s filled with fresh data and published on its own${p.media && p.media.count ? '' : ', about 10 minutes before it goes out it gets its final slides and caption'}.</p>${p.autoError ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(p.autoError)}</span></p>` : ''}</div></div></div>
-      <div class="mf"><button class="btn ghost" id="auSkip">${ic('minus', 15)}Skip this post</button><span class="grow"></span><button class="btn secondary" id="auDes">Open the design</button><button class="btn primary" id="auOpen">Edit the automation</button></div>`, {
+      <div class="mb"><div class="au-run">${d ? thumb(d.pages[0], d.ratio, 84, 100) : ''}<div><p class="sm-t"><b>${esc(whenLabel(p.date, p.time))}</b></p><p class="sm-t muted">This post comes from an automation. It’s filled with fresh data and published on its own${p.media && p.media.count ? '' : ', about 10 minutes before it goes out it gets its final slides and caption'}.</p>${p.autoError ? `<p class="au-warn">${ic('alert', 13)}<span>${esc(p.autoError)}</span></p>` : ''}</div></div>${review}</div>
+      <div class="mf"><button class="btn ghost" id="auSkip">${ic('minus', 15)}Skip this post</button><span class="grow"></span>${rv && !nt ? `${rv !== 'rejected' ? '<button class="btn secondary" id="auRej">Reject</button>' : ''}${rv !== 'approved' ? '<button class="btn primary" id="auApr">Approve</button>' : ''}` : `<button class="btn secondary" id="auDes">Open the design</button><button class="btn primary" id="auOpen">Edit the automation</button>`}</div>`, {
       onMount: (bg, close) => {
+        const decide = async (btn, decision) => {
+          if (!canEdit()) return; busy(btn, true, '…');
+          try { const r = await api(`/social/notion/review/${encodeURIComponent(S.active)}/${encodeURIComponent(p.id)}`, { method: 'POST', body: { decision } }); Object.assign(p, { status: r.status, review: r.review }); save(); close(); rerender(); toast(decision === 'approved' ? (r.status === 'Failed' ? 'Approved too late: its time had passed' : 'Approved: it goes out at its time') : 'Rejected: it won’t be published'); }
+          catch (e) { busy(btn, false); toast(e.message); }
+        };
+        bg.querySelector('#auApr') && bg.querySelector('#auApr').addEventListener('click', (e) => decide(e.currentTarget, 'approved'));
+        bg.querySelector('#auRej') && bg.querySelector('#auRej').addEventListener('click', (e) => decide(e.currentTarget, 'rejected'));
+        if (!bg.querySelector('#auOpen')) return bg.querySelector('#auSkip').addEventListener('click', () => { close(); skip(p); });
         bg.querySelector('#auOpen').addEventListener('click', async () => { close(); location.hash = '#/automations'; await load(true); const a = byId(p.auto.id); a && openAuto(a); });
         bg.querySelector('#auDes').addEventListener('click', () => { close(); location.hash = '#/editor/' + p.d; });
         bg.querySelector('#auSkip').addEventListener('click', (e) => { close(); skip(p); });
@@ -7738,7 +7808,7 @@ if (persist.readOnly) toast('View only: your changes in the Social Media workspa
     try { await api(path() + '/' + encodeURIComponent(p.auto.id) + '/skip', { method: 'POST', body: { date: p.date } }); const i = S.posts.indexOf(p); if (i >= 0) S.posts.splice(i, 1); save(); rerender(); toast(`Skipped the ${whenLabel(p.date, p.time)} post. The automation goes on.`); load(true); }
     catch (e) { toast('Couldn’t skip it: ' + e.message); }
   }
-  ACT.pdel = (el) => { const p = S.posts.find((x) => x.id === el.dataset.id); if (p && p.auto && p.status === 'Scheduled') return skip(p); return _del(el); };
+  ACT.pdel = (el) => { const p = S.posts.find((x) => x.id === el.dataset.id); if (p && p.auto && OPEN.includes(p.status)) return skip(p); return _del(el); };
 }
 
 /* ============ v27 · Notion Calendar: the schedule as a Notion database ============ */
@@ -9800,6 +9870,16 @@ function clipCss(l, frames) {
    (mixed text runs, text effects, image adjustments, Google Fonts…). Draw it again so the canvas,
    thumbnails and exports all use the same renderer, also when the editor is opened from a link or a reload. */
 renderSide(); route();
+
+/* While a text is being edited, a press anywhere else ends the edit first, so that press can select or
+   move another layer (the canvas handlers cancel the default, so the text would never lose focus). */
+document.addEventListener('pointerdown', (e) => {
+  if (!ED.editing) return; const el = elOf(ED.editing);
+  if (el && !el.contains(e.target) && !(e.target.closest && e.target.closest('#edProps, #ftb'))) el.blur();
+}, true);
+
+/* designs still called "Untitled design" pick up their headline when opened */
+{ const _oeName = openEditor; openEditor = function (id) { const r = _oeName.apply(this, arguments); if (ED.d && autoName(ED.d)) save(); return r; }; }
 
 /* ============ unmount ============ */
 const destroy = () => {

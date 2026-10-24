@@ -6,6 +6,7 @@ import { AiService } from "../../ai/ai.service";
 import { validTz, zonedToUtc } from "../../framer/time";
 import { SocialMedia } from "../publishing/connection.schema";
 import { LiveRenderService } from "../publishing/live-render.service";
+import { REVIEW_GRACE_MS } from "../publishing/post-state";
 import { PublisherService } from "../publishing/publisher.service";
 import { SocialAutomation } from "../schemas/automation.schema";
 import { SocialBrand } from "../schemas/brand.schema";
@@ -35,7 +36,7 @@ const ARM_TRIES = 3;
 const DONE = ["publishing", "published", "partial"];
 
 export type AutomationInput = {
-  name?: string; d?: string; active?: boolean; notion?: boolean; tz?: string; pf?: string[];
+  name?: string; d?: string; active?: boolean; notion?: boolean; approval?: boolean; tz?: string; pf?: string[];
   cadence?: { kind: "daily" | "weekdays" | "weekly"; days: number[]; time: string };
   caption?: { mode: "fixed" | "ai"; text: string; fc?: string };
   startDate?: string | null; endDate?: string | null;
@@ -46,6 +47,9 @@ export type AutomationInput = {
  * ahead, so it shows in the planner and can be skipped there. About ten minutes before its time the
  * server renders it with fresh live data (LiveRenderService), writes the caption and arms it; the
  * publish scheduler then publishes it like any other post.
+ *
+ * With `approval`, each run is created "In Review" and shown in Notion with that status; it's armed only
+ * once the team sets it to Approved there (NotionService reads the decisions back), and never if Rejected.
  */
 @Injectable()
 export class AutomationsService {
@@ -92,6 +96,7 @@ export class AutomationsService {
             urls: Object.fromEntries(Object.entries(results).filter(([, r]: any) => r?.url).map(([k, r]: any) => [k, r.url])),
           } : null,
           published: mine.filter((p) => p.status === "Published").length,
+          inReview: mine.filter((p) => p.status === "In Review" && p.at > now).length,
         };
       }),
     };
@@ -101,7 +106,7 @@ export class AutomationsService {
     if (!(await this.brands.exists({ _id: brandId }))) throw new NotFoundException("Brand not found");
     const a = this.check({ active: true, caption: { mode: "fixed", text: "" }, pf: [], ...input }, true);
     if (!(await this.designs.exists({ brandId, id: a.d }))) throw new BadRequestException("Choose a design for this automation");
-    const doc = await this.autos.create({ ...a, notion: a.notion ?? true, tz: a.tz || (await this.tzDefault()), skip: [], brandId, id: "a" + randomBytes(5).toString("hex"), createdBy: by });
+    const doc = await this.autos.create({ ...a, notion: a.notion ?? true, approval: a.approval ?? false, tz: a.tz || (await this.tzDefault()), skip: [], brandId, id: "a" + randomBytes(5).toString("hex"), createdBy: by });
     await this.sync(doc.toObject());
     return (await this.list(brandId)).automations.find((x) => x.id === doc.id);
   }
@@ -144,6 +149,8 @@ export class AutomationsService {
     const time = new Intl.DateTimeFormat("en-GB", { timeZone: a.tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(now));
     const postId = `au_${a.id}_now${now.toString(36)}`;
     await this.posts.create({ ...this.postFor(a, date, time), id: postId });
+    // with approval it goes to Notion first, and out as soon as it's approved there
+    if (a.approval) { this.notion.reconcileSoon(500); return { postId, date, time, review: true }; }
     await this.armOne(a, { brandId, id: postId, date, time, tz: a.tz });
     return { postId, date, time };
   }
@@ -154,6 +161,7 @@ export class AutomationsService {
     if (a.d != null) out.d = String(a.d);
     if (a.active != null) out.active = !!a.active;
     if (a.notion != null) out.notion = !!a.notion;
+    if (a.approval != null) out.approval = !!a.approval;
     if (a.tz != null) { if (!validTz(a.tz)) throw new BadRequestException("Unknown time zone"); out.tz = a.tz; }
     if (a.pf != null) out.pf = [...new Set(a.pf)];
     if (a.cadence != null) {
@@ -172,8 +180,9 @@ export class AutomationsService {
   private postId(a: Record<string, any>, date: string) { return `au_${a.id}_${date.replace(/-/g, "")}`; }
   private postFor(a: Record<string, any>, date: string, time: string) {
     return {
-      brandId: a.brandId, d: a.d, date, time, tz: a.tz, pf: a.pf || [], status: "Scheduled", order: Number.MAX_SAFE_INTEGER, hash: "",
+      brandId: a.brandId, d: a.d, date, time, tz: a.tz, pf: a.pf || [], status: a.approval ? "In Review" : "Scheduled", order: Number.MAX_SAFE_INTEGER, hash: "",
       cap: fillCaption(a.caption?.text || "", { date, tz: a.tz }), fc: a.caption?.fc || "", auto: { id: a.id, name: a.name },
+      ...(a.approval ? { review: { state: "pending" } } : {}),
     };
   }
 
@@ -183,12 +192,16 @@ export class AutomationsService {
     const want = a.active ? occurrences(a as any, now, now + HORIZON_MS, 20) : [];
     const keep = new Set(want.map((o) => this.postId(a, o.date)));
     for (const o of want) {
-      const id = this.postId(a, o.date), cur = await this.posts.findOne({ brandId: a.brandId, id }).select("publish status").lean<Record<string, any>>();
-      const rec = this.postFor(a, o.date, o.time);
+      const id = this.postId(a, o.date), cur = await this.posts.findOne({ brandId: a.brandId, id }).select("publish status review").lean<Record<string, any>>();
+      const rec: Record<string, any> = this.postFor(a, o.date, o.time);
       if (!cur) { await this.posts.create({ ...rec, id }); continue; }
-      // not armed yet: follows the automation's latest settings
-      if (cur.status === "Scheduled" && !["pending", ...DONE].includes(cur.publish?.state)) {
-        const { order, ...upd } = rec; await this.posts.updateOne({ brandId: a.brandId, id }, { $set: upd });
+      // not armed yet: follows the automation's latest settings. A decision taken in Notion stays (a rejected
+      // run stays rejected, an approved one scheduled); turning approval off schedules the runs still in review
+      if (["Scheduled", "In Review"].includes(cur.status!) && !["pending", ...DONE].includes(cur.publish?.state)) {
+        const { order, review, ...upd } = rec;
+        if (a.approval && cur.review?.state === "approved") await this.posts.updateOne({ brandId: a.brandId, id }, { $set: { ...upd, status: "Scheduled" } });
+        else if (a.approval) await this.posts.updateOne({ brandId: a.brandId, id }, { $set: { ...upd, review: cur.review?.state === "pending" ? cur.review : review } });
+        else await this.posts.updateOne({ brandId: a.brandId, id }, { $set: upd, $unset: { review: 1 } });
       }
     }
     await this.dropFuture(a.brandId, a.id, keep);
@@ -207,7 +220,7 @@ export class AutomationsService {
     if (!design) return;
     const hash = designHash(design);
     if (a.preview?.d === a.d && a.preview?.hash === hash) return;
-    const run = await this.posts.findOne({ brandId: a.brandId, "auto.id": a.id, status: "Scheduled" }).sort({ date: 1, time: 1 }).select("id").lean<Record<string, any>>();
+    const run = await this.posts.findOne({ brandId: a.brandId, "auto.id": a.id, status: { $in: ["Scheduled", "In Review"] } }).sort({ date: 1, time: 1 }).select("id").lean<Record<string, any>>();
     if (!run) return;
     this.previewing.add(a.id);
     try {
@@ -245,19 +258,26 @@ export class AutomationsService {
     }
     const lo = localDate(now - 2 * 864e5, "UTC"), hi = localDate(now + 2 * 864e5, "UTC");
     const runs = await this.posts.find({ "auto.id": { $exists: true }, status: "Scheduled", date: { $gte: lo, $lte: hi }, "publish.state": { $nin: ["pending", ...DONE] } })
-      .select("brandId id date time tz auto autoTries").lean<Record<string, any>[]>();
+      .select("brandId id date time tz auto autoTries review").lean<Record<string, any>[]>();
     for (const p of runs) {
       const at = zonedToUtc(p.date, p.time, p.tz || "UTC").getTime();
       if (at - now > ARM_MS) continue;
-      if (now - at > MISSED_MS) { await this.fail(p, "Missed: the server couldn't prepare it in time."); continue; }
+      // approved after its time (within REVIEW_GRACE_MS): it goes out now, so "missed" counts from the approval
+      const since = Math.max(at, p.review?.at ? new Date(p.review.at).getTime() : 0);
+      if (now - since > MISSED_MS) { await this.fail(p, "Missed: the server couldn't prepare it in time."); continue; }
       const a = await this.autos.findOne({ brandId: p.brandId, id: p.auto.id }).lean<Record<string, any>>();
       if (!a) { await this.fail(p, "Its automation was deleted."); continue; }
       await this.armOne(a, p);
     }
+    // runs nobody approved or rejected in time are not published
+    const waiting = await this.posts.find({ "auto.id": { $exists: true }, status: "In Review", date: { $lte: hi } }).select("brandId id date time tz").lean<Record<string, any>[]>();
+    for (const p of waiting) {
+      if (now - zonedToUtc(p.date, p.time, p.tz || "UTC").getTime() > REVIEW_GRACE_MS) await this.fail(p, "Not approved in Notion in time, so it wasn't published.", { status: "In Review" });
+    }
   }
 
-  private async fail(p: Record<string, any>, error: string) {
-    await this.posts.updateOne({ brandId: p.brandId, id: p.id }, { $set: { status: "Failed", autoError: error, publish: { state: "failed", results: {}, attempts: 0, lastError: error, at: new Date() } } });
+  private async fail(p: Record<string, any>, error: string, only: Record<string, any> = {}) {
+    await this.posts.updateOne({ brandId: p.brandId, id: p.id, ...only }, { $set: { status: "Failed", autoError: error, publish: { state: "failed", results: {}, attempts: 0, lastError: error, at: new Date() } } });
     this.log.warn(`Run ${p.id} (${p.brandId}): ${error}`);
     this.notion.reconcileSoon();
   }
