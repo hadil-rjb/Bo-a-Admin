@@ -3,6 +3,7 @@ import { InjectModel } from "@nestjs/mongoose";
 import { createHash, randomBytes } from "crypto";
 import { Model } from "mongoose";
 import { AiService } from "../../ai/ai.service";
+import { usageScope } from "../../ai/usage";
 import { validTz, zonedToUtc } from "../../framer/time";
 import { SocialMedia } from "../publishing/connection.schema";
 import { LiveRenderService } from "../publishing/live-render.service";
@@ -309,10 +310,11 @@ export class AutomationsService {
     if (a.caption?.mode !== "ai") return fixed;
     try {
       const design = await this.designs.findOne({ brandId: p.brandId, id: a.d }).select("name").lean<Record<string, any>>();
-      const out = await this.ai.socialCaption({
+      // billed to the post's brand in AI usage
+      const out = await usageScope.run({ brandId: p.brandId }, () => this.ai.socialCaption({
         brand: brand?.name || "Brand", voice: brand?.voice || "", dos: brand?.dos || "", donts: brand?.donts || "", hashtags: brand?.hashtags || "", cta: brand?.cta || "",
         language: brand?.lang || "", design: String(design?.name || a.name).slice(0, 120), texts: r.texts.slice(0, 80), networks: a.pf,
-      } as any, { id: "automation", name: "Automation" });
+      } as any, { id: "automation", name: "Automation" }));
       return out.caption || fixed;
     } catch (e: any) {
       this.log.warn(`AI caption for ${p.id} failed, using the automation's caption: ${e?.message || e}`);
