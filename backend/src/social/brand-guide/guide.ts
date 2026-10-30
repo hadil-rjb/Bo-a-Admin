@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { trackClaude } from "../../ai/usage";
 import { z } from "zod";
 
 /**
@@ -84,6 +85,7 @@ export async function readGuideWithClaude(apiKey: string, input: { pages: { n: n
     system: SYSTEM,
     messages: [{ role: "user", content }],
   }).finalMessage();
+  trackClaude("Brand guides", res.model, res.usage);
   if (res.stop_reason === "refusal") throw new Error("Claude declined to read this document");
   const text = res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
   return { guide: tidy(GuideSchema.parse(JSON.parse(text)), input.pages.map((p) => p.n)), model: res.model };

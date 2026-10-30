@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { trackClaude } from "../../ai/usage";
 import { z } from "zod";
 
 /**
@@ -356,6 +357,7 @@ export async function analyzeWithClaude(apiKey: string, input: { layers: Layer[]
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content }],
   });
+  trackClaude("Calendar slides", res.model, res.usage);
   if (res.stop_reason === "refusal") throw new Error("Claude declined to analyse this slide");
   if (res.stop_reason === "max_tokens") throw new Error("Claude's answer was cut off");
   const text = res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
@@ -418,6 +420,7 @@ export async function importWithClaude(apiKey: string, input: { image: string; i
     ] }],
   });
   const res = await stream.finalMessage();
+  trackClaude("Picture import", res.model, res.usage);
   if (res.stop_reason === "refusal") throw new Error("Claude declined to read this picture");
   if (res.stop_reason === "max_tokens") throw new Error("The design is too detailed to rebuild in one pass");
   const text = res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
@@ -459,6 +462,7 @@ export async function ratingWithClaude(apiKey: string, image: string) {
       { type: "text", text: "Describe this rating." },
     ] }],
   });
+  trackClaude("Rating pictures", res.model, res.usage);
   if (res.stop_reason === "refusal") throw new Error("Claude declined to read this picture");
   const text = res.content.map((b) => (b.type === "text" ? b.text : "")).join("");
   const r = RatingSchema.parse(JSON.parse(text));
@@ -486,6 +490,7 @@ export async function translateWithClaude(apiKey: string, input: { items: { id: 
 Rules: keep every {placeholder} exactly as written (same braces and name) and put it where the grammar of the target language needs it; keep line breaks (\\n) in the same places; keep numbers, currency codes, GMT/UTC, websites, handles${input.brand ? ` and the brand name "${input.brand}"` : ""} unchanged; keep it as short as the original so it fits the same space; use the usual financial terms (Actual, Forecast, Previous, High impact…). Return one item per input id.`,
     messages: [{ role: "user", content: JSON.stringify(input.items) }],
   });
+  trackClaude("Translation", res.model, res.usage);
   if (res.stop_reason === "refusal") throw new Error("Claude declined to translate");
   const out = TranslateSchema.parse(JSON.parse(res.content.map((b) => (b.type === "text" ? b.text : "")).join("")));
   const byId = new Map(out.items.map((i) => [i.id, i.text]));

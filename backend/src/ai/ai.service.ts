@@ -15,6 +15,7 @@ import { cleanHtml, words } from "./html";
 import { fetchImage, Img } from "./image";
 import { coverProfile } from "./cover-profile";
 import { hfImageModels, hfWhoami } from "./hf";
+import { trackClaude } from "./usage";
 
 export type Provider = "anthropic" | "groq";
 const LABEL: Record<Provider, string> = { anthropic: "Claude", groq: "Groq" };
@@ -96,6 +97,7 @@ export class AiService {
       });
       if (!res.ok) await this.fail(res, p);
       const j: any = await res.json();
+      trackClaude("Studio agent", j.model || model, j.usage);
       const blocks: any[] = j.content ?? [];
       const calls: AgentCall[] = blocks.filter((b) => b.type === "tool_use").map((b) => ({ id: b.id, name: b.name, input: b.input ?? {} }));
       return { text: blocks.filter((b) => b.type === "text").map((b) => b.text).join("").trim(), calls, provider: p, model, stop: j.stop_reason };
@@ -204,7 +206,7 @@ export class AiService {
   }
   async models(p: Provider) { return { models: await this.listModels(p) }; }
 
-  private async complete(system: string, user: string, o: { maxTokens: number; json?: boolean; images?: Img[]; model?: string }) {
+  private async complete(system: string, user: string, o: { maxTokens: number; json?: boolean; images?: Img[]; model?: string; feature?: string }) {
     const s = await this.load(), p = s.provider, key = this.key(s, p);
     if (!key) throw new BadRequestException(`Add a ${LABEL[p]} API key in Settings → AI first`);
     const model = o.model ?? (p === "anthropic" ? s.anthropicModel : s.groqModel);
@@ -216,6 +218,7 @@ export class AiService {
       });
       if (!res.ok) await this.fail(res, p);
       const j: any = await res.json();
+      trackClaude(o.feature ?? "Blog AI", j.model || model, j.usage);
       if (j.stop_reason === "max_tokens") throw new BadGatewayException("The answer was cut off — try again or pick a model with a larger output limit");
       return { text: (j.content ?? []).filter((b: any) => b.type === "text").map((b: any) => b.text).join(""), model };
     }
@@ -242,7 +245,7 @@ Write one caption that works on ${(d.networks ?? []).map((n) => NET[n] || n).joi
 Only state facts that appear on the slides; never invent figures, dates or promises. Answer with the caption only: no title, no quotes, no explanation.`;
     const user = `Post: ${clip(d.design, 120)}\nText on the slides:\n${(d.texts ?? []).map((t) => "- " + clip(t, 400)).join("\n") || "(no text)"}`;
     const m = d.image && /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(d.image);
-    const { text, model } = await this.complete(system, user, { maxTokens: 1500, images: m ? [{ media: m[1], data: m[2] }] : [] });
+    const { text, model } = await this.complete(system, user, { maxTokens: 1500, images: m ? [{ media: m[1], data: m[2] }] : [], feature: "Post captions" });
     return { caption: text.trim().replace(/^["“]|["”]$/g, ""), model };
   }
 
@@ -313,7 +316,7 @@ Rules:
 - "format": one of ${FORMATS.join(", ")}. "intent": one of ${INTENTS.join(", ")}. "priority": integer 1–100 (expected SEO impact versus effort).
 - Mix quick wins (striking-distance queries) with strategic pieces; avoid near-duplicate ideas among themselves.
 Return ONLY a JSON object: {"ideas":[{"title":"","angle":"","category":"","primaryKeyword":"","intent":"","rationale":"","tags":["","",""],"format":"","priority":0,"outline":["","","",""]}]}`;
-    const { text, model } = await this.complete(system, `${await this.context(dto.focus)}\n\nGenerate ${count} ideas.`, { maxTokens: 3500, json: true });
+    const { text, model } = await this.complete(system, `${await this.context(dto.focus)}\n\nGenerate ${count} ideas.`, { maxTokens: 3500, json: true, feature: "Blog ideas" });
     const raw: any[] = Array.isArray(parseJson(text).ideas) ? parseJson(text).ideas : [];
 
     const seen = new Set((await this.articles.find().select("title").lean()).map(a => a.title.toLowerCase()));
@@ -385,14 +388,14 @@ ${idea.outline?.length ? `Suggested structure (follow it unless the data argues 
 EXISTING ARTICLES YOU MAY LINK TO (title — slug):
 ${related.map(a => `${clip(a.title, 80)} — ${a.slug}`).join("\n") || "none"}`;
 
-      const { text } = await this.complete(system, user, { maxTokens: 5500 });
+      const { text } = await this.complete(system, user, { maxTokens: 5500, feature: "Blog articles" });
       const b = parseBlocks(text);
       if (!b.TITLE || !b.CONTENT || b.CONTENT.length < 400) throw new BadGatewayException("The AI returned an incomplete article. Please try again.");
 
       let title = clip(b.TITLE.replace(/^["“]|["”]$/g, ""), 120), meta = clip(b.META, 400);
       if (title.length > 60 || meta.length < 120 || meta.length > 160) { // un seul appel de correction, puis repli mécanique
         try {
-          const f = parseBlocks((await this.complete("You fix SEO snippets. Reply ONLY with [TITLE]…[/TITLE] and [META]…[/META].", `Keyword: ${idea.keyword}\nTitle (max 60 chars): ${title}\nMeta description (140–158 chars): ${meta}\nRewrite both so they respect the limits, keep the meaning and the keyword.`, { maxTokens: 300 })).text);
+          const f = parseBlocks((await this.complete("You fix SEO snippets. Reply ONLY with [TITLE]…[/TITLE] and [META]…[/META].", `Keyword: ${idea.keyword}\nTitle (max 60 chars): ${title}\nMeta description (140–158 chars): ${meta}\nRewrite both so they respect the limits, keep the meaning and the keyword.`, { maxTokens: 300, feature: "Blog articles" })).text);
           if (f.TITLE) title = clip(f.TITLE, 120);
           if (f.META) meta = clip(f.META, 400);
         } catch { /* repli ci-dessous */ }
@@ -440,12 +443,12 @@ ${related.map(a => `${clip(a.title, 80)} — ${a.slug}`).join("\n") || "none"}`;
         canUseVision = !!model;
       }
       if (canUseVision) {
-        const r = await this.complete(sys, `These are the ${loaded.length} most recent cover images of the blog "${BRAND}".${alts.length ? ` Their alt texts: ${alts.join(" | ")}.` : ""}\n${fmt}`, { maxTokens: 700, images: loaded.map(x => x.img as Img), model });
+        const r = await this.complete(sys, `These are the ${loaded.length} most recent cover images of the blog "${BRAND}".${alts.length ? ` Their alt texts: ${alts.join(" | ")}.` : ""}\n${fmt}`, { maxTokens: 700, images: loaded.map(x => x.img as Img), model, feature: "Cover style" });
         style = r.text.replace(/```/g, "").trim().slice(0, 1500); source = "vision"; used = loaded.length;
       }
     }
     if (!canUseVision && alts.length >= 3) {
-      const r = await this.complete(sys, `A vision-capable model is not available, so use these cover alt texts as a cautious fallback: ${alts.join(" | ")}.\nInfer a cautious style guide from them and say "(inferred from alt texts)" at the top. ${fmt}`, { maxTokens: 600 });
+      const r = await this.complete(sys, `A vision-capable model is not available, so use these cover alt texts as a cautious fallback: ${alts.join(" | ")}.\nInfer a cautious style guide from them and say "(inferred from alt texts)" at the top. ${fmt}`, { maxTokens: 600, feature: "Cover style" });
       style = r.text.replace(/```/g, "").trim().slice(0, 1500); source = "alt"; used = 0;
     } else if (!canUseVision) {
       throw new BadRequestException("Could not analyze your previous cover images. Add at least 3 cover alt texts, configure a vision-capable AI model, or write the style by hand.");
@@ -483,7 +486,7 @@ Category: ${a.cat ?? ""} · Tags: ${(a.t ?? []).join(", ")}
 Subtitle: ${a.sub ?? ""}
 Meta description: ${a.meta ?? ""}
 Excerpt: ${clip(a.text, 1500)}`;
-    const { text } = await this.complete(system, user, { maxTokens: 900 });
+    const { text } = await this.complete(system, user, { maxTokens: 900, feature: "Cover prompts" });
     const b = parseBlocks(text);
     const prompt = clip(b.PROMPT, 1400);
     if (prompt.length < 40) throw new BadGatewayException("The AI did not return a usable cover prompt. Please try again.");

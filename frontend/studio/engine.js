@@ -25,13 +25,15 @@ let mounted = null; // destroy() of the running instance
  * @param {{ initialState: any, persist: import('../lib/social/persist').Persist,
  *   user: { name: string, email: string, avatar?: string, role: string },
  *   blogArticles: { t: string, c: string }[] | null, navigate: (href: string) => void,
- *   api: (path: string, o?: { method?: string, body?: unknown }) => Promise<any>,
+ *   api: (path: string, o?: { method?: string, body?: unknown, headers?: Record<string, string> }) => Promise<any>,
  *   headless?: (renderer: { renderPost: (designId: string, postId: string) => Promise<{ images: string[], live: any[] }> }) => void }} opts
  *   headless: server-side rendering (see app/(social)/social-media/render): receives the publishing renderer once booted
  * @returns {() => void} destroy: removes every listener, observer, timer and popup the studio added
  */
-export function bootStudio({ initialState, persist, user, blogArticles, navigate, api, headless }) {
+export function bootStudio({ initialState, persist, user, blogArticles, navigate, api: rawApi, headless }) {
 if (mounted) mounted();
+/** Every call names the active brand, so the server bills its Claude usage to it (AI usage page) */
+const api = (path, o = {}) => rawApi(path, { ...o, headers: { ...(S.active ? { 'x-brand-id': S.active } : {}), ...o.headers } });
 const runtime = createRuntime();
 // Page-level globals the engine hooks into, tracked so destroy() can undo them (see runtime.js)
 const { window, document, addEventListener, removeEventListener, visualViewport, matchMedia, MutationObserver, ResizeObserver,
@@ -534,7 +536,7 @@ try { setTheme(JSON.parse(localStorage.getItem('uxb.t')) || 'dark'); } catch (e)
 
 /* ---------- Sidebar ---------- */
 const NAV = [
-  ['overview', 'Overview', 'grid'], ['studio', 'Studio', 'studio', 'New'], ['planner', 'Planner', 'cal'], ['brand', 'Brand kit', 'palette', 'New'], ['settings', 'Settings', 'settings'],
+  ['overview', 'Overview', 'grid'], ['studio', 'Studio', 'studio', 'New'], ['planner', 'Planner', 'cal'], ['brand', 'Brand kit', 'palette', 'New'], ['usage', 'AI usage', 'chart', 'New'], ['settings', 'Settings', 'settings'],
 ];
 function renderSide() {
   $('#side').innerHTML = `
@@ -1640,6 +1642,79 @@ const PRP = {
     acts(`<button class="btn secondary" data-act="prPwReset">Discard</button><button class="btn primary" data-act="prPwSave">Update password</button>`),
   sess: () => phead('Session', 'Sign out of the admin on this device.') + acts(`<button class="btn secondary" data-act="signOut">${ic('logout', 16)}Sign out</button>`, 1),
 };
+/* ---------- AI usage: Claude tokens and cost, across all brands and per brand ---------- */
+const UG = { days: 30, data: null, at: 0, loading: false, err: '', open: null };
+const UG_PERIODS = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
+const ugMoney = (v) => '$' + (v >= 100 ? Math.round(v).toLocaleString('en') : v >= 1 ? v.toFixed(2) : v.toFixed(v ? 4 : 2));
+const ugTok = (v) => v >= 1e6 ? (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(v >= 1e4 ? 0 : 1) + 'K' : String(v);
+/** null: Blog Admin calls (no brand); an id no longer in the list: a removed brand */
+const ugBrand = (id) => id == null ? { name: 'Blog Admin', av: `<span class="ug-av">${ic('doc', 14)}</span>` }
+  : (() => { const b = S.brands.find((x) => x.id === id); return b ? { name: b.name, av: brandAv(b, 'sm') } : { name: 'Removed brand', av: `<span class="ug-av">${ic('trash', 14)}</span>` }; })();
+function ugLoad() {
+  UG.loading = true; UG.err = '';
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  api(`/ai/usage?days=${UG.days}&tz=${encodeURIComponent(tz)}`)
+    .then((d) => { UG.data = d; UG.at = Date.now(); }).catch((e) => { UG.err = e.message || 'The server didn’t answer'; })
+    .finally(() => { UG.loading = false; if (location.hash.startsWith('#/usage')) rerender(); });
+}
+function ugKpis(t, mine) {
+  const k = (l, v, sub) => `<div class="widget ug-kpi"><span class="muted sm-t">${l}</span><b>${v}</b><small class="faint xs-t">${sub}</small></div>`;
+  const b = brand();
+  return `<div class="ug-kpis">
+    ${k('Total cost', ugMoney(t.cost), allOn() ? 'All brands' : `${esc(b.name)}: ${ugMoney(mine ? mine.cost : 0)}`)}
+    ${k('Input tokens', ugTok(t.input + t.cacheWrite + t.cacheRead), `${ugTok(t.cacheRead)} read from cache`)}
+    ${k('Output tokens', ugTok(t.output), 'Answers and thinking')}
+    ${k('Requests', t.calls.toLocaleString('en'), `≈ ${ugMoney(t.calls ? t.cost / t.calls : 0)} per request`)}
+  </div>`;
+}
+function ugDaily(d) {
+  const days = []; for (let i = UG.days - 1; i >= 0; i--) days.push(iso(addD(new Date(), -i)));
+  const by = {}; d.daily.forEach((x) => { const o = by[x.day] || (by[x.day] = { all: 0, mine: 0 }); o.all += x.cost; if (x.brandId === S.active) o.mine += x.cost; });
+  const max = Math.max(...days.map((x) => (by[x] || {}).all || 0)) || 1, one = allOn() ? null : brand().name;
+  return `<section class="widget"><div class="ov-wh"><h2 class="wtitle">${ic('chart', 24)}Daily spend</h2>
+      <span class="ug-key">${one ? `<span><i class="mine"></i>${esc(one)}</span><span><i></i>Other brands</span>` : `<span><i></i>All brands</span>`}</span></div>
+    <div class="ug-bars" role="img" aria-label="Claude cost per day over the last ${UG.days} days">${days.map((x) => {
+      const v = by[x] || { all: 0, mine: 0 }, lbl = fmt(new Date(x + 'T00:00'), { day: 'numeric', month: 'short' });
+      return `<span class="ug-bar" title="${lbl}: ${ugMoney(v.all)}${one ? ` (${esc(one)} ${ugMoney(v.mine)})` : ''}"><i style="height:${v.all / max * 100}%">${one && v.mine ? `<i class="mine" style="height:${v.mine / v.all * 100}%"></i>` : ''}</i></span>`;
+    }).join('')}</div>
+    <div class="ug-axis faint xs-t"><span>${fmt(new Date(days[0] + 'T00:00'), { day: 'numeric', month: 'short' })}</span><span>Today</span></div></section>`;
+}
+function ugBrands(d) {
+  const total = d.total.cost || 1;
+  const rows = d.brands.map((b) => {
+    const who = ugBrand(b.brandId), key = String(b.brandId), open = UG.open === key;
+    const feats = d.features.filter((f) => String(f.brandId) === key);
+    return `<button class="ug-row ${b.brandId === S.active ? 'on' : ''}" data-act="ugOpen" data-k="${esc(key)}" aria-expanded="${open}">
+        <span class="ug-who">${who.av}<b>${esc(who.name)}</b></span>
+        <span class="ug-share"><i style="width:${b.cost / total * 100}%"></i></span>
+        <span class="ug-n">${ugTok(b.input + b.cacheWrite + b.cacheRead)}</span><span class="ug-n">${ugTok(b.output)}</span><span class="ug-n hide-sm">${b.calls.toLocaleString('en')}</span>
+        <b class="ug-n">${ugMoney(b.cost)}</b>${ic('chevD', 16, 'muted ug-chev')}</button>
+      ${open ? `<div class="ug-feats">${feats.map((f) => `<div class="ug-feat"><span>${esc(f.feature)}</span><span class="ug-n">${ugTok(f.input + f.cacheWrite + f.cacheRead)}</span><span class="ug-n">${ugTok(f.output)}</span><span class="ug-n hide-sm">${f.calls.toLocaleString('en')}</span><span class="ug-n">${ugMoney(f.cost)}</span></div>`).join('')}</div>` : ''}`;
+  }).join('');
+  return `<section class="widget"><div class="ov-wh"><h2 class="wtitle">${ic('users', 24)}By brand</h2></div>
+    ${rows ? `<div class="ug-table"><div class="ug-head faint xs-t"><span>Brand</span><span>Share of cost</span><span class="ug-n">Input</span><span class="ug-n">Output</span><span class="ug-n hide-sm">Requests</span><span class="ug-n">Cost</span><span></span></div>${rows}</div>`
+      : `<div class="empty"><b>No Claude calls in the last ${UG.days} days</b><span class="sm-t">Reading slides, translating, captions and the design agent show up here.</span></div>`}</section>`;
+}
+const ugModels = (d) => d.models.length ? `<section class="widget"><div class="ov-wh"><h2 class="wtitle">${ic('wand', 24)}By model</h2></div>
+  <div class="ug-models">${d.models.map((m) => `<div class="ug-feat"><code>${esc(m.model)}</code><span class="ug-n">${ugTok(m.input + m.cacheWrite + m.cacheRead)}</span><span class="ug-n">${ugTok(m.output)}</span><span class="ug-n hide-sm">${m.calls.toLocaleString('en')}</span><span class="ug-n">${m.unpriced ? '<span title="No price for this model: tokens only">—</span>' : ugMoney(m.cost)}</span></div>`).join('')}</div></section>` : '';
+PAGES.usage = {
+  t: 'AI usage', s: 'Claude tokens and cost, for each brand and across all of them.',
+  actions: () => `<div class="tabs ug-period" role="tablist">${UG_PERIODS.map(([n, l]) => `<button role="tab" aria-selected="${UG.days === n}" class="${UG.days === n ? 'on' : ''}" data-act="ugDays" data-n="${n}">${l}</button>`).join('')}</div>`,
+  view: () => {
+    if (!UG.loading && !UG.err && (!UG.data || Date.now() - UG.at > 60_000)) ugLoad(); // fresh numbers on each visit
+    if (UG.err) return `<div class="widget"><div class="empty"><b>Usage couldn’t load</b><span class="sm-t">${esc(UG.err)}</span><button class="btn secondary sm" data-act="ugRetry">${ic('refresh', 16)}Try again</button></div></div>`;
+    const d = UG.data;
+    if (!d) return `<div class="ug">${'<div class="widget"><i class="skel" style="display:block;height:96px;border-radius:10px"></i></div>'.repeat(3)}</div>`;
+    return `<div class="ug${UG.loading ? ' busy' : ''}">${ugKpis(d.total, d.brands.find((b) => b.brandId === S.active))}${ugDaily(d)}${ugBrands(d)}${ugModels(d)}
+      <p class="faint xs-t">Costs use Anthropic’s list prices per million tokens; cache writes count at 1.25× input. Calls made before this page existed aren’t counted.</p></div>`;
+  },
+};
+Object.assign(ACT, {
+  ugDays: (a) => { UG.days = +a.dataset.n; ugLoad(); rerender(); },
+  ugRetry: () => { UG.err = ''; ugLoad(); rerender(); },
+  ugOpen: (a) => { UG.open = UG.open === a.dataset.k ? null : a.dataset.k; rerender(); },
+});
+
 PAGES.profile = {
   t: 'Profile', s: 'Manage your account and notification preferences.',
   view: () => {

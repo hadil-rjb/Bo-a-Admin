@@ -3,9 +3,9 @@ export const getToken = () => (typeof window === "undefined" ? null : localStora
 /** Jeton du lien « Anyone with the link » (?share=…), gardé pour la session */
 export const getShare = () => (typeof window === "undefined" ? null : sessionStorage.getItem("uxb.share"));
 
-export async function api<T = any>(path: string, o: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function api<T = any>(path: string, o: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
   const t = getToken();
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...o.headers };
   if (t) headers.Authorization = "Bearer " + t;
   else if (getShare()) headers["x-share-token"] = getShare()!;
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;

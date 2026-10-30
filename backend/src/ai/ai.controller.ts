@@ -2,16 +2,20 @@ import { Body, Controller, Delete, Get, HttpCode, Param, Post, Put, Query, Req }
 import { Roles } from "../common/roles.decorator";
 import { AiService, Provider } from "./ai.service";
 import { CoverImageService } from "./cover-image.service";
+import { UsageService } from "./usage.service";
+import { validTz } from "../framer/time";
 import { AgentStepDto, CoverImageDto, CoverPromptDto, GenerateArticleDto, GenerateIdeasDto, SocialCaptionDto, UpdateAiSettingsDto } from "./dto/ai.dto";
 
 const actor = (r: any) => ({ id: r.user.sub as string, name: r.user.name as string });
 
 @Controller("ai")
 export class AiController {
-  constructor(private s: AiService, private img: CoverImageService) {}
+  constructor(private s: AiService, private img: CoverImageService, private usage: UsageService) {}
   @Get("settings") settings() { return this.s.view(); }
   @Roles("admin") @Put("settings") save(@Req() r: any, @Body() d: UpdateAiSettingsDto) { return this.s.update(d, actor(r)); }
   @Roles("admin") @Get("models") models(@Query("provider") p: string) { return this.s.models(p === "groq" ? "groq" : ("anthropic" as Provider)); }
+  /** Claude tokens and cost, across all brands and per brand */
+  @Roles("admin", "editor") @Get("usage") usageSummary(@Query("days") d: string, @Query("tz") tz: string) { return this.usage.summary(Math.max(1, Math.min(365, Math.round(Number(d)) || 30)), tz && validTz(tz) ? tz : "UTC"); }
   @Get("ideas") ideas() { return this.s.listIdeas(); }
   @Roles("admin", "editor") @Post("ideas/generate") generate(@Req() r: any, @Body() d: GenerateIdeasDto) { return this.s.generateIdeas(d, actor(r)); }
   @Roles("admin", "editor") @Post("ideas/:id/article") article(@Req() r: any, @Param("id") id: string, @Body() d: GenerateArticleDto) { return this.s.generateArticle(id, d.date || undefined, actor(r)); }
