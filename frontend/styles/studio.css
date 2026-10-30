@@ -2737,6 +2737,11 @@ body.dnd9 .ed-scroll .poster{box-shadow:0 0 0 3px var(--accent),0 8px 40px rgba(
 .ov-rv{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:12px;font-weight:600;color:var(--text-2);text-decoration:none}
 .ov-rv span{display:inline-flex;align-items:center;gap:5px}.ov-rv i{width:7px;height:7px;border-radius:50%}
 /* AI usage */
+.sb-ug{display:flex;flex-direction:column;gap:6px;margin:0 12px 12px;padding:10px 12px;border:1px solid var(--border);border-radius:12px;color:var(--text-1);text-decoration:none;font-size:12px}
+.sb-ug:hover{background:var(--pill)}
+.sb-ug-h{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:2px}.sb-ug-h b{display:inline-flex;align-items:center;gap:6px;font-weight:600;color:var(--text-2)}.sb-ug-h>span{font-weight:600;font-variant-numeric:tabular-nums}
+.sb-ug-r{display:grid;grid-template-columns:minmax(0,1fr) auto 52px;gap:8px;align-items:center}.sb-ug-r>span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.sb-ug-r small{color:var(--text-3);font-variant-numeric:tabular-nums}.sb-ug-r b{font-weight:500;text-align:right;font-variant-numeric:tabular-nums}
 .ug{display:flex;flex-direction:column;gap:16px}.ug.busy{opacity:.6;transition:opacity .2s}
 .ug-period{width:auto}.ug-period button{flex:none}
 .ug-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}

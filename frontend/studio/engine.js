@@ -536,7 +536,7 @@ try { setTheme(JSON.parse(localStorage.getItem('uxb.t')) || 'dark'); } catch (e)
 
 /* ---------- Sidebar ---------- */
 const NAV = [
-  ['overview', 'Overview', 'grid'], ['studio', 'Studio', 'studio', 'New'], ['planner', 'Planner', 'cal'], ['brand', 'Brand kit', 'palette', 'New'], ['usage', 'AI usage', 'chart', 'New'], ['settings', 'Settings', 'settings'],
+  ['overview', 'Overview', 'grid'], ['studio', 'Studio', 'studio', 'New'], ['planner', 'Planner', 'cal'], ['brand', 'Brand kit', 'palette', 'New'], ['settings', 'Settings', 'settings'],
 ];
 function renderSide() {
   $('#side').innerHTML = `
@@ -551,11 +551,13 @@ function renderSide() {
     </div>
   </div>
   <nav class="nav" id="nav">${NAV.map(([k, l, i]) => `<a href="#/${k}" data-k="${k}">${ic(i)}${l}</a>`).join('')}</nav>
+  ${ugAllowed() ? `<a class="sb-ug" id="sideUsage" href="#/usage" data-act="goUsage" title="Open AI usage">${sbUsage()}</a>` : ''}
   <div class="me">
     <div class="menu" id="meMenu" hidden>
       <div class="row" style="gap:10px;padding:8px">${userAv()}<span class="grow"><b style="font-size:14px;font-weight:500;display:block">${esc(user.name)}</b><small class="muted xs-t">${esc(user.email)}</small></span></div>
       <div class="div"></div>
       <a class="it" href="#/profile" data-act="goProfile"><span class="ico">${ic('user', 16)}</span><span class="grow"><b>Profile</b></span></a>
+      ${ugAllowed() ? `<a class="it" href="#/usage" data-act="goUsage"><span class="ico">${ic('chart', 16)}</span><span class="grow"><b>AI usage</b></span></a>` : ''}
       <div class="div"></div>
       <button class="it out" data-act="signOut"><span class="ico">${ic('logout', 16)}</span><span class="grow"><b>Sign out</b></span></button>
     </div>
@@ -568,6 +570,7 @@ const userAv = () => user.avatar
 ACT.goWs = (a, e) => { e && e.preventDefault(); navigate(a.dataset.href); };
 ACT.me = () => { const m = $('#meMenu'); m.hidden = !m.hidden; };
 /* Profile opens inside this workspace (#/profile), like the Blog Admin's /profile */
+ACT.goUsage = (a, e) => { e && e.preventDefault(); closeDrawer(); if (location.hash === '#/usage') route(); else location.hash = '#/usage'; };
 ACT.goProfile = (a, e) => { e && e.preventDefault(); closeDrawer(); if (location.hash === '#/profile') route(); else location.hash = '#/profile'; };
 ACT.signOut = () => { persist.signOut(); navigate('/login'); };
 ACT.ws = () => { const m = $('#wsMenu'); if (m.hidden) $('#brandMenu').innerHTML = brandMenu(); m.hidden = !m.hidden; if (!m.hidden) { const on = m.querySelector('.bm-list .it.on'); on && on.scrollIntoView({ block: 'nearest' }); } };
@@ -593,6 +596,7 @@ function route() {
     <div class="grow"><h1>${p.t}</h1><p class="sub">${p.s}</p></div><button class="bpill" data-act="manageBrands" title="Switch brand">${pillHTML()}</button>${p.themeFirst ? '' : p.actions ? p.actions() : ''}
     <button class="btn secondary icon" data-act="theme" title="Toggle theme">${ic(S.theme === 'dark' ? 'sun' : 'moon')}</button>${p.themeFirst && p.actions ? p.actions() : ''}`;
   $('#view').innerHTML = `<div class="page">${p.view()}</div>`; scrollTo(0, 0);
+  sbUsageLoad();
 }
 addEventListener('hashchange', route);
 function closeDrawer() { $('#side').classList.remove('open'); $('#scrim').hidden = true; const m = $('#wsMenu'); m && (m.hidden = true); const u = $('#meMenu'); u && (u.hidden = true); }
@@ -1643,9 +1647,29 @@ const PRP = {
   sess: () => phead('Session', 'Sign out of the admin on this device.') + acts(`<button class="btn secondary" data-act="signOut">${ic('logout', 16)}Sign out</button>`, 1),
 };
 /* ---------- AI usage: Claude tokens and cost, across all brands and per brand ---------- */
+/** The usage endpoint is for admins and editors */
+const ugAllowed = () => user.role === 'admin' || user.role === 'editor';
+/** Sidebar card: each Claude model's tokens and cost over the last 30 days, all brands */
+const SB = { data: null, at: 0, loading: false };
+/** claude-opus-5-5 → Opus 5.5 (a dated id loses its date) */
+const ugModelName = (id) => { const [f, ...v] = String(id).replace(/^claude-/, '').replace(/-\d{8}$/, '').split('-'); return f.charAt(0).toUpperCase() + f.slice(1) + (v.length ? ' ' + v.join('.') : ''); };
+function sbUsage() {
+  const d = SB.data;
+  const head = `<span class="sb-ug-h"><b>${ic('chart', 14)}Claude · 30 days</b><span>${d ? ugMoney(d.total.cost) : ''}</span></span>`;
+  if (!d) return head + `<i class="skel" style="display:block;height:28px;border-radius:6px"></i>`;
+  if (!d.models.length) return head + `<small class="faint">No Claude calls yet</small>`;
+  return head + d.models.slice(0, 4).map((m) => `<span class="sb-ug-r"><span>${esc(ugModelName(m.model))}</span><small>${ugTok(m.input + m.cacheWrite + m.cacheRead + m.output)} tok</small><b>${m.unpriced ? '—' : ugMoney(m.cost)}</b></span>`).join('');
+}
+function sbUsageLoad() {
+  if (!ugAllowed() || SB.loading || Date.now() - SB.at < 60_000) return;
+  SB.loading = true;
+  api('/ai/usage?days=30').then((d) => { SB.data = d; SB.at = Date.now(); })
+    .catch(() => { SB.at = Date.now(); }) // try again on a later page change
+    .finally(() => { SB.loading = false; const el = document.getElementById('sideUsage'); if (el) el.innerHTML = sbUsage(); });
+}
 const UG = { days: 30, data: null, at: 0, loading: false, err: '', open: null };
 const UG_PERIODS = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
-const ugMoney = (v) => '$' + (v >= 100 ? Math.round(v).toLocaleString('en') : v >= 1 ? v.toFixed(2) : v.toFixed(v ? 4 : 2));
+const ugMoney = (v) => v > 0 && v < 0.01 ? '<$0.01' : '$' + (v >= 100 ? Math.round(v).toLocaleString('en') : v.toFixed(2));
 const ugTok = (v) => v >= 1e6 ? (v / 1e6).toFixed(v >= 1e7 ? 0 : 1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(v >= 1e4 ? 0 : 1) + 'K' : String(v);
 /** null: Blog Admin calls (no brand); an id no longer in the list: a removed brand */
 const ugBrand = (id) => id == null ? { name: 'Blog Admin', av: `<span class="ug-av">${ic('doc', 14)}</span>` }
@@ -1696,7 +1720,7 @@ function ugBrands(d) {
       : `<div class="empty"><b>No Claude calls in the last ${UG.days} days</b><span class="sm-t">Reading slides, translating, captions and the design agent show up here.</span></div>`}</section>`;
 }
 const ugModels = (d) => d.models.length ? `<section class="widget"><div class="ov-wh"><h2 class="wtitle">${ic('wand', 24)}By model</h2></div>
-  <div class="ug-models">${d.models.map((m) => `<div class="ug-feat"><code>${esc(m.model)}</code><span class="ug-n">${ugTok(m.input + m.cacheWrite + m.cacheRead)}</span><span class="ug-n">${ugTok(m.output)}</span><span class="ug-n hide-sm">${m.calls.toLocaleString('en')}</span><span class="ug-n">${m.unpriced ? '<span title="No price for this model: tokens only">—</span>' : ugMoney(m.cost)}</span></div>`).join('')}</div></section>` : '';
+  <div class="ug-models">${d.models.map((m) => `<div class="ug-feat"><span title="${esc(m.model)}">${esc(ugModelName(m.model))}</span><span class="ug-n">${ugTok(m.input + m.cacheWrite + m.cacheRead)}</span><span class="ug-n">${ugTok(m.output)}</span><span class="ug-n hide-sm">${m.calls.toLocaleString('en')}</span><span class="ug-n">${m.unpriced ? '<span title="No price for this model: tokens only">—</span>' : ugMoney(m.cost)}</span></div>`).join('')}</div></section>` : '';
 PAGES.usage = {
   t: 'AI usage', s: 'Claude tokens and cost, for each brand and across all of them.',
   actions: () => `<div class="tabs ug-period" role="tablist">${UG_PERIODS.map(([n, l]) => `<button role="tab" aria-selected="${UG.days === n}" class="${UG.days === n ? 'on' : ''}" data-act="ugDays" data-n="${n}">${l}</button>`).join('')}</div>`,
